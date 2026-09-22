@@ -1,0 +1,77 @@
+{
+  "$comment": "Per-repo settings for the usiatech-engineering plugin. Copy to .claude/engineering.json and adjust.",
+  "verify": [
+    {
+      "name": "typecheck",
+      "run": "pnpm typecheck"
+    },
+    {
+      "name": "unit tests",
+      "run": "pnpm test"
+    },
+    {
+      "name": "build",
+      "run": "pnpm build"
+    }
+  ],
+  "verifyConditional": [
+    {
+      "name": "tenant isolation",
+      "run": "pnpm test:rls",
+      "when": [
+        "packages/db/",
+        "apps/api/",
+        "apps/worker/"
+      ]
+    }
+  ],
+  "git": {
+    "baseBranch": "develop",
+    "releaseBranch": "main",
+    "tagFormat": "DDMMMYYYY-XX",
+    "commitStyle": "conventional",
+    "commitsPerPr": 1
+  },
+  "protectedPaths": [
+    "generated/**",
+    "**/generated/**"
+  ],
+  "immutableWhenCommitted": [],
+  "allowEnvExample": true,
+  "userGuide": {
+    "dir": "docs/user-guide",
+    "changelog": "docs/user-guide/changelog.md",
+    "manifest": null
+  },
+  "reviewers": [
+    "governance-reviewer",
+    "convention-reviewer"
+  ],
+  "governance": {
+    "$comment": "Guard settings. Commands are case-insensitive regexes. Defaults already cover destructive git/SQL/rm, curl|sh, --no-verify, dependency adds, remote/infra commands, secrets reads and sudo. approvalLabel and requirementRefPattern (null = default C-number/FR/AC/ADR/D-item/\u00a7/#issue) are also used by the PR governance workflow.",
+    "protectedBranches": [
+      "main",
+      "master"
+    ],
+    "askPaths": [
+      ".claude/**",
+      "AGENTS.md",
+      "**/AGENTS.md",
+      "CLAUDE.md",
+      "REVIEW.md",
+      ".github/**",
+      "**/package.json"
+    ],
+    "requirePlan": false,
+    "denyCommands": [],
+    "askCommands": [
+      {
+        "pattern": "\\bdeploy:prod\\b",
+        "reason": "production deploy"
+      }
+    ],
+    "rulesFile": ".claude/governance.md",
+    "approvalLabel": "governance-approved",
+    "requirementRefPattern": null
+  }
+}
