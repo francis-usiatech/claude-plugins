@@ -4,6 +4,13 @@
 import { execSync } from 'node:child_process'
 import { readFileSync, existsSync, appendFileSync } from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+// Read the config from the tree this script was loaded from, not the working directory.
+// The workflow runs the base-branch copy (_gov/) against the PR checkout, so resolving
+// relative to cwd would let a PR rewrite the rules it is about to be judged by.
+const govRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+const configPath = path.join(govRoot, '.claude/engineering.json')
 
 const globToRegExp = (g) => new RegExp('^' + g
   .replace(/[.+^${}()|[\]\\]/g, '\\$&')
@@ -12,7 +19,7 @@ const globToRegExp = (g) => new RegExp('^' + g
   .replace(/\u0001/g, '(?:.*/)?').replace(/\u0002/g, '.*') + '$')
 const matchAny = (p, globs) => globs.find((g) => globToRegExp(g).test(p))
 
-const cfg = existsSync('.claude/engineering.json') ? JSON.parse(readFileSync('.claude/engineering.json', 'utf8')) : {}
+const cfg = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : {}
 const gov = cfg.governance || {}
 const git = cfg.git || {}
 const baseBranch = git.baseBranch || 'develop'

@@ -58,11 +58,18 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.base_ref }}
-          path: _gov
-          fetch-depth: 1
+      # The base-branch copy must live OUTSIDE the workspace. A second checkout inside it
+      # gets swept into the project's own tooling: test runners collect _gov/**/*.test.* and
+      # run every suite twice, and type-checkers/bundlers follow _gov/ sources whose relative
+      # imports resolve into _gov/, where install/codegen never ran.
+      - name: Extract base-branch governance files
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/gov"
+          git archive "origin/$BASE_REF" .github/scripts .claude 2>/dev/null \
+            | tar -x -C "$RUNNER_TEMP/gov" \
+            || echo "::warning::Base branch has no governance files yet (bootstrap); using the PR copy."
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -82,12 +89,19 @@ jobs:
       - name: Verify gate (.claude/engineering.json)
         env:
           BASE_REF: ${{ github.base_ref }}
+          # The Next.js build exceeds Node's default heap on the hosted runner and
+          # dies with SIGABRT ("Ineffective mark-compacts near heap limit").
+          NODE_OPTIONS: --max-old-space-size=6144
         run: |
-          S=_gov/.github/scripts; [ -f "$S/run-verify.mjs" ] || S=.github/scripts
+          S="$RUNNER_TEMP/gov/.github/scripts"; [ -f "$S/run-verify.mjs" ] || S=.github/scripts
           node "$S/run-verify.mjs"
 
   ai-governance-review:
+    # Set the repo variable GOVERNANCE_AI_REVIEW to "off" to skip this job while the
+    # Claude GitHub App and ANTHROPIC_API_KEY secret are not yet configured. Remove the
+    # variable (or set it to "on") to make the AI review mandatory again.
     if: >-
+      vars.GOVERNANCE_AI_REVIEW != 'off' &&
       contains(fromJSON('["opened","synchronize","reopened","ready_for_review"]'), github.event.action) &&
       !github.event.pull_request.draft &&
       github.event.pull_request.head.repo.full_name == github.repository
