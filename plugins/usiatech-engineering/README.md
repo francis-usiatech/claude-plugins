@@ -13,6 +13,7 @@ Shared engineering workflow **and governance** for UsiaTech repositories (Waypoi
 | Skill | `approve-plan` | Records the approved plan as the scope baseline (`.claude/plans/active.md`), updates it on approved scope changes, archives it when done |
 | Agent | `governance-reviewer` | Read-only gate: traces every change to a requirement, flags out-of-plan work, ADR/rule violations and dangerous actions; verdict PASS/FLAG/BLOCK |
 | Agent | `convention-reviewer` | Read-only review of a diff against the repo's root and folder AGENTS.md |
+| Agent | `silent-failure-reviewer` | Read-only review for swallowed errors, masking fallbacks, lost async errors, ignored exit codes and tests that can't fail |
 | Hook | Governance guard (PreToolUse on Bash + edits) | **Deny:** catastrophic or rule-breaking actions. **Ask:** risky commands, governance/CI/dependency files, edits outside the approved plan. **Log:** every decision to `.claude/governance-log.jsonl` |
 
 ## Per-repo configuration: `.claude/engineering.json`
