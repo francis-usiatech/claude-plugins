@@ -152,8 +152,15 @@ const decideEdit = (file, { cfg, gov }, git, root, p, ic, text = '') => {
   // Before the plan/exempt/ask checks: a secret is never fine, wherever it is written.
   const secret = findSecret(text)
   if (secret?.decision === 'deny') return decision('deny', `The edit writes what looks like a ${secret.why}. Keep secrets in env files or a secret manager.`, rel)
-  if (secret) return decision('ask', `The edit looks like it hard-codes a ${secret.why}. Confirm it is not a real secret.`, rel)
+  const scope = decideScope(rel, gov, root, ic)
+  if (!secret) return scope
+  // A credential ask must not hide a scope or governance ask; the user confirms both at once.
+  const credential = `The edit looks like it hard-codes a ${secret.why}. Confirm it is not a real secret.`
+  return decision('ask', scope ? `${credential} Also: ${scope.reason}` : credential, rel)
+}
 
+// Plan, governance-file and plan-scope checks for a project-relative path.
+const decideScope = (rel, gov, root, ic) => {
   // Otherwise a plan could widen its own Files list (e.g. to `**`) and unlock every later edit.
   if (matchAny(rel, [PLAN_PATH], ic)) return decision('ask', `The approved plan sets the edit scope. Changing ${PLAN_PATH} needs explicit confirmation.`, rel)
   if (matchAny(rel, GUARD_EXEMPT_PATHS, ic)) return null

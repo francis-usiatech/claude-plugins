@@ -431,6 +431,15 @@ describe('evaluate: secrets in edited content', () => {
     assert.equal(run('Edit', { file_path: 'package.json', old_string: 'x', new_string: awsKey }).decision, 'deny')
   })
 
+  it('should keep path reasons when a credential only asks', () => {
+    const cred = 'password: "' + 'h'.repeat(16) + '"'
+    const pkg = run('Edit', { file_path: 'package.json', old_string: 'x', new_string: cred })
+    assert.equal(pkg.decision, 'ask')
+    assert.match(pkg.reason, /hard-coded credential/)
+    assert.match(pkg.reason, /governance, CI or dependency file/)
+    assert.match(run('Write', { file_path: '.claude/plans/active.md', content: cred }).reason, /approved plan sets the edit scope/)
+  })
+
   it('should ignore non-string content and malformed edits', () => {
     assert.equal(run('Write', { file_path: 'src/a.ts', content: 42 }), null)
     assert.equal(run('MultiEdit', { file_path: 'src/a.ts', edits: 'nope' }), null)

@@ -75,14 +75,14 @@ describe('rule tables', () => {
 describe('findSecret', () => {
   // Built at runtime so this file never holds a secret-shaped literal (the guard would block writing it).
   const deny = {
-    'private key': '-----BEGIN ' + 'RSA PRIVATE KEY-----\nMIIE',
+    'private key': '-----BEGIN ' + 'RSA PRIVATE KEY-----\nMIIE' + 'q7Zb'.repeat(20),
     'AWS access key': 'key = ' + 'AKIA' + 'Q'.repeat(16),
     'GitHub token': 'ghp_' + 'a'.repeat(36),
     'Anthropic API key': 'sk-ant-api03-' + 'b'.repeat(40),
     'OpenAI API key': 'sk-proj-' + 'c'.repeat(40),
     'Stripe live key': 'sk_' + 'live_' + 'd'.repeat(24),
     'Google API key': 'AIza' + 'e'.repeat(35),
-    'Slack token': 'xoxb-' + '1'.repeat(12),
+    'Slack token': 'xoxb-' + '1'.repeat(12) + '-' + 'A1b2'.repeat(4),
   }
   for (const [why, text] of Object.entries(deny)) {
     it(`should deny a ${why}`, () => {
@@ -101,7 +101,14 @@ describe('findSecret', () => {
       'sk-ant-' + 'x'.repeat(30),
       'password = "' + 'your-password-here' + '"',
       'api_key: "' + 'placeholder-value-1' + '"',
+      'xoxb-' + 'token-goes-here',
+      'xoxb-' + '123456789012-...',
     ]) assert.equal(findSecret(t), null, t)
+  })
+
+  it('should ignore a PEM header without key material', () => {
+    assert.equal(findSecret("if (pem.includes('-----BEGIN " + "PRIVATE KEY-----')) parse(pem)"), null)
+    assert.equal(findSecret('A key starts with `-----BEGIN ' + 'OPENSSH PRIVATE KEY-----`.'), null)
   })
 
   it('should ignore env lookups, short values and ordinary code', () => {

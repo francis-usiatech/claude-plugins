@@ -65,14 +65,15 @@ export const GUARD_EXEMPT_PATHS = ['.claude/plans/**', '.claude/governance-log.j
 // Secrets in edited content: [reason, regex source]. Provider formats are near-certain and denied (case-sensitive);
 // generic credential assignments are fuzzier and ask (case-insensitive).
 export const DENY_CONTENT = [
-  ['private key', String.raw`-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----`],
+  // Key material must follow the header, so code and docs that only mention the header are fine.
+  ['private key', String.raw`-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----\s*(?:[A-Za-z-]+:[^\n]*\n\s*)*[A-Za-z0-9+/=]{64,}`],
   ['AWS access key', String.raw`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`],
   ['GitHub token', String.raw`\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})`],
   ['Anthropic API key', String.raw`\bsk-ant-[A-Za-z0-9_-]{20,}`],
   ['OpenAI API key', String.raw`\bsk-(?:proj-)?[A-Za-z0-9]{32,}`],
   ['Stripe live key', String.raw`\b[sr]k_live_[A-Za-z0-9]{20,}`],
   ['Google API key', String.raw`\bAIza[0-9A-Za-z_-]{35}`],
-  ['Slack token', String.raw`\bxox[abposr]-[A-Za-z0-9-]{10,}`],
+  ['Slack token', String.raw`\bxox[abposr]-\d{10,}-[A-Za-z0-9-]{10,}`],
 ]
 export const ASK_CONTENT = [
   ['hard-coded credential', String.raw`\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\b["']?\s*[:=]\s*["'][^"'\s$]{12,}["']`],
