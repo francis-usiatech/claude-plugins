@@ -402,3 +402,43 @@ describe('evaluate: protected branch matching', () => {
     assert.equal(bash('git push origin cxx', { cfg }), null)
   })
 })
+
+describe('evaluate: secrets in edited content', () => {
+  // Built at runtime so this file never holds a secret-shaped literal.
+  const awsKey = 'AKIA' + 'Q'.repeat(16)
+  const run = (tool_name, tool_input, opts = {}) => evaluate({ tool_name, tool_input }, { root: opts.root || tempDir(), git: fakeGit(), ...opts })
+
+  it('should deny writing a provider key with any edit tool', () => {
+    assert.equal(run('Write', { file_path: 'src/a.ts', content: `const k = '${awsKey}'` }).decision, 'deny')
+    assert.equal(run('Edit', { file_path: 'src/a.ts', old_string: 'x', new_string: awsKey }).decision, 'deny')
+    assert.equal(run('MultiEdit', { file_path: 'src/a.ts', edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'c', new_string: awsKey }] }).decision, 'deny')
+    assert.equal(run('NotebookEdit', { notebook_path: 'n.ipynb', new_source: awsKey }).decision, 'deny')
+  })
+
+  it('should ask on a hard-coded credential assignment', () => {
+    assert.match(run('Write', { file_path: 'src/db.ts', content: 'const password = "' + 'h'.repeat(16) + '"' }).reason, /hard-coded credential/)
+  })
+
+  it('should not echo the secret in the reason', () => {
+    const r = run('Write', { file_path: 'src/a.ts', content: awsKey })
+    assert.match(r.reason, /AWS access key/)
+    assert.ok(!r.reason.includes(awsKey))
+    assert.equal(r.target, 'src/a.ts')
+  })
+
+  it('should deny before plan and ask paths', () => {
+    assert.equal(run('Write', { file_path: '.claude/plans/active.md', content: awsKey }).decision, 'deny')
+    assert.equal(run('Edit', { file_path: 'package.json', old_string: 'x', new_string: awsKey }).decision, 'deny')
+  })
+
+  it('should ignore non-string content and malformed edits', () => {
+    assert.equal(run('Write', { file_path: 'src/a.ts', content: 42 }), null)
+    assert.equal(run('MultiEdit', { file_path: 'src/a.ts', edits: 'nope' }), null)
+    assert.equal(run('MultiEdit', { file_path: 'src/a.ts', edits: [null, { new_string: 7 }] }), null)
+  })
+
+  it('should allow ordinary content and placeholders', () => {
+    assert.equal(run('Write', { file_path: 'src/a.ts', content: 'export const x = 1' }), null)
+    assert.equal(run('Write', { file_path: 'docs/aws.md', content: 'AKIA' + 'IOSFODNN7EXAMPLE' }), null)
+  })
+})
