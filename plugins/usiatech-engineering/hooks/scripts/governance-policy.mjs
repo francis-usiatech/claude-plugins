@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import {
   matchAny, isSecretEnvFile, escapeRegExp, isPlainObject, isStringArray, DENY_COMMANDS, ASK_COMMANDS,
-  DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS,
+  DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH,
 } from '../../templates/github/scripts/governance-rules.mjs'
 
 const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit']
@@ -84,7 +84,7 @@ export const sanitizeConfig = (raw) => {
 }
 
 export const planFiles = (root) => {
-  const f = path.join(root, '.claude', 'plans', 'active.md')
+  const f = path.join(root, ...PLAN_PATH.split('/'))
   if (!existsSync(f)) return null
   const globs = []
   let inFiles = false
@@ -139,6 +139,8 @@ const decideEdit = (file, { cfg, gov }, git, root, p, ic) => {
     }
   }
 
+  // Otherwise a plan could widen its own Files list (e.g. to `**`) and unlock every later edit.
+  if (matchAny(rel, [PLAN_PATH], ic)) return decision('ask', `The approved plan sets the edit scope. Changing ${PLAN_PATH} needs explicit confirmation.`, rel)
   if (matchAny(rel, GUARD_EXEMPT_PATHS, ic)) return null
   const hit = matchAny(rel, gov.askPaths || DEFAULT_ASK_PATHS, ic)
   if (hit) return decision('ask', `"${rel}" is a governance, CI or dependency file (${hit}). Changes need explicit confirmation.`, rel)

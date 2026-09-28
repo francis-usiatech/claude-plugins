@@ -70,7 +70,7 @@ Scripts and rules are read from the **base branch** (`_gov/`), so a PR can't wea
   - reading `.env`; `sudo`; `chmod 777`
   - commits or merges on protected branches, and pushes to them
   - edits to `.claude/**`, AGENTS.md, CLAUDE.md, REVIEW.md, `.github/**`, `package.json`
-  - edits outside the approved plan
+  - edits outside the approved plan, and edits to the plan itself (`.claude/plans/active.md`)
   - any action while `.claude/engineering.json` is malformed or has an invalid command pattern (default deny rules still apply)
 
 All default rules live in one module, `templates/github/scripts/governance-rules.mjs`. The guard hook imports the plugin's copy. `setup-engineering` copies it into `.github/scripts/` with the CI scripts, which read the repo's copy. The two match at install time. After upgrading the plugin, re-copy `templates/github/scripts/` or the PR checks keep the older rules.
@@ -96,6 +96,7 @@ Semver. Record changes below.
 
 | Version | Change |
 |---|---|
+| 0.5.1 | The guard asks before any edit to `.claude/plans/active.md`, so a plan can no longer widen its own scope without the user's confirmation. Archived plans and `governance-log.jsonl` stay exempt. No CI changes; repos don't need to re-copy scripts. |
 | 0.5.0 | Guard hardening: shared rules module (`governance-rules.mjs`) used by the guard and CI; guard logic split into `governance-policy.mjs`; git calls no longer go through a shell (guard, `governance-checks`, `run-verify`); a malformed `engineering.json` or invalid command pattern now asks instead of silently dropping repo rules; fail-open errors are logged and reported by `governance-reviewer`; the guard also asks on `REVIEW.md` and all of `.github/**` (matching CI); `governance-gate`/`post-verdict` set `process.exitCode` instead of calling `process.exit()`; `setup-engineering` detects `dev` vs `develop`; wrong-type config values are reported instead of crashing the guard; edits on another Windows drive ask; path checks ignore case on Windows/macOS and in CI; protected-branch names are escaped and matched as whole refspecs, quoted or not; wrong-type `git` settings and non-string edit paths ask instead of crashing the guard; `governance-checks` reports a malformed or wrong-type base-branch config by name; CI honours `allowEnvExample`; `setup-engineering` detects `main` vs `master`; Node ≥ 20; the gate reports GitHub API errors; test suite and test workflow. **Upgrading repos:** re-copy `templates/github/scripts/` into `.github/scripts/` (the scripts now import `governance-rules.mjs`). |
 | 0.4.1 | CI kit fixes: scripts read `engineering.json` from the base-branch copy; an empty verify list fails the gate; `GOVERNANCE_AI_REVIEW=off` opt-out; base-branch files extracted outside the workspace for `verify-gate` |
 | 0.4.0 | Renamed from `nextascend-engineering` to `usiatech-engineering` (display name UsiaTech Engineering); no functional changes. Reinstall under the new name and uninstall the old one. |
