@@ -52,3 +52,14 @@ describe('plugin structure: references', () => {
     for (const n of [...skills, ...agents]) assert.match(readme, new RegExp(`\\| \`${n}\` \\|`), n)
   })
 })
+
+describe('plugin structure: reviewers', () => {
+  for (const r of reviewers) {
+    it(`should make "${r}" score each finding's confidence`, () => {
+      const text = body(read('agents', `${r}.md`))
+      assert.match(text, /\*\*Confidence:\*\*/)
+      assert.match(text, /Low-confidence notes/)
+      assert.match(text, /\b80\b/)
+    })
+  }
+})
