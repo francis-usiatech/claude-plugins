@@ -118,6 +118,11 @@ describe('findSecret', () => {
     assert.equal(findSecret(''), null)
   })
 
+  it('should still deny a key followed directly by more characters', () => {
+    assert.equal(findSecret('AKIA' + 'Q'.repeat(16) + 'z').decision, 'deny')
+    assert.equal(findSecret('AIza' + 'e'.repeat(35) + 'Z9').decision, 'deny')
+  })
+
   it('should find a secret after an earlier placeholder match', () => {
     assert.equal(findSecret('AKIA' + 'IOSFODNN7EXAMPLE and ' + 'AKIA' + 'R'.repeat(16)).decision, 'deny')
   })

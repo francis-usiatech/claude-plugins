@@ -67,7 +67,8 @@ export const GUARD_EXEMPT_PATHS = ['.claude/plans/**', '.claude/governance-log.j
 export const DENY_CONTENT = [
   // Key material must follow the header, so code and docs that only mention the header are fine.
   ['private key', String.raw`-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----\s*(?:[A-Za-z-]+:[^\n]*\n\s*)*[A-Za-z0-9+/=]{64,}`],
-  ['AWS access key', String.raw`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`],
+  // No trailing \b: a key run straight into more characters must still be caught.
+  ['AWS access key', String.raw`\b(?:AKIA|ASIA)[0-9A-Z]{16}`],
   ['GitHub token', String.raw`\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})`],
   ['Anthropic API key', String.raw`\bsk-ant-[A-Za-z0-9_-]{20,}`],
   ['OpenAI API key', String.raw`\bsk-(?:proj-)?[A-Za-z0-9]{32,}`],
