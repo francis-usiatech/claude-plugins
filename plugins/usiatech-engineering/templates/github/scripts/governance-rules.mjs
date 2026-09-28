@@ -61,3 +61,34 @@ export const DEFAULT_PROTECTED_PATHS = ['generated/**', '**/generated/**']
 export const PLAN_PATH = '.claude/plans/active.md'
 // Files the guard's own bookkeeping writes; never subject to ask/plan checks.
 export const GUARD_EXEMPT_PATHS = ['.claude/plans/**', '.claude/governance-log.jsonl']
+
+// Secrets in edited content: [reason, regex source]. Provider formats are near-certain and denied (case-sensitive);
+// generic credential assignments are fuzzier and ask (case-insensitive).
+export const DENY_CONTENT = [
+  ['private key', String.raw`-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----`],
+  ['AWS access key', String.raw`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`],
+  ['GitHub token', String.raw`\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})`],
+  ['Anthropic API key', String.raw`\bsk-ant-[A-Za-z0-9_-]{20,}`],
+  ['OpenAI API key', String.raw`\bsk-(?:proj-)?[A-Za-z0-9]{32,}`],
+  ['Stripe live key', String.raw`\b[sr]k_live_[A-Za-z0-9]{20,}`],
+  ['Google API key', String.raw`\bAIza[0-9A-Za-z_-]{35}`],
+  ['Slack token', String.raw`\bxox[abposr]-[A-Za-z0-9-]{10,}`],
+]
+export const ASK_CONTENT = [
+  ['hard-coded credential', String.raw`\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\b["']?\s*[:=]\s*["'][^"'\s$]{12,}["']`],
+]
+// Documentation examples and templates use these; they are not real secrets.
+const PLACEHOLDER = /example|dummy|placeholder|your[_-]|x{6,}/i
+
+// Returns the first secret-like match as { decision, why }, or null. Never returns the matched text,
+// so callers can't leak it into prompts or logs.
+export const findSecret = (text) => {
+  for (const [rules, decision, flags] of [[DENY_CONTENT, 'deny', 'g'], [ASK_CONTENT, 'ask', 'gi']]) {
+    for (const [why, re] of rules) {
+      for (const m of text.matchAll(new RegExp(re, flags))) {
+        if (!PLACEHOLDER.test(m[0])) return { decision, why }
+      }
+    }
+  }
+  return null
+}

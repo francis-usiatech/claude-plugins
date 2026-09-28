@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  globToRegExp, matchAny, isSecretEnvFile, DENY_COMMANDS, ASK_COMMANDS,
+  globToRegExp, matchAny, isSecretEnvFile, findSecret, DENY_COMMANDS, ASK_COMMANDS,
   DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS,
 } from '../templates/github/scripts/governance-rules.mjs'
 
@@ -69,5 +69,49 @@ describe('rule tables', () => {
     assert.ok(DEFAULT_ASK_PATHS.includes('REVIEW.md'))
     assert.ok(DEFAULT_ASK_PATHS.includes('.github/**'))
     assert.deepEqual(DEFAULT_PROTECTED_PATHS, ['generated/**', '**/generated/**'])
+  })
+})
+
+describe('findSecret', () => {
+  // Built at runtime so this file never holds a secret-shaped literal (the guard would block writing it).
+  const deny = {
+    'private key': '-----BEGIN ' + 'RSA PRIVATE KEY-----\nMIIE',
+    'AWS access key': 'key = ' + 'AKIA' + 'Q'.repeat(16),
+    'GitHub token': 'ghp_' + 'a'.repeat(36),
+    'Anthropic API key': 'sk-ant-api03-' + 'b'.repeat(40),
+    'OpenAI API key': 'sk-proj-' + 'c'.repeat(40),
+    'Stripe live key': 'sk_' + 'live_' + 'd'.repeat(24),
+    'Google API key': 'AIza' + 'e'.repeat(35),
+    'Slack token': 'xoxb-' + '1'.repeat(12),
+  }
+  for (const [why, text] of Object.entries(deny)) {
+    it(`should deny a ${why}`, () => {
+      assert.deepEqual(findSecret(text), { decision: 'deny', why })
+    })
+  }
+
+  it('should ask on a hard-coded credential assignment', () => {
+    assert.deepEqual(findSecret('const apiKey = "' + 'f'.repeat(16) + '"'), { decision: 'ask', why: 'hard-coded credential' })
+    assert.equal(findSecret("password: '" + 'g'.repeat(14) + "'").decision, 'ask')
+  })
+
+  it('should ignore placeholders and documented examples', () => {
+    for (const t of [
+      'AKIA' + 'IOSFODNN7EXAMPLE',
+      'sk-ant-' + 'x'.repeat(30),
+      'password = "' + 'your-password-here' + '"',
+      'api_key: "' + 'placeholder-value-1' + '"',
+    ]) assert.equal(findSecret(t), null, t)
+  })
+
+  it('should ignore env lookups, short values and ordinary code', () => {
+    assert.equal(findSecret('const password = process.env.DB_PASSWORD'), null)
+    assert.equal(findSecret('password = "hunter2"'), null)
+    assert.equal(findSecret('export const add = (a, b) => a + b'), null)
+    assert.equal(findSecret(''), null)
+  })
+
+  it('should find a secret after an earlier placeholder match', () => {
+    assert.equal(findSecret('AKIA' + 'IOSFODNN7EXAMPLE and ' + 'AKIA' + 'R'.repeat(16)).decision, 'deny')
   })
 })
