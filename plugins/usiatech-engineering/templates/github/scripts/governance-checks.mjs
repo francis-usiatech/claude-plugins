@@ -1,23 +1,20 @@
 #!/usr/bin/env node
 // Deterministic PR governance checks (no AI). Part of the usiatech-engineering CI kit.
 // Env: PR_BODY, PR_LABELS (JSON array of names), BASE_REF, HEAD_REF, GITHUB_STEP_SUMMARY
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { readFileSync, existsSync, appendFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { matchAny, isSecretEnvFile, DEFAULT_ASK_PATHS } from './governance-rules.mjs'
+
+// Developers check out on case-insensitive file systems, where `.ENV` or `Agents.MD` is the same file.
+const IGNORE_CASE = true
 
 // Read the config from the tree this script was loaded from, not the working directory.
 // The workflow runs the base-branch copy (_gov/) against the PR checkout, so resolving
 // relative to cwd would let a PR rewrite the rules it is about to be judged by.
 const govRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const configPath = path.join(govRoot, '.claude/engineering.json')
-
-const globToRegExp = (g) => new RegExp('^' + g
-  .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-  .replace(/\*\*\//g, '\u0001').replace(/\*\*/g, '\u0002')
-  .replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')
-  .replace(/\u0001/g, '(?:.*/)?').replace(/\u0002/g, '.*') + '$')
-const matchAny = (p, globs) => globs.find((g) => globToRegExp(g).test(p))
 
 const cfg = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : {}
 const gov = cfg.governance || {}
@@ -47,19 +44,18 @@ if (base === releaseBranch && head !== baseBranch && !/^hotfix\//.test(head)) {
 }
 
 // 3. Changed files
-const diff = execSync(`git diff --name-status origin/${base}...HEAD`, { encoding: 'utf8' }).trim()
+const diff = execFileSync('git', ['diff', '--name-status', `origin/${base}...HEAD`], { encoding: 'utf8' }).trim()
 const changes = diff ? diff.split('\n').map((l) => l.split('\t')) : []
-const govPaths = gov.askPaths || ['.claude/**', 'AGENTS.md', '**/AGENTS.md', 'CLAUDE.md', 'REVIEW.md', '.github/**', '**/package.json']
+const govPaths = gov.askPaths || DEFAULT_ASK_PATHS
 const immutable = cfg.immutableWhenCommitted || []
 const govTouched = []
 for (const [status, p1, p2] of changes) {
   const target = p2 || p1
   for (const p of [p1, p2].filter(Boolean)) {
-    const b = path.posix.basename(p)
-    if (/^\.env(\..+)?$/.test(b) && b !== '.env.example' && status !== 'D') errors.push(`Env file committed: ${p}`)
+    if (isSecretEnvFile(path.posix.basename(p), cfg.allowEnvExample !== false, IGNORE_CASE) && status !== 'D') errors.push(`Env file committed: ${p}`)
   }
-  if (/^(M|D|R)/.test(status) && matchAny(p1, immutable)) errors.push(`Committed immutable file changed (${status}): ${p1}. Create a new file (e.g. a new migration) instead.`)
-  const hit = matchAny(target, govPaths)
+  if (/^(M|D|R)/.test(status) && matchAny(p1, immutable, IGNORE_CASE)) errors.push(`Committed immutable file changed (${status}): ${p1}. Create a new file (e.g. a new migration) instead.`)
+  const hit = matchAny(target, govPaths, IGNORE_CASE)
   if (hit) govTouched.push(target)
 }
 if (govTouched.length) {

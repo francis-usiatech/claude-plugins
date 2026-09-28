@@ -42,6 +42,11 @@ const existing = mine[mine.length - 1]
 const res = existing
   ? await fetch(`${api}/repos/${repo}/issues/comments/${existing.id}`, { method: 'PATCH', headers, body: JSON.stringify({ body }) })
   : await fetch(`${api}/repos/${repo}/issues/${pr}/comments`, { method: 'POST', headers, body: JSON.stringify({ body }) })
-if (!res.ok) { console.error(`Failed to post verdict: ${res.status} ${await res.text()}`); process.exit(1) }
-if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, body + '\n')
-console.log(`Verdict ${v.verdict} posted for ${sha}.`)
+// exitCode rather than process.exit(): exiting while fetch sockets are still closing crashes Node on Windows.
+if (!res.ok) {
+  console.error(`Failed to post verdict: ${res.status} ${await res.text()}`)
+  process.exitCode = 1
+} else {
+  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, body + '\n')
+  console.log(`Verdict ${v.verdict} posted for ${sha}.`)
+}

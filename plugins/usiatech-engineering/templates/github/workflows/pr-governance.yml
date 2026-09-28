@@ -6,6 +6,7 @@ name: PR governance
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, edited, labeled, unlabeled]
+    # Must match .claude/engineering.json → git.baseBranch and git.releaseBranch (setup-engineering sets these).
     branches: [develop, main]
 
 permissions:
