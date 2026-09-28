@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Runs the same verification gate as the local `verify` skill, from .claude/engineering.json.
 // Env: BASE_REF. Entries: { name, run, when?: [path prefixes], expectNoDiff?: [paths] }
-import { execSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync, existsSync, appendFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,7 +14,7 @@ const configPath = path.join(govRoot, '.claude/engineering.json')
 
 const cfg = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : {}
 const base = process.env.BASE_REF
-const changed = base ? execSync(`git diff --name-only origin/${base}...HEAD`, { encoding: 'utf8' }).split('\n').filter(Boolean) : []
+const changed = base ? execFileSync('git', ['diff', '--name-only', `origin/${base}...HEAD`], { encoding: 'utf8' }).split('\n').filter(Boolean) : []
 const hasPkg = existsSync('package.json')
 const steps = [...(cfg.verify || []), ...(cfg.verifyConditional || []).filter((s) => (s.when || []).some((w) => changed.some((f) => f.startsWith(w))))]
 

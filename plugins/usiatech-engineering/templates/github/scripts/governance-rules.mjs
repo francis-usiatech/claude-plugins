@@ -1,0 +1,61 @@
+// Shared governance rules for the usiatech-engineering plugin: the single source for the local
+// guard hook (hooks/scripts/governance-policy.mjs) and the PR governance scripts in this folder.
+// setup-engineering copies this folder into .github/scripts/, so CI reads the base-branch copy.
+// Repos extend these defaults in .claude/engineering.json → governance.{denyCommands, askCommands, askPaths}.
+
+// ignoreCase: set on case-insensitive file systems (Windows, macOS), where `.ENV` and `.env` are the same file.
+export const globToRegExp = (g, ignoreCase = false) => new RegExp('^' + g
+  .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+  .replace(/\*\*\//g, '\u0001')
+  .replace(/\*\*/g, '\u0002')
+  .replace(/\*/g, '[^/]*')
+  .replace(/\?/g, '[^/]')
+  .replace(/\u0001/g, '(?:.*/)?')
+  .replace(/\u0002/g, '.*') + '$', ignoreCase ? 'i' : '')
+export const matchAny = (rel, globs, ignoreCase = false) => globs.find((g) => globToRegExp(g, ignoreCase).test(rel))
+
+// .env, .env.local, .env.production ... hold secrets. .env.example is allowed unless a repo opts out.
+export const isSecretEnvFile = (basename, allowEnvExample = true, ignoreCase = false) => {
+  const b = ignoreCase ? basename.toLowerCase() : basename
+  return /^\.env(\..+)?$/.test(b) && !(b === '.env.example' && allowEnvExample)
+}
+
+export const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// Config shape checks shared by the guard and CI.
+export const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
+export const isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === 'string')
+
+// Command rules: [reason, regex source], matched case-insensitively against the full Bash command.
+export const DENY_COMMANDS = [
+  ['destructive delete of root/home/workspace', String.raw`\brm\s+-[a-z]*(rf|fr)[a-z]*\s+(\/(\s|$)|~|\$HOME|\*|\.\/?(\s|$))`],
+  ['piping a download into a shell', String.raw`\b(curl|wget)\b[^|;&]*\|\s*(sudo\s+)?(ba|z|da)?sh\b`],
+  ['bypassing git hooks', String.raw`--no-verify\b`],
+  ['disk/filesystem destruction', String.raw`\b(mkfs(\.\w+)?|dd\s+[^|]*of=\/dev\/|:\(\)\s*\{\s*:\|:&\s*\};:)`],
+  ['dropping a database or schema', String.raw`\bdrop\s+(database|schema)\b`],
+  ['machine shutdown/reboot', String.raw`\b(shutdown|reboot|halt|poweroff)\b`],
+  ['world-writable recursive permissions', String.raw`\bchmod\s+-R\s+0?777\b`],
+]
+export const ASK_COMMANDS = [
+  ['force push', String.raw`\bgit\s+push\b.*(\s--force(-with-lease)?\b|\s-f\b|\s["']?\+\S)`],
+  ['discarding work (reset/clean/restore/checkout)', String.raw`\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|restore\s+\.|checkout\s+--\s+\.|stash\s+(drop|clear))`],
+  ['deleting a branch', String.raw`\bgit\s+(branch\s+-D|push\s+\S+\s+--delete|push\s+\S+\s+:\S)`],
+  ['rewriting history', String.raw`\bgit\s+(rebase|filter-branch|filter-repo|commit\s+--amend)\b`],
+  ['recursive delete', String.raw`\brm\s+-[a-z]*r`],
+  ['destructive SQL', String.raw`\b(drop\s+table|truncate\s+|delete\s+from\s+\w+\s*(;|$|"|'))`],
+  ['weakening row-level security', String.raw`(disable\s+row\s+level\s+security|no\s+force\s+row\s+level\s+security|bypassrls)`],
+  ['resetting/dropping a database', String.raw`\b(prisma\s+migrate\s+reset|drizzle-kit\s+drop|db:reset|db:drop)\b`],
+  ['adding a dependency', String.raw`\b(npm\s+(i|install|add)\s+[^-\s]|pnpm\s+(add|install\s+[^-\s])|yarn\s+add|pip3?\s+install|npx\s+-y\s)`],
+  ['publishing a package', String.raw`\b(npm|pnpm|yarn)\s+publish\b`],
+  ['remote host / infrastructure change', String.raw`\b(ssh|scp|rsync)\s|\b(terraform\s+(apply|destroy)|kubectl\s+(apply|delete)|ansible-playbook\b(?!.*--check)|firebase\s+deploy|docker\s+(system\s+prune|volume\s+rm))`],
+  ['reading secrets', String.raw`\b(cat|less|more|head|tail|type|bat)\s+[^|;&]*\.env(?!\.example)(\.[\w-]+)?(\s|$)|\bprintenv\b`],
+  ['elevated privileges', String.raw`\bsudo\s`],
+  ['world-writable permissions', String.raw`\bchmod\s+(-R\s+)?0?777\b`],
+]
+
+// Governance, CI and dependency files: the guard asks before editing them, CI requires the approval label.
+export const DEFAULT_ASK_PATHS = ['.claude/**', 'AGENTS.md', '**/AGENTS.md', 'CLAUDE.md', 'REVIEW.md', '.github/**', '**/package.json']
+// Generated or managed files: the guard denies edits (regenerate instead).
+export const DEFAULT_PROTECTED_PATHS = ['generated/**', '**/generated/**']
+// Files the guard's own bookkeeping writes; never subject to ask/plan checks.
+export const GUARD_EXEMPT_PATHS = ['.claude/plans/**', '.claude/governance-log.jsonl']

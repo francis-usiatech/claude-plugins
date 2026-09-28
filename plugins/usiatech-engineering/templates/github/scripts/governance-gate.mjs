@@ -26,7 +26,9 @@ const aiSkipped = result('ai-governance-review') === 'skipped'
 let verdict = null
 let page = 1
 for (; !aiSkipped;) {
-  const list = await fetch(`${api}/repos/${repo}/issues/${pr}/comments?per_page=100&page=${page}`, { headers }).then((r) => r.json())
+  const res = await fetch(`${api}/repos/${repo}/issues/${pr}/comments?per_page=100&page=${page}`, { headers })
+  if (!res.ok) { problems.push(`Could not read PR comments to find the verdict: GitHub API returned ${res.status}. Re-run the gate.`); break }
+  const list = await res.json()
   if (!Array.isArray(list) || !list.length) break
   for (const c of list) {
     if (c.user?.login !== 'github-actions[bot]') continue
@@ -46,4 +48,5 @@ else if (verdict === 'FLAG' && !labels.includes(approvalLabel)) problems.push(`A
 const out = ['## Governance gate', '', `AI verdict: **${verdict || (aiSkipped ? 'skipped' : 'none')}**`, '', ...notes.map((n) => `- ⏭️ ${n}`), ...(problems.length ? problems.map((p) => `- ❌ ${p}`) : ['- ✅ Governance gate passed.']), ''].join('\n')
 console.log(out)
 if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, out)
-process.exit(problems.length ? 1 : 0)
+// exitCode rather than process.exit(): exiting while fetch sockets are still closing crashes Node on Windows.
+process.exitCode = problems.length ? 1 : 0

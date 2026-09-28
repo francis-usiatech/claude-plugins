@@ -1,0 +1,5 @@
+.omc/
+.serena/
+node_modules/
+.claude/governance-log.jsonl
+.claude/plans/active.md
