@@ -152,8 +152,13 @@ describe('evaluate: file edits', () => {
   })
 
   it('should never ask about the guard bookkeeping files', () => {
-    assert.equal(edit('.claude/plans/active.md'), null)
     assert.equal(edit('.claude/governance-log.jsonl'), null)
+    assert.equal(edit('.claude/plans/archive/2026-09-28-guard.md'), null)
+  })
+
+  it('should ask before editing the active plan, which sets the edit scope', () => {
+    assert.match(edit('.claude/plans/active.md').reason, /approved plan sets the edit scope/)
+    assert.equal(edit('.claude/plans/active.md', { cfg: { governance: { requirePlan: true } } }).decision, 'ask')
   })
 
   it('should ask for edits outside the project folder', () => {
@@ -371,6 +376,7 @@ describe('evaluate: case-insensitive file systems', () => {
     assert.equal(ci('Generated/x.ts').decision, 'deny')
     assert.equal(ci('Agents.MD').decision, 'ask')
     assert.equal(ci('.Claude/engineering.json').decision, 'ask')
+    assert.match(ci('.claude/Plans/Active.md').reason, /approved plan sets the edit scope/)
   })
 
   it('should match exactly when case-sensitive', () => {

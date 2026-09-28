@@ -57,5 +57,7 @@ export const ASK_COMMANDS = [
 export const DEFAULT_ASK_PATHS = ['.claude/**', 'AGENTS.md', '**/AGENTS.md', 'CLAUDE.md', 'REVIEW.md', '.github/**', '**/package.json']
 // Generated or managed files: the guard denies edits (regenerate instead).
 export const DEFAULT_PROTECTED_PATHS = ['generated/**', '**/generated/**']
+// The approved plan sets the edit scope, so the guard always asks before it changes (checked before the exemptions).
+export const PLAN_PATH = '.claude/plans/active.md'
 // Files the guard's own bookkeeping writes; never subject to ask/plan checks.
 export const GUARD_EXEMPT_PATHS = ['.claude/plans/**', '.claude/governance-log.jsonl']

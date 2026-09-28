@@ -5,7 +5,7 @@ description: Records the plan the user has approved as .claude/plans/active.md s
 
 # Approve, update or close a plan
 
-The approved plan is the scope baseline. The governance guard asks for confirmation on any file edit outside the plan's **Files** list. The `governance-reviewer` agent checks the finished diff against it.
+The approved plan is the scope baseline. The governance guard asks for confirmation on any file edit outside the plan's **Files** list. The `governance-reviewer` agent checks the finished diff against it. Because the plan sets the scope, the guard also asks before every write to `.claude/plans/active.md`, so expect a confirmation prompt when you record or update it.
 
 ## Record (after the user approves)
 1. If `.claude/plans/active.md` already exists and is unfinished, ask whether to close it or replace it.
