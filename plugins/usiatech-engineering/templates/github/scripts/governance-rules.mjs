@@ -22,6 +22,10 @@ export const isSecretEnvFile = (basename, allowEnvExample = true, ignoreCase = f
 
 export const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
+// Config shape checks shared by the guard and CI.
+export const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
+export const isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === 'string')
+
 // Command rules: [reason, regex source], matched case-insensitively against the full Bash command.
 export const DENY_COMMANDS = [
   ['destructive delete of root/home/workspace', String.raw`\brm\s+-[a-z]*(rf|fr)[a-z]*\s+(\/(\s|$)|~|\$HOME|\*|\.\/?(\s|$))`],
@@ -33,7 +37,7 @@ export const DENY_COMMANDS = [
   ['world-writable recursive permissions', String.raw`\bchmod\s+-R\s+0?777\b`],
 ]
 export const ASK_COMMANDS = [
-  ['force push', String.raw`\bgit\s+push\b.*(\s--force(-with-lease)?\b|\s-f\b|\s\+\S)`],
+  ['force push', String.raw`\bgit\s+push\b.*(\s--force(-with-lease)?\b|\s-f\b|\s["']?\+\S)`],
   ['discarding work (reset/clean/restore/checkout)', String.raw`\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|restore\s+\.|checkout\s+--\s+\.|stash\s+(drop|clear))`],
   ['deleting a branch', String.raw`\bgit\s+(branch\s+-D|push\s+\S+\s+--delete|push\s+\S+\s+:\S)`],
   ['rewriting history', String.raw`\bgit\s+(rebase|filter-branch|filter-repo|commit\s+--amend)\b`],

@@ -8,7 +8,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import {
-  matchAny, isSecretEnvFile, escapeRegExp, DENY_COMMANDS, ASK_COMMANDS,
+  matchAny, isSecretEnvFile, escapeRegExp, isPlainObject, isStringArray, DENY_COMMANDS, ASK_COMMANDS,
   DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS,
 } from '../../templates/github/scripts/governance-rules.mjs'
 
@@ -39,9 +39,6 @@ export const loadConfig = (root) => {
   }
 }
 
-const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
-const isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === 'string')
-
 /**
  * Checks the shape of the keys the guard reads. Invalid keys are dropped (so defaults apply) and
  * reported; invalid command rules are dropped one by one. Never throws.
@@ -54,6 +51,12 @@ export const sanitizeConfig = (raw) => {
   if (!isPlainObject(gov)) { problems.push('"governance" must be an object'); gov = {} }
   gov = { ...gov }
   cfg.governance = gov
+  if (cfg.git != null && !isPlainObject(cfg.git)) { problems.push('"git" must be an object'); delete cfg.git }
+  if (cfg.git?.releaseBranch != null && (typeof cfg.git.releaseBranch !== 'string' || !cfg.git.releaseBranch)) {
+    problems.push('"git.releaseBranch" must be a non-empty string')
+    cfg.git = { ...cfg.git }
+    delete cfg.git.releaseBranch
+  }
 
   for (const [obj, key, label] of [[cfg, 'protectedPaths'], [cfg, 'immutableWhenCommitted'], [gov, 'askPaths', 'governance.askPaths'], [gov, 'protectedBranches', 'governance.protectedBranches']]) {
     if (obj[key] == null) continue
@@ -96,18 +99,21 @@ export const planFiles = (root) => {
 
 const decision = (d, reason, target) => ({ decision: d, reason, target })
 
-// A branch is targeted when it appears as a whole refspec token: `origin main`, `HEAD:main`, `refs/heads/main`.
+// A branch is targeted when it appears as a whole refspec token: `origin main`, `HEAD:main`, `refs/heads/main`,
+// optionally quoted (`"main"`, `HEAD:"main"`). Forced refspecs (`+main`) fall through to the force-push ask rule.
+// A quoted push option that equals the branch name (`-m "main"`) also matches; that only adds a prompt.
 const pushTargets = (cmd, branch) =>
-  new RegExp(String.raw`\bgit\s+push\b[^;&|]*(\s|:|refs/heads/)${escapeRegExp(branch)}(?=\s|$|[;&|])`).test(cmd)
+  new RegExp(String.raw`\bgit\s+push\b[^;&|]*(\s["']?|:["']?|refs/heads/)${escapeRegExp(branch)}["']?(?=\s|$|[;&|])`).test(cmd)
 
 const decideBash = (cmd, { cfg, gov, repoRules }, git, root) => {
   for (const [why, re] of [...DENY_COMMANDS, ...repoRules.deny]) {
     if (new RegExp(re, 'i').test(cmd)) return decision('deny', `Blocked: ${why}.`, cmd)
   }
   const protectedBranches = gov.protectedBranches || [cfg.git?.releaseBranch || 'main', 'master']
-  if (/\bgit\s+(commit|merge|push)\b/.test(cmd)) {
+  const gitAction = cmd.match(/\bgit\s+(commit|merge|push)\b/)
+  if (gitAction) {
     const branch = git.currentBranch(root)
-    if (branch && protectedBranches.includes(branch)) return decision('ask', `Git ${cmd.match(/\bgit\s+(\w+)/)[1]} while on protected branch "${branch}". Work should happen on a feature branch.`, cmd)
+    if (branch && protectedBranches.includes(branch)) return decision('ask', `Git ${gitAction[1]} while on protected branch "${branch}". Work should happen on a feature branch.`, cmd)
     for (const b of protectedBranches) {
       if (pushTargets(cmd, b)) return decision('ask', `Push to protected branch "${b}".`, cmd)
     }
@@ -168,7 +174,10 @@ export const evaluate = (input, { root, cfg = {}, configError = null, git = gitP
   } else if (EDIT_TOOLS.includes(tool)) {
     target = ti.file_path || ti.notebook_path || ''
     if (!target) return null
-    result = decideEdit(target, safe, git, root, pathApi, caseInsensitive)
+    if (typeof target !== 'string') {
+      target = JSON.stringify(target)
+      result = decision('ask', 'The edit target is not a file path string. Confirm the edit.', target)
+    } else result = decideEdit(target, safe, git, root, pathApi, caseInsensitive)
   } else return null
 
   // Default deny rules still hold with a broken config; anything else becomes a confirmation.

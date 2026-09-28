@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, existsSync, appendFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { matchAny, isSecretEnvFile, DEFAULT_ASK_PATHS } from './governance-rules.mjs'
+import { matchAny, isSecretEnvFile, isPlainObject, isStringArray, DEFAULT_ASK_PATHS } from './governance-rules.mjs'
 
 // Developers check out on case-insensitive file systems, where `.ENV` or `Agents.MD` is the same file.
 const IGNORE_CASE = true
@@ -16,23 +16,61 @@ const IGNORE_CASE = true
 const govRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const configPath = path.join(govRoot, '.claude/engineering.json')
 
-const cfg = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : {}
-const gov = cfg.governance || {}
-const git = cfg.git || {}
-const baseBranch = git.baseBranch || 'develop'
-const releaseBranch = git.releaseBranch || 'main'
-const approvalLabel = gov.approvalLabel || 'governance-approved'
+const errors = []
+const notes = []
+
+// A broken base-branch config fails the checks with a readable reason; the defaults apply for the bad keys.
+const configError = (msg) => errors.push(`Base-branch .claude/engineering.json: ${msg}`)
+const readConfig = () => {
+  if (!existsSync(configPath)) return {}
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, 'utf8'))
+    if (isPlainObject(parsed)) return parsed
+    configError('not a JSON object.')
+  } catch (e) {
+    configError(`could not be parsed: ${e.message}`)
+  }
+  return {}
+}
+const objectKey = (obj, key) => {
+  if (obj[key] == null || isPlainObject(obj[key])) return obj[key] || {}
+  configError(`"${key}" must be an object.`)
+  return {}
+}
+const stringValue = (obj, key, label, fallback) => {
+  if (obj[key] == null) return fallback
+  if (typeof obj[key] === 'string' && obj[key]) return obj[key]
+  configError(`"${label}" must be a non-empty string.`)
+  return fallback
+}
+const stringList = (obj, key, label, fallback) => {
+  if (obj[key] == null) return fallback
+  if (isStringArray(obj[key])) return obj[key]
+  configError(`"${label}" must be an array of strings.`)
+  return fallback
+}
+
+const DEFAULT_REF_PATTERN = String.raw`(\bC\d{1,2}\b|\bFR-\d{2}\b|\bAC-\d{2}\b|\bADR-\d{4}\b|\bD\d{1,2}\b|§\s?\d+|#\d+)`
+const cfg = readConfig()
+const gov = objectKey(cfg, 'governance')
+const git = objectKey(cfg, 'git')
+const baseBranch = stringValue(git, 'baseBranch', 'git.baseBranch', 'develop')
+const releaseBranch = stringValue(git, 'releaseBranch', 'git.releaseBranch', 'main')
+const approvalLabel = stringValue(gov, 'approvalLabel', 'governance.approvalLabel', 'governance-approved')
 
 const body = (process.env.PR_BODY || '').replace(/<!--[\s\S]*?-->/g, '')
 const labels = JSON.parse(process.env.PR_LABELS || '[]')
 const base = process.env.BASE_REF
 const head = process.env.HEAD_REF
 const approved = labels.includes(approvalLabel)
-const errors = []
-const notes = []
 
 // 1. Requirement references
-const refRe = new RegExp(gov.requirementRefPattern || String.raw`(\bC\d{1,2}\b|\bFR-\d{2}\b|\bAC-\d{2}\b|\bADR-\d{4}\b|\bD\d{1,2}\b|§\s?\d+|#\d+)`)
+let refRe = new RegExp(DEFAULT_REF_PATTERN)
+try {
+  refRe = new RegExp(stringValue(gov, 'requirementRefPattern', 'governance.requirementRefPattern', DEFAULT_REF_PATTERN))
+} catch (e) {
+  configError(`"governance.requirementRefPattern" is not a valid regex: ${e.message}`)
+}
 const section = body.split(/^##\s+/m).find((s) => /^requirement references/i.test(s)) || ''
 if (!refRe.test(section)) {
   errors.push('PR description has no requirement reference under "## Requirement references" (intent §, C-number, FR-/AC-, ADR-NNNN, D-item or #issue).')
@@ -46,8 +84,8 @@ if (base === releaseBranch && head !== baseBranch && !/^hotfix\//.test(head)) {
 // 3. Changed files
 const diff = execFileSync('git', ['diff', '--name-status', `origin/${base}...HEAD`], { encoding: 'utf8' }).trim()
 const changes = diff ? diff.split('\n').map((l) => l.split('\t')) : []
-const govPaths = gov.askPaths || DEFAULT_ASK_PATHS
-const immutable = cfg.immutableWhenCommitted || []
+const govPaths = stringList(gov, 'askPaths', 'governance.askPaths', DEFAULT_ASK_PATHS)
+const immutable = stringList(cfg, 'immutableWhenCommitted', 'immutableWhenCommitted', [])
 const govTouched = []
 for (const [status, p1, p2] of changes) {
   const target = p2 || p1

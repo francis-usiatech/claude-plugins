@@ -68,6 +68,27 @@ describe('evaluate: protected branches', () => {
     assert.match(bash('git push origin main').reason, /Push to protected branch "main"/)
   })
 
+  it('should ask for a push that targets main with a quoted refspec', () => {
+    for (const cmd of ['git push origin "main"', "git push origin 'main'", 'git push origin "HEAD:main"', 'git push origin HEAD:"main"', "git push origin 'refs/heads/main' && echo ok"]) {
+      assert.equal(bash(cmd)?.decision, 'ask', cmd)
+    }
+  })
+
+  it('should flag a quoted force push as a force push', () => {
+    assert.match(bash('git push origin "+main"').reason, /force push/)
+    assert.match(bash("git push origin '+feature/x'").reason, /force push/)
+  })
+
+  it('should not treat branches that merely contain the name as protected', () => {
+    for (const cmd of ['git push origin feature/main-x', 'git push origin "feature/main"', 'git push origin mainline']) {
+      assert.equal(bash(cmd), null, cmd)
+    }
+  })
+
+  it('should name the guarded git action, not the first git command', () => {
+    assert.match(bash('git add . && git commit -m x', { branch: 'main' }).reason, /^Git commit while on protected branch/)
+  })
+
   it('should use governance.protectedBranches when configured', () => {
     const cfg = { governance: { protectedBranches: ['release'] } }
     assert.equal(bash('git commit -m x', { branch: 'main', cfg }), null)
@@ -271,6 +292,8 @@ describe('evaluate: wrong-type config values', () => {
     ['denyCommands as an object', { governance: { denyCommands: { pattern: 'x' } } }, /"governance\.denyCommands" must be an array/],
     ['denyCommands of plain strings', { governance: { denyCommands: ['deploy:prod'] } }, /"governance\.denyCommands\[0\]" needs a non-empty string "pattern"/],
     ['askCommands with an empty pattern', { governance: { askCommands: [{ pattern: '' }] } }, /"governance\.askCommands\[0\]"/],
+    ['git as a string', { git: 'main' }, /"git" must be an object/],
+    ['releaseBranch as a number', { git: { releaseBranch: 42 } }, /"git\.releaseBranch" must be a non-empty string/],
   ]
   for (const [name, cfg, re] of cases) {
     it(`should ask and name the problem for ${name}`, () => {
@@ -293,6 +316,22 @@ describe('evaluate: wrong-type config values', () => {
   it('should keep valid repo rules when a sibling rule is invalid', () => {
     const cfg = { governance: { denyCommands: [{ pattern: 'deploy:prod', reason: 'prod deploy' }, 'bad'] } }
     assert.equal(bash('pnpm deploy:prod', { cfg }).reason, 'Blocked: prod deploy.')
+  })
+
+  it('should fall back to main when releaseBranch is invalid', () => {
+    const r = bash('git push origin main', { cfg: { git: { releaseBranch: 42 } } })
+    assert.match(r.reason, /Push to protected branch "main"/)
+    assert.match(r.reason, /"git\.releaseBranch" must be a non-empty string/)
+  })
+
+  it('should ask instead of throwing when the edit path is not a string', () => {
+    for (const file_path of [42, { path: 'a.ts' }, ['a.ts']]) {
+      const r = evaluate({ tool_name: 'Write', tool_input: { file_path } }, { root: tempDir(), git: fakeGit() })
+      assert.equal(r?.decision, 'ask', JSON.stringify(file_path))
+      assert.match(r.reason, /not a file path string/)
+    }
+    const broken = evaluate({ tool_name: 'Write', tool_input: { file_path: 42 } }, { root: tempDir(), git: fakeGit(), configError: 'not a JSON object' })
+    assert.match(broken.reason, /not a file path string.*Config problem/)
   })
 
   it('should allow an event without a path even when the config is broken', () => {

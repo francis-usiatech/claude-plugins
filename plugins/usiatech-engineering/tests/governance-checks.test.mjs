@@ -2,7 +2,7 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
-import { makeRepo, makeGovTree, runNode, cleanupTempDirs } from './helpers.mjs'
+import { makeRepo, makeGovTree, runNode, writeFiles, cleanupTempDirs } from './helpers.mjs'
 
 after(cleanupTempDirs)
 
@@ -133,6 +133,43 @@ describe('governance-checks', () => {
     const r = await runChecks({ repo, base: 'develop$(touch pwned)' })
     assert.notEqual(r.code, 0, 'unknown ref must fail')
     assert.equal(existsSync(path.join(repo, 'pwned')), false)
+  })
+})
+
+describe('governance-checks: invalid base-branch config', () => {
+  it('should fail with a readable reason when the config is not valid JSON', async () => {
+    const repo = makeRepo({ headFiles: { 'src/a.ts': 'x' } })
+    const scripts = makeGovTree()
+    writeFiles(path.resolve(scripts, '../..'), { '.claude/engineering.json': '{ "governance": ' })
+    const r = await runNode(path.join(scripts, 'governance-checks.mjs'), {
+      cwd: repo,
+      env: { PR_BODY: GOOD_BODY, PR_LABELS: '[]', BASE_REF: 'develop', HEAD_REF: 'feature/x' },
+    })
+    assert.equal(r.code, 1)
+    assert.match(r.stdout, /Base-branch \.claude\/engineering\.json: could not be parsed/)
+  })
+
+  const cases = [
+    ['config as an array', [], /not a JSON object/],
+    ['governance as a string', { governance: 'x' }, /"governance" must be an object/],
+    ['releaseBranch as a number', { git: { releaseBranch: 42 } }, /"git\.releaseBranch" must be a non-empty string/],
+    ['askPaths as a string', { governance: { askPaths: 'AGENTS.md' } }, /"governance\.askPaths" must be an array of strings/],
+    ['immutableWhenCommitted as a string', { immutableWhenCommitted: 'x/*.sql' }, /"immutableWhenCommitted" must be an array of strings/],
+    ['an invalid requirementRefPattern', { governance: { requirementRefPattern: '(' } }, /"governance\.requirementRefPattern" is not a valid regex/],
+  ]
+  for (const [name, config, re] of cases) {
+    it(`should fail and name the problem for ${name}`, async () => {
+      const repo = makeRepo({ headFiles: { 'src/a.ts': 'x' } })
+      const r = await runChecks({ repo, config })
+      assert.equal(r.code, 1, r.stderr)
+      assert.match(r.stdout, re)
+    })
+  }
+
+  it('should still apply the default rules when a key is invalid', async () => {
+    const repo = makeRepo({ headFiles: { 'AGENTS.md': 'x' } })
+    const r = await runChecks({ repo, config: { governance: { askPaths: 'nope' } } })
+    assert.match(r.stdout, /Governance\/CI\/dependency files changed: AGENTS\.md/)
   })
 })
 

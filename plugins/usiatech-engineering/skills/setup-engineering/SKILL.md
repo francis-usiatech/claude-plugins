@@ -11,6 +11,7 @@ description: Sets up a repository for the usiatech-engineering plugin by creatin
    - `AGENTS.md` "Definition of done", git workflow and generated/immutable paths
    - user guide location
    - integration branch: run `git ls-remote --heads origin dev develop`. Use whichever exists for `git.baseBranch`. If both or neither exist, ask the user; don't assume the template's `develop`.
+   - release branch: run `git ls-remote --heads origin main master` (or `git remote show origin` for the default branch). Use whichever exists for `git.releaseBranch`. If both or neither exist, ask the user; don't assume `main`.
 3. Draft `.claude/engineering.json` with the repo's real commands, paths and branches. Show it and write it after approval.
 4. Governance:
    - Copy `${CLAUDE_PLUGIN_ROOT}/templates/governance.md` to `.claude/governance.md` and ask the user for repo-specific rules. Leave sections empty rather than invent rules.

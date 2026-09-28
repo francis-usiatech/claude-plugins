@@ -4,7 +4,7 @@
   "type": "module",
   "description": "UsiaTech Claude Code plugin marketplace. Tests use Node's built-in runner; there are no dependencies.",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "test": "node --test"

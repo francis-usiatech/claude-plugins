@@ -75,12 +75,12 @@ Scripts and rules are read from the **base branch** (`_gov/`), so a PR can't wea
 
 All default rules live in one module, `templates/github/scripts/governance-rules.mjs`. The guard hook imports the plugin's copy. `setup-engineering` copies it into `.github/scripts/` with the CI scripts, which read the repo's copy. The two match at install time. After upgrading the plugin, re-copy `templates/github/scripts/` or the PR checks keep the older rules.
 
-Path checks ignore case on Windows and macOS (`.ENV` is treated as `.env`), and CI always ignores case. A config value of the wrong type (e.g. a string where a list is expected) is reported the same way as malformed JSON, and the defaults apply for that key.
+Path checks ignore case on Windows and macOS (`.ENV` is treated as `.env`), and CI always ignores case. A config value of the wrong type (e.g. a string where a list is expected) is reported the same way as malformed JSON, and the defaults apply for that key. The guard turns the problem into a confirmation prompt. The CI checks (`governance-checks`) fail with the problem named, so a broken base-branch config can't pass a PR.
 
 The guard fails open on internal errors, so a bug can't lock a session. Each failure is logged as `"decision": "error"` in `governance-log.jsonl` and printed to stderr, and the reviewer reports these entries. `ask` depends on Claude Code's permission prompt: in a fully auto-approved session, rely on `deny` rules and the reviewer.
 
 ## Development
-Tests use Node's built-in runner and have no dependencies. From the marketplace root run `npm test`. They cover the shared rules, the guard (as a function and as a hook subprocess), and each CI script against temporary git repos and a local GitHub API stub. `.github/workflows/test.yml` runs them on Ubuntu and Windows with Node 18 and 22.
+Tests use Node's built-in runner and have no dependencies. From the marketplace root run `npm test`. They cover the shared rules, the guard (as a function and as a hook subprocess), and each CI script against temporary git repos and a local GitHub API stub. `.github/workflows/test.yml` runs them on Ubuntu and Windows with Node 20 and 22.
 
 ## What stays in each repo
 - `AGENTS.md` (canonical rules) + `CLAUDE.md` (`@AGENTS.md` + Claude-only notes) + folder `AGENTS.md` files.
@@ -89,14 +89,14 @@ Tests use Node's built-in runner and have no dependencies. From the marketplace 
   - HEI: `new-api-endpoint`, `db-change`, `new-background-job`, `new-adr`, `security-tenancy-auditor`, `docs-sync`
 
 ## Requirements
-Node ≥ 18 on the machine running Claude Code (used by the hook). Git.
+Node ≥ 20 on the machine running Claude Code (used by the hook). Git.
 
 ## Versioning
 Semver. Record changes below.
 
 | Version | Change |
 |---|---|
-| 0.5.0 | Guard hardening: shared rules module (`governance-rules.mjs`) used by the guard and CI; guard logic split into `governance-policy.mjs`; git calls no longer go through a shell (guard, `governance-checks`, `run-verify`); a malformed `engineering.json` or invalid command pattern now asks instead of silently dropping repo rules; fail-open errors are logged and reported by `governance-reviewer`; the guard also asks on `REVIEW.md` and all of `.github/**` (matching CI); `governance-gate`/`post-verdict` set `process.exitCode` instead of calling `process.exit()`; `setup-engineering` detects `dev` vs `develop`; wrong-type config values are reported instead of crashing the guard; edits on another Windows drive ask; path checks ignore case on Windows/macOS and in CI; protected-branch names are escaped and matched as whole refspecs; CI honours `allowEnvExample`; the gate reports GitHub API errors; test suite and test workflow. **Upgrading repos:** re-copy `templates/github/scripts/` into `.github/scripts/` (the scripts now import `governance-rules.mjs`). |
+| 0.5.0 | Guard hardening: shared rules module (`governance-rules.mjs`) used by the guard and CI; guard logic split into `governance-policy.mjs`; git calls no longer go through a shell (guard, `governance-checks`, `run-verify`); a malformed `engineering.json` or invalid command pattern now asks instead of silently dropping repo rules; fail-open errors are logged and reported by `governance-reviewer`; the guard also asks on `REVIEW.md` and all of `.github/**` (matching CI); `governance-gate`/`post-verdict` set `process.exitCode` instead of calling `process.exit()`; `setup-engineering` detects `dev` vs `develop`; wrong-type config values are reported instead of crashing the guard; edits on another Windows drive ask; path checks ignore case on Windows/macOS and in CI; protected-branch names are escaped and matched as whole refspecs, quoted or not; wrong-type `git` settings and non-string edit paths ask instead of crashing the guard; `governance-checks` reports a malformed or wrong-type base-branch config by name; CI honours `allowEnvExample`; `setup-engineering` detects `main` vs `master`; Node ≥ 20; the gate reports GitHub API errors; test suite and test workflow. **Upgrading repos:** re-copy `templates/github/scripts/` into `.github/scripts/` (the scripts now import `governance-rules.mjs`). |
 | 0.4.1 | CI kit fixes: scripts read `engineering.json` from the base-branch copy; an empty verify list fails the gate; `GOVERNANCE_AI_REVIEW=off` opt-out; base-branch files extracted outside the workspace for `verify-gate` |
 | 0.4.0 | Renamed from `nextascend-engineering` to `usiatech-engineering` (display name UsiaTech Engineering); no functional changes. Reinstall under the new name and uninstall the old one. |
 | 0.3.0 | PR governance CI kit (`templates/github/`: workflow, 4 scripts, PR template, CODEOWNERS), `REVIEW.md` example; reviewer applies `REVIEW.md`; `setup-engineering` installs CI; `approvalLabel`/`requirementRefPattern` config |
