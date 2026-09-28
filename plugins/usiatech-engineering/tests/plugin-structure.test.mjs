@@ -81,4 +81,7 @@ describe('plugin structure: step-2 components', () => {
   for (const a of ['silent-failure-reviewer', 'security-reviewer']) {
     it(`should ship agent "${a}"`, () => assert.ok(agents.includes(a)))
   }
+  for (const s of ['tdd']) {
+    it(`should ship skill "${s}"`, () => assert.ok(skills.includes(s)))
+  }
 })
