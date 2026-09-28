@@ -1,5 +1,5 @@
 {
-  "description": "Governance guard: denies catastrophic or rule-breaking actions, asks for confirmation on risky commands, governance/CI/dependency files and edits outside the approved plan; logs every decision to .claude/governance-log.jsonl.",
+  "description": "Governance guard: denies catastrophic or rule-breaking actions and edits that write secrets, asks for confirmation on risky commands, likely hard-coded credentials, governance/CI/dependency files and edits outside the approved plan; logs every decision to .claude/governance-log.jsonl.",
   "hooks": {
     "PreToolUse": [
       {

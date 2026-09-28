@@ -16,7 +16,7 @@ description: Sets up a repository for the usiatech-engineering plugin by creatin
 4. Governance:
    - Copy `${CLAUDE_PLUGIN_ROOT}/templates/governance.md` to `.claude/governance.md` and ask the user for repo-specific rules. Leave sections empty rather than invent rules.
    - Add `.claude/plans/active.md` and `.claude/governance-log.jsonl` to `.gitignore`. Archived plans stay committed.
-   - Confirm `reviewers` includes `governance-reviewer`.
+   - Confirm `reviewers` starts with `governance-reviewer` (stage 1) and includes `silent-failure-reviewer` and `security-reviewer`. For an existing config, propose adding any that are missing; don't add them silently.
 5. **PR governance (CI):**
    - Copy `${CLAUDE_PLUGIN_ROOT}/templates/github/` into `.github/` (workflow, scripts, PR template, CODEOWNERS). Copy the whole `scripts/` folder: the scripts import `governance-rules.mjs`.
    - In `.github/workflows/pr-governance.yml`, set `on.pull_request.branches` to `[<git.baseBranch>, <git.releaseBranch>]`.

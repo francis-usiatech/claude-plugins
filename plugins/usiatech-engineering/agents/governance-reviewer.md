@@ -55,15 +55,24 @@ You are the governance gate for this repository. You make sure work stays within
    For each, check whether the user explicitly approved it (plan or change log).
 6. **Integrity of the gate itself:** hooks disabled or bypassed (`--no-verify`, edits to `.claude/settings.json` or `engineering.json`), tests deleted or skipped to make the gate pass, or assertions weakened.
 
+**Confidence:** score every finding 0–100 for how sure you are that it is a real problem in this change.
+- 100: reproduced, or certain from the code.
+- 80: clear from the code with one small assumption.
+- 50: plausible but unverified.
+- Below 50: speculation.
+
+Report findings at 80 or above in the main output. List 50–79 briefly under **Low-confidence notes**, each with what would confirm it. Drop anything below 50. A blocking verdict needs at least one finding at 80 or above.
+
 ## Output
 **Verdict:** `PASS` · `FLAG` (needs the user's decision) · `BLOCK` (must be fixed or reverted before commit)
 
-| # | Severity | Finding | Evidence (`file:line`, log entry, command) | Rule / requirement | Recommended action |
-|---|---|---|---|---|---|
+| # | Severity | Confidence | Finding | Evidence (`file:line`, log entry, command) | Rule / requirement | Recommended action |
+|---|---|---|---|---|---|---|
 
 Then add:
 - **Traceability summary:** each changed area mapped to its requirement reference.
 - **Governance log summary:** counts of deny/ask/error entries, any `ask` that lacks plan coverage, and any `error` entry (the guard was not enforcing; return at least `FLAG` and name the time window affected).
+- **Low-confidence notes:** findings scored 50–79, each with what would confirm it.
 - **Checked:** the baseline documents you read.
 
 Be factual and concise. Don't speculate beyond the evidence. If the baseline is missing (no plan, no requirement references), say so and return `FLAG`.

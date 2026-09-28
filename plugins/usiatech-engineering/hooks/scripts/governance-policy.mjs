@@ -8,7 +8,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import {
-  matchAny, isSecretEnvFile, escapeRegExp, isPlainObject, isStringArray, DENY_COMMANDS, ASK_COMMANDS,
+  matchAny, isSecretEnvFile, escapeRegExp, isPlainObject, isStringArray, findSecret, DENY_COMMANDS, ASK_COMMANDS,
   DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH,
 } from '../../templates/github/scripts/governance-rules.mjs'
 
@@ -99,6 +99,16 @@ export const planFiles = (root) => {
 
 const decision = (d, reason, target) => ({ decision: d, reason, target })
 
+// The text an edit would write, so content rules can check it. Non-string parts are ignored rather than thrown on.
+const editedText = (tool, ti) => {
+  const parts = tool === 'Write' ? [ti.content]
+    : tool === 'Edit' ? [ti.new_string]
+    : tool === 'MultiEdit' ? (Array.isArray(ti.edits) ? ti.edits.map((e) => e?.new_string) : [])
+    : tool === 'NotebookEdit' ? [ti.new_source]
+    : []
+  return parts.filter((s) => typeof s === 'string').join('\n')
+}
+
 // A branch is targeted when it appears as a whole refspec token: `origin main`, `HEAD:main`, `refs/heads/main`,
 // optionally quoted (`"main"`, `HEAD:"main"`). Forced refspecs (`+main`) fall through to the force-push ask rule.
 // A quoted push option that equals the branch name (`-m "main"`) also matches; that only adds a prompt.
@@ -124,7 +134,7 @@ const decideBash = (cmd, { cfg, gov, repoRules }, git, root) => {
   return null
 }
 
-const decideEdit = (file, { cfg, gov }, git, root, p, ic) => {
+const decideEdit = (file, { cfg, gov }, git, root, p, ic, text = '') => {
   const relNative = p.relative(root, p.resolve(root, file))
   // On Windows a path on another drive comes back absolute rather than starting with "..".
   if (relNative.startsWith('..') || p.isAbsolute(relNative)) return decision('ask', `Edit outside the project folder (${file}).`, file)
@@ -139,6 +149,18 @@ const decideEdit = (file, { cfg, gov }, git, root, p, ic) => {
     }
   }
 
+  // Before the plan/exempt/ask checks: a secret is never fine, wherever it is written.
+  const secret = findSecret(text)
+  if (secret?.decision === 'deny') return decision('deny', `The edit writes what looks like a ${secret.why}. Keep secrets in env files or a secret manager.`, rel)
+  const scope = decideScope(rel, gov, root, ic)
+  if (!secret) return scope
+  // A credential ask must not hide a scope or governance ask; the user confirms both at once.
+  const credential = `The edit looks like it hard-codes a ${secret.why}. Confirm it is not a real secret.`
+  return decision('ask', scope ? `${credential} Also: ${scope.reason}` : credential, rel)
+}
+
+// Plan, governance-file and plan-scope checks for a project-relative path.
+const decideScope = (rel, gov, root, ic) => {
   // Otherwise a plan could widen its own Files list (e.g. to `**`) and unlock every later edit.
   if (matchAny(rel, [PLAN_PATH], ic)) return decision('ask', `The approved plan sets the edit scope. Changing ${PLAN_PATH} needs explicit confirmation.`, rel)
   if (matchAny(rel, GUARD_EXEMPT_PATHS, ic)) return null
@@ -179,7 +201,7 @@ export const evaluate = (input, { root, cfg = {}, configError = null, git = gitP
     if (typeof target !== 'string') {
       target = JSON.stringify(target)
       result = decision('ask', 'The edit target is not a file path string. Confirm the edit.', target)
-    } else result = decideEdit(target, safe, git, root, pathApi, caseInsensitive)
+    } else result = decideEdit(target, safe, git, root, pathApi, caseInsensitive, editedText(tool, ti))
   } else return null
 
   // Default deny rules still hold with a broken config; anything else becomes a confirmation.

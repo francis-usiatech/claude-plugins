@@ -11,9 +11,13 @@ Shared engineering workflow **and governance** for UsiaTech repositories (Waypoi
 | Skill | `user-guide-update` | Finds and updates affected user-guide pages and the changelog |
 | Skill | `setup-engineering` | Creates `.claude/engineering.json` for a repo and checks the AGENTS.md/CLAUDE.md layout |
 | Skill | `approve-plan` | Records the approved plan as the scope baseline (`.claude/plans/active.md`), updates it on approved scope changes, archives it when done |
+| Skill | `tdd` | Test-first cycles (red → green → refactor) with the failing and passing evidence for each cycle, then the verify gate |
+| Skill | `debug` | Root cause before fix: reproduce → localize (hypotheses, bisect) → reduce → approved fix via `tdd` → regression guard test |
 | Agent | `governance-reviewer` | Read-only gate: traces every change to a requirement, flags out-of-plan work, ADR/rule violations and dangerous actions; verdict PASS/FLAG/BLOCK |
 | Agent | `convention-reviewer` | Read-only review of a diff against the repo's root and folder AGENTS.md |
-| Hook | Governance guard (PreToolUse on Bash + edits) | **Deny:** catastrophic or rule-breaking actions. **Ask:** risky commands, governance/CI/dependency files, edits outside the approved plan. **Log:** every decision to `.claude/governance-log.jsonl` |
+| Agent | `silent-failure-reviewer` | Read-only review for swallowed errors, masking fallbacks, lost async errors, ignored exit codes and tests that can't fail |
+| Agent | `security-reviewer` | Read-only security review of a diff: injection, access control, input handling, secrets, SSRF/path traversal, crypto, dependencies and CI workflows |
+| Hook | Governance guard (PreToolUse on Bash + edits) | **Deny:** catastrophic or rule-breaking actions and edits that write secrets. **Ask:** risky commands, likely hard-coded credentials, governance/CI/dependency files, edits outside the approved plan. **Log:** every decision to `.claude/governance-log.jsonl` |
 
 ## Per-repo configuration: `.claude/engineering.json`
 Start from `templates/engineering.json` (or run the `setup-engineering` skill).
@@ -27,7 +31,7 @@ Start from `templates/engineering.json` (or run the `setup-engineering` skill).
 | `immutableWhenCommitted` | Globs editable only until committed (e.g. migrations) |
 | `allowEnvExample` | Allow edits to `.env.example` (default `true`) |
 | `userGuide` | Guide folder, changelog file, optional manifest |
-| `reviewers` | Agents `release` runs before committing (default `governance-reviewer`, `convention-reviewer`; repo-specific ones allowed) |
+| `reviewers` | Agents `release` runs before committing, in two stages: `governance-reviewer` first, then the rest in parallel (default adds `convention-reviewer`, `silent-failure-reviewer`, `security-reviewer`; repo-specific ones allowed) |
 | `governance` | `protectedBranches`, `askPaths`, `requirePlan`, extra `denyCommands` / `askCommands` (regex + reason), `rulesFile` |
 
 ## Governance model (layered)
@@ -63,6 +67,7 @@ Scripts and rules are read from the **base branch** (`_gov/`), so a PR can't wea
   - shutdown/reboot
   - `chmod -R 777`
   - editing `.env*`, protected paths or committed immutable files
+  - edits whose content contains a private key or a provider API key/token (AWS, GitHub, Anthropic, OpenAI, Stripe live, Google, Slack); documented placeholders are ignored
 - **Ask:**
   - force push; reset/clean/restore; branch deletion; history rewrite; `rm -r`
   - `DROP TABLE`/`TRUNCATE`/unfiltered `DELETE`; weakening RLS; DB reset
@@ -70,6 +75,7 @@ Scripts and rules are read from the **base branch** (`_gov/`), so a PR can't wea
   - reading `.env`; `sudo`; `chmod 777`
   - commits or merges on protected branches, and pushes to them
   - edits to `.claude/**`, AGENTS.md, CLAUDE.md, REVIEW.md, `.github/**`, `package.json`
+  - edits that look like a hard-coded credential (`password = "…"`, `apiKey: "…"`)
   - edits outside the approved plan, and edits to the plan itself (`.claude/plans/active.md`)
   - any action while `.claude/engineering.json` is malformed or has an invalid command pattern (default deny rules still apply)
 
@@ -96,6 +102,7 @@ Semver. Record changes below.
 
 | Version | Change |
 |---|---|
+| 0.6.0 | New `tdd` and `debug` skills; new read-only `silent-failure-reviewer` and `security-reviewer` agents; every reviewer scores finding confidence and reports only 80+ (50–79 as low-confidence notes); `release` reviews in two stages (governance first, then the rest in parallel); the guard denies edits that write private keys or provider API keys and asks on likely hard-coded credentials (rules and `findSecret()` in `governance-rules.mjs`); plugin structure test. **Upgrading repos:** add `silent-failure-reviewer` and `security-reviewer` to `reviewers` in `.claude/engineering.json`; re-copy `templates/github/scripts/` so `governance-rules.mjs` matches (CI behaviour is unchanged). |
 | 0.5.1 | The guard asks before any edit to `.claude/plans/active.md`, so a plan can no longer widen its own scope without the user's confirmation. Archived plans and `governance-log.jsonl` stay exempt. No CI changes; repos don't need to re-copy scripts. |
 | 0.5.0 | Guard hardening: shared rules module (`governance-rules.mjs`) used by the guard and CI; guard logic split into `governance-policy.mjs`; git calls no longer go through a shell (guard, `governance-checks`, `run-verify`); a malformed `engineering.json` or invalid command pattern now asks instead of silently dropping repo rules; fail-open errors are logged and reported by `governance-reviewer`; the guard also asks on `REVIEW.md` and all of `.github/**` (matching CI); `governance-gate`/`post-verdict` set `process.exitCode` instead of calling `process.exit()`; `setup-engineering` detects `dev` vs `develop`; wrong-type config values are reported instead of crashing the guard; edits on another Windows drive ask; path checks ignore case on Windows/macOS and in CI; protected-branch names are escaped and matched as whole refspecs, quoted or not; wrong-type `git` settings and non-string edit paths ask instead of crashing the guard; `governance-checks` reports a malformed or wrong-type base-branch config by name; CI honours `allowEnvExample`; `setup-engineering` detects `main` vs `master`; Node ≥ 20; the gate reports GitHub API errors; test suite and test workflow. **Upgrading repos:** re-copy `templates/github/scripts/` into `.github/scripts/` (the scripts now import `governance-rules.mjs`). |
 | 0.4.1 | CI kit fixes: scripts read `engineering.json` from the base-branch copy; an empty verify list fails the gate; `GOVERNANCE_AI_REVIEW=off` opt-out; base-branch files extracted outside the workspace for `verify-gate` |
