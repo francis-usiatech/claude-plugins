@@ -18,10 +18,11 @@ Repo `AGENTS.md` rules win on conflict.
    - List any untracked or unrelated files and ask what to do with them.
    - Never stage `.env*` (except `.env.example`), credentials or scratch output.
 3. Run the `verify` skill. Stop if the gate fails.
-4. Launch every agent in `reviewers` on the diff (default: `governance-reviewer`, then `convention-reviewer`; repos may add, e.g., `security-tenancy-auditor`).
-   - A governance `BLOCK` stops the commit.
-   - A `FLAG` needs the user's explicit decision, recorded in the plan's change log.
-   - Resolve blocking findings from any reviewer first.
+4. Review in two stages, using the agents in `reviewers`:
+   - **Stage 1 (scope and requirements):** run `governance-reviewer` on its own first. A `BLOCK` stops here. A `FLAG` needs the user's explicit decision, recorded in the plan's change log, before stage 2. Don't spend stage 2 on work that may be thrown away.
+   - **Stage 2 (code quality):** run the other reviewers in parallel (default `convention-reviewer`, `silent-failure-reviewer`, `security-reviewer`; repos may add their own, e.g. `security-tenancy-auditor`). Resolve every blocking finding before committing. List nits in the PR.
+   - Reviewers only report findings with confidence 80 or above. Check a low-confidence note yourself before acting on it.
+   - If `reviewers` doesn't include `governance-reviewer`, say in the PR that stage 1 was skipped.
 5. Commit once, in conventional format: `type(scope): summary` (≤ 72 chars), with a body giving the why, references (intent §, ADR, issue) and migration notes.
 
 ## 2. Pull request into the base branch

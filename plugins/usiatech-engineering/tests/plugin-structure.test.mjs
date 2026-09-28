@@ -51,6 +51,19 @@ describe('plugin structure: references', () => {
     const readme = read('README.md')
     for (const n of [...skills, ...agents]) assert.match(readme, new RegExp(`\\| \`${n}\` \\|`), n)
   })
+
+  it('should default to all four reviewers, governance first', () => {
+    const cfg = JSON.parse(read('templates', 'engineering.json'))
+    assert.deepEqual(cfg.reviewers, ['governance-reviewer', 'convention-reviewer', 'silent-failure-reviewer', 'security-reviewer'])
+  })
+
+  it('should review in two stages in release: scope first, then code quality', () => {
+    const text = body(read('skills', 'release', 'SKILL.md'))
+    const s1 = text.indexOf('Stage 1')
+    const s2 = text.indexOf('Stage 2')
+    assert.ok(s1 > -1 && s2 > s1, 'Stage 1 must come before Stage 2')
+    assert.match(text, /confidence/i)
+  })
 })
 
 describe('plugin structure: reviewers', () => {
