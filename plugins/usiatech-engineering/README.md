@@ -10,7 +10,7 @@ Shared engineering workflow **and governance** for UsiaTech repositories (Waypoi
 | Skill | `release` | Scoped staging → verify → reviewers → one conventional commit → PR → merge → `DDMMMYYYY-XX` tag → branch cleanup |
 | Skill | `user-guide-update` | Finds and updates affected user-guide pages and the changelog |
 | Skill | `setup-engineering` | Creates `.claude/engineering.json` for a repo and checks the AGENTS.md/CLAUDE.md layout |
-| Skill | `approve-plan` | Records the approved plan as the scope baseline (`.claude/plans/active.md`), updates it on approved scope changes, archives it when done |
+| Skill | `approve-plan` | Routes work small (plan directly) or large (`clarify` → `to-spec` → `to-tickets` first); records the approved plan with acceptance criteria and tasks as the scope baseline (`.claude/plans/active.md`) after a governance pre-flight; updates it on approved scope changes; archives it when done |
 | Skill | `tdd` | Test-first cycles (red → green → refactor) with the failing and passing evidence for each cycle, then the verify gate |
 | Skill | `debug` | Root cause before fix: reproduce → localize (hypotheses, bisect) → reduce → approved fix via `tdd` → regression guard test |
 | Skill | `clarify` | One question at a time until purpose, success, constraints and scope edges are clear; ends with an understanding note the user corrects. Writes no files |

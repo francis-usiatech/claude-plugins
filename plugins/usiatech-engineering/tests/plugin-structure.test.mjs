@@ -142,3 +142,16 @@ describe('plugin structure: step-3 skills', () => {
     assert.match(text, /Never create labels/)
   })
 })
+
+describe('plugin structure: step-3 approve-plan', () => {
+  it('should route work by size and record acceptance criteria, tasks and the route', () => {
+    const text = body(read('skills', 'approve-plan', 'SKILL.md'))
+    for (const s of ['clarify', 'to-spec', 'to-tickets', 'governance-reviewer']) assert.ok(text.includes(`\`${s}\``), s)
+    assert.match(text, /5 files or fewer/)
+    assert.match(text, /treat as small/)
+    assert.match(text, /Route: small/)
+    assert.match(text, /\*\*Acceptance criteria:\*\*/)
+    assert.match(text, /\*\*Tasks:\*\*/)
+    assert.match(text, /only the \*\*Files\*\* section/i)
+  })
+})
