@@ -4,7 +4,14 @@
 <one or two sentences>
 
 ## Requirement references
-- <intent §, capability ID (e.g. C22), FR/AC, ADR-NNNN, D-item>
+- <intent §, capability ID (e.g. C22), FR/AC, ADR-NNNN, D-item, spec path (docs/specs/…), #issue>
+
+## Acceptance criteria
+- AC1: <measurable outcome: an observable behaviour, a command and its expected result, or a metric>
+  - Evidence: <filled by verify: passing test name, command output or observed result>
+
+## Tasks
+- [ ] T1: <task> (covers AC1; ticket #NN or spec T1)
 
 ## Files
 - `<path or narrow glob>`
@@ -17,6 +24,7 @@
 
 ## Approved
 - By: <name> · Date: <YYYY-MM-DD>
+- Route: <small | large> (<the rule that decided it, or "override: …">)
 
 ## Change log
 - <YYYY-MM-DD: scope change and who approved it>

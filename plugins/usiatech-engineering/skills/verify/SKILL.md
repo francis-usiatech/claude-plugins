@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Runs the repository's verification gate (typecheck, tests, build and any conditional suites) and reports pass/fail with evidence. Use when the user says "verify", "run the gate", "is it done", "check before commit", or before reporting any code task as complete.
+description: Runs the repository's verification gate (typecheck, tests, build and any conditional suites), checks the active plan's acceptance criteria against evidence from this session, and reports pass/fail with evidence. Use when the user says "verify", "run the gate", "is it done", "check before commit", or before reporting any code task as complete.
 ---
 
 # Verify (definition-of-done gate)
@@ -18,9 +18,18 @@ description: Runs the repository's verification gate (typecheck, tests, build an
    - Stop any dev server or watcher this session started.
    - Remove stray `nul` files (`find . -name nul -type f -delete 2>/dev/null`).
    - Leave no background processes running.
-6. **Report:**
+6. **Check acceptance criteria**, only if `.claude/plans/active.md` has an `## Acceptance criteria` section, and only after the commands pass:
+   - For each AC, find evidence produced in this session: a named passing test, command output, or a result you observed. Earlier sessions, memory and "should work" don't count.
+   - Mark it `shown` with that evidence, or `not shown`.
+   - Write each evidence line under its AC in the plan (`- Evidence: <evidence> (shown)` or `(not shown)`). In the same edit, tick (`- [x]`) each task whose ACs are all `shown`. The guard asks before edits to the plan; that's expected.
+7. **Report:**
 
 | Check | Command | Result | Notes |
 |---|---|---|---|
 
-   End with **Gate: PASS** or **Gate: FAIL**. Never state that work is done unless the gate passed in this session.
+   If step 6 ran, add:
+
+| AC | Criterion | Evidence | Status |
+|---|---|---|---|
+
+   End with **Gate: PASS** or **Gate: FAIL**, decided by the commands only. If any criterion is `not shown`, end with `Gate: PASS (N of M criteria not shown)` and list them. Never state that work is done unless the gate passed in this session.
