@@ -207,6 +207,19 @@ describe('evaluate: approved plan scope', () => {
   it('should allow when no plan is active and requirePlan is off', () => {
     assert.equal(edit('src/a.ts'), null)
   })
+
+  it('should treat spec files like any other file: allowed with no plan, asked with requirePlan', () => {
+    assert.equal(edit('docs/specs/2026-01-01-x.md'), null)
+    assert.match(edit('docs/specs/2026-01-01-x.md', { cfg: { governance: { requirePlan: true } } }).reason, /No approved plan/)
+  })
+
+  it('should not take scope from the Tasks or Acceptance criteria sections', () => {
+    const root = tempDir()
+    writeFiles(root, { '.claude/plans/active.md': '# Plan\n\n## Acceptance criteria\n- AC1: `lib/a.ts` works\n  - Evidence: \n\n## Tasks\n- [ ] T1: edit `lib/b.ts` (covers AC1)\n\n## Files\n- `src/**`\n' })
+    assert.equal(edit('src/x.ts', { root }), null)
+    assert.match(edit('lib/b.ts', { root }).reason, /not in the approved plan/)
+    assert.match(edit('lib/a.ts', { root }).reason, /not in the approved plan/)
+  })
 })
 
 describe('evaluate: config errors', () => {
