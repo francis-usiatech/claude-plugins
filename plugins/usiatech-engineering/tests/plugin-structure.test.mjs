@@ -117,4 +117,14 @@ describe('plugin structure: step-3 skills', () => {
     assert.match(text, /I'm assuming/)
     assert.match(text, /Write no files/)
   })
+
+  it('should ship skill "to-spec" that writes a numbered spec from the template', () => {
+    assert.ok(skills.includes('to-spec'))
+    const text = body(read('skills', 'to-spec', 'SKILL.md'))
+    assert.match(text, /docs\/specs\/YYYY-MM-DD-<slug>\.md/)
+    assert.match(text, /templates\/spec\.md/)
+    assert.match(text, /R1, R2/)
+    assert.match(text, /AC1, AC2/)
+    assert.match(text, /deferred: <why>/)
+  })
 })
