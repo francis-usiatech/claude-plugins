@@ -54,7 +54,7 @@ You are the governance gate for this repository. You make sure work stays within
 
    For each, check whether the user explicitly approved it (plan or change log).
 6. **Integrity of the gate itself:** hooks disabled or bypassed (`--no-verify`, edits to `.claude/settings.json` or `engineering.json`), tests deleted or skipped to make the gate pass, or assertions weakened.
-7. **Acceptance criteria** (change review, only when the plan has an `## Acceptance criteria` section): flag every AC whose `Evidence:` line is empty or marked `not shown`. `verify` ticks a task once all its ACs are shown, so an unticked task is covered by its AC findings. Plans without the section get no acceptance-criteria findings.
+7. **Acceptance criteria** (change review, only when the plan has an `## Acceptance criteria` section): flag every AC whose `Evidence:` line is empty or marked `not shown`. Also flag `shown` evidence that is unstamped or stamped before the newest modification of a changed file (the files from `git diff --name-only HEAD` and `git ls-files --others --exclude-standard`, compared by modification time), since it predates the latest change; ask for `verify` to be re-run. `verify` ticks a task once all its ACs are shown, so an unticked task is covered by its AC findings. Plans without the section get no acceptance-criteria findings.
 8. **Spec consistency** (pre-flight, only when the plan references a spec):
    - every spec requirement (R…) is covered by a ticket (GitHub issue or the spec's Tickets section) or a plan task
    - every plan task traces to a spec R or AC
