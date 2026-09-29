@@ -174,3 +174,16 @@ describe('plugin structure: step-3 verify and reviewer', () => {
     assert.match(text, /non-goal/)
   })
 })
+
+describe('plugin structure: release metadata', () => {
+  it('should keep plugin, marketplace and both README versions in step', () => {
+    const version = JSON.parse(read('.claude-plugin', 'plugin.json')).version
+    const repo = path.join(PLUGIN_ROOT, '..', '..')
+    const market = JSON.parse(readFileSync(path.join(repo, '.claude-plugin', 'marketplace.json'), 'utf8'))
+    assert.equal(market.plugins.find((p) => p.name === 'usiatech-engineering').version, version)
+    const v = version.replace(/\./g, '\\.')
+    assert.match(read('README.md'), new RegExp(`^\\| ${v} \\|`, 'm'), 'plugin README version row')
+    assert.match(readFileSync(path.join(repo, 'README.md'), 'utf8'), new RegExp(`\\| UsiaTech Engineering \\| ${v}\\s*\\|`), 'root README table')
+    assert.equal(version, '0.7.0')
+  })
+})
