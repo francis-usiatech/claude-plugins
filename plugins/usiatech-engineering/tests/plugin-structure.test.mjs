@@ -127,4 +127,18 @@ describe('plugin structure: step-3 skills', () => {
     assert.match(text, /AC1, AC2/)
     assert.match(text, /deferred: <why>/)
   })
+
+  it('should ship skill "to-tickets" that files blocker-aware tickets with a no-GitHub fallback', () => {
+    assert.ok(skills.includes('to-tickets'))
+    const text = body(read('skills', 'to-tickets', 'SKILL.md'))
+    assert.match(text, /gh auth status/)
+    assert.match(text, /Blocked by #NN/)
+    assert.match(text, /## Tickets/)
+  })
+
+  it('should confirm once before filing and never create labels', () => {
+    const text = body(read('skills', 'to-tickets', 'SKILL.md'))
+    assert.match(text, /ask the user once to confirm before filing/i)
+    assert.match(text, /Never create labels/)
+  })
 })

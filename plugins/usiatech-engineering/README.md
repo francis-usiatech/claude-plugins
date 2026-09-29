@@ -15,6 +15,7 @@ Shared engineering workflow **and governance** for UsiaTech repositories (Waypoi
 | Skill | `debug` | Root cause before fix: reproduce → localize (hypotheses, bisect) → reduce → approved fix via `tdd` → regression guard test |
 | Skill | `clarify` | One question at a time until purpose, success, constraints and scope edges are clear; ends with an understanding note the user corrects. Writes no files |
 | Skill | `to-spec` | Writes the confirmed understanding to `docs/specs/YYYY-MM-DD-<slug>.md`: requirements R1…, measurable acceptance criteria AC1…, open questions answered or deferred before approval |
+| Skill | `to-tickets` | Splits an approved spec into small tickets (covers R/AC, blocked by, done when); files GitHub issues after one confirmation, or writes a Tickets section into the spec without `gh` |
 | Agent | `governance-reviewer` | Read-only gate: traces every change to a requirement, flags out-of-plan work, ADR/rule violations and dangerous actions; verdict PASS/FLAG/BLOCK |
 | Agent | `convention-reviewer` | Read-only review of a diff against the repo's root and folder AGENTS.md |
 | Agent | `silent-failure-reviewer` | Read-only review for swallowed errors, masking fallbacks, lost async errors, ignored exit codes and tests that can't fail |
