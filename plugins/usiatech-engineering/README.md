@@ -13,6 +13,7 @@ Shared engineering workflow **and governance** for UsiaTech repositories (Waypoi
 | Skill | `approve-plan` | Records the approved plan as the scope baseline (`.claude/plans/active.md`), updates it on approved scope changes, archives it when done |
 | Skill | `tdd` | Test-first cycles (red → green → refactor) with the failing and passing evidence for each cycle, then the verify gate |
 | Skill | `debug` | Root cause before fix: reproduce → localize (hypotheses, bisect) → reduce → approved fix via `tdd` → regression guard test |
+| Skill | `clarify` | One question at a time until purpose, success, constraints and scope edges are clear; ends with an understanding note the user corrects. Writes no files |
 | Agent | `governance-reviewer` | Read-only gate: traces every change to a requirement, flags out-of-plan work, ADR/rule violations and dangerous actions; verdict PASS/FLAG/BLOCK |
 | Agent | `convention-reviewer` | Read-only review of a diff against the repo's root and folder AGENTS.md |
 | Agent | `silent-failure-reviewer` | Read-only review for swallowed errors, masking fallbacks, lost async errors, ignored exit codes and tests that can't fail |

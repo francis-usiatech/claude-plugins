@@ -106,3 +106,15 @@ describe('plugin structure: step-3 templates', () => {
     assert.match(text, /Status: draft \| approved/)
   })
 })
+
+describe('plugin structure: step-3 skills', () => {
+  it('should ship skill "clarify" that asks one question at a time and writes nothing', () => {
+    assert.ok(skills.includes('clarify'))
+    const text = body(read('skills', 'clarify', 'SKILL.md'))
+    assert.match(text, /one question at a time/i)
+    assert.match(text, /understanding note/i)
+    assert.match(text, /You said/)
+    assert.match(text, /I'm assuming/)
+    assert.match(text, /Write no files/)
+  })
+})
