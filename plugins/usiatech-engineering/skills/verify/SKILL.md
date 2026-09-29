@@ -21,7 +21,7 @@ description: Runs the repository's verification gate (typecheck, tests, build an
 6. **Check acceptance criteria**, only if `.claude/plans/active.md` has an `## Acceptance criteria` section, and only after the commands pass:
    - For each AC, find evidence produced in this session: a named passing test, command output, or a result you observed. Earlier sessions, memory and "should work" don't count.
    - Mark it `shown` with that evidence, or `not shown`.
-   - Write each evidence line under its AC in the plan (`- Evidence: <evidence> (shown)` or `(not shown)`). The guard asks before edits to the plan; that's expected.
+   - Write each evidence line under its AC in the plan (`- Evidence: <evidence> (shown)` or `(not shown)`). In the same edit, tick (`- [x]`) each task whose ACs are all `shown`. The guard asks before edits to the plan; that's expected.
 7. **Report:**
 
 | Check | Command | Result | Notes |

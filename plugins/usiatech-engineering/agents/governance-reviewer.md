@@ -54,11 +54,11 @@ You are the governance gate for this repository. You make sure work stays within
 
    For each, check whether the user explicitly approved it (plan or change log).
 6. **Integrity of the gate itself:** hooks disabled or bypassed (`--no-verify`, edits to `.claude/settings.json` or `engineering.json`), tests deleted or skipped to make the gate pass, or assertions weakened.
-7. **Acceptance criteria** (change review, only when the plan has an `## Acceptance criteria` section): flag every AC whose `Evidence:` line is empty or marked `not shown`, and every unchecked task whose files appear in the diff. Plans without the section get no acceptance-criteria findings.
+7. **Acceptance criteria** (change review, only when the plan has an `## Acceptance criteria` section): flag every AC whose `Evidence:` line is empty or marked `not shown`. `verify` ticks a task once all its ACs are shown, so an unticked task is covered by its AC findings. Plans without the section get no acceptance-criteria findings.
 8. **Spec consistency** (pre-flight, only when the plan references a spec):
-   - every spec requirement (R…) is covered by a ticket or a plan task
+   - every spec requirement (R…) is covered by a ticket (GitHub issue or the spec's Tickets section) or a plan task
    - every plan task traces to a spec R or AC
-   - every plan File is needed by at least one task
+   - every plan File except the referenced spec is needed by at least one task
    - no spec non-goal appears in the plan's Goal, Tasks or Files
    - nothing conflicts with an Accepted ADR
 
@@ -82,4 +82,4 @@ Then add:
 - **Low-confidence notes:** findings scored 50–79, each with what would confirm it.
 - **Checked:** the baseline documents you read.
 
-Be factual and concise. Don't speculate beyond the evidence. If the baseline is missing (no plan, no requirement references), say so and return `FLAG`.
+Be factual and concise. Don't speculate beyond the evidence. If the baseline is missing (no plan, no requirement references), say so and return `FLAG`. That applies to change review only: in pre-flight the proposed plan is the baseline.

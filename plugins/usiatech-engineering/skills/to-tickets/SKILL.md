@@ -22,6 +22,7 @@ description: Splits an approved spec into small tickets that each name the requi
    - Body: the spec path, `Covers: R1, AC2`, `Blocked by #NN` (or "none") and the done-when checks.
    - Write each body to a temp file in the session scratchpad, not the repo.
    - Apply the `spec:<slug>` label only if it already exists (`gh label list`). Never create labels.
+   - Also list each issue in the spec's `## Tickets` section (`#NN · <title> · Covers: … · Blocked by: …`), so later plans and reviews can see which requirements are covered.
 3. **Without GitHub** (either check failed): write the tickets into the spec's `## Tickets` section as T1, T2… with the same fields, and tell the user why issues weren't filed.
 4. Report the issue numbers or T-IDs. They and the spec path become the plan's requirement references.
 

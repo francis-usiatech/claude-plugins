@@ -13,7 +13,9 @@ Pick the route and tell the user which rule decided it.
   - the work cites an existing requirement reference (intent §, capability ID, FR/AC, ADR, spec, `#issue`)
   - it touches 5 files or fewer
   - it adds no new skill, module, service or public interface
-- **Large**, anything else. Run `clarify` → `to-spec` → `to-tickets` first. The spec path and ticket IDs become the requirement references, and the spec's acceptance criteria are copied into the plan with their IDs.
+- **Large**, anything else. Run `clarify` → `to-spec` → `to-tickets` first. The spec path and ticket IDs become the requirement references. Add the spec path to **Files**, since the spec is committed with the work.
+  - A large-route plan covers one ticket, or a set the user lists, so it matches one PR. Copy only the ACs those tickets cover, with their spec IDs.
+  - Each remaining ticket gets its own plan after the previous one closes.
 - The user can say "treat as small" or "treat as large". Record the override in the Change log.
 
 ## Record

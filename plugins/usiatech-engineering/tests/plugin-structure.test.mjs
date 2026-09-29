@@ -175,6 +175,34 @@ describe('plugin structure: step-3 verify and reviewer', () => {
   })
 })
 
+describe('plugin structure: step-3 review fixes', () => {
+  const approve = () => body(read('skills', 'approve-plan', 'SKILL.md'))
+  const reviewer = () => body(read('agents', 'governance-reviewer.md'))
+
+  it('should give the spec a scope home on the large route (I1)', () => {
+    assert.match(approve(), /add the spec path to \*\*Files\*\*/i)
+    assert.match(reviewer(), /every plan File except the referenced spec is needed by at least one task/)
+  })
+
+  it('should tick tasks in verify instead of flagging every unchecked task (I2)', () => {
+    assert.match(body(read('skills', 'verify', 'SKILL.md')), /`- \[x\]`/)
+    assert.doesNotMatch(reviewer(), /unchecked task whose files/)
+  })
+
+  it('should scope a large-route plan to one ticket or a listed set (I3)', () => {
+    assert.match(approve(), /covers one ticket, or a set the user lists/)
+    assert.match(approve(), /only the ACs those tickets cover/)
+  })
+
+  it('should record filed issues in the spec so later reviews can see them (I4)', () => {
+    assert.match(body(read('skills', 'to-tickets', 'SKILL.md')), /also list each issue in the spec's `## Tickets` section/i)
+  })
+
+  it('should not return FLAG in pre-flight just because no plan is approved yet (M5)', () => {
+    assert.match(reviewer(), /in pre-flight the proposed plan is the baseline/)
+  })
+})
+
 describe('plugin structure: release metadata', () => {
   it('should keep plugin, marketplace and both README versions in step', () => {
     const version = JSON.parse(read('.claude-plugin', 'plugin.json')).version
