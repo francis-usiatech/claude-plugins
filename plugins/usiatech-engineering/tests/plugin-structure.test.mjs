@@ -85,3 +85,24 @@ describe('plugin structure: step-2 components', () => {
     it(`should ship skill "${s}"`, () => assert.ok(skills.includes(s)))
   }
 })
+
+describe('plugin structure: step-3 templates', () => {
+  it('should give the plan template acceptance criteria, tasks and a route line', () => {
+    const text = read('templates', 'plan.md')
+    const at = (h) => text.indexOf(h)
+    assert.ok(at('## Requirement references') < at('## Acceptance criteria'), 'AC after requirement references')
+    assert.ok(at('## Acceptance criteria') < at('## Tasks') && at('## Tasks') < at('## Files'), 'AC, then Tasks, then Files')
+    assert.match(text, /^- AC1: .+\r?\n\s+- Evidence: /m)
+    assert.match(text, /^- \[ \] T1: .+\(covers AC1/m)
+    assert.match(text, /^- Route: <small \| large>/m)
+  })
+
+  it('should give the spec template every required section', () => {
+    const text = read('templates', 'spec.md')
+    for (const h of ['## Problem', '## Goals', '## Non-goals', '## Requirements', '## Acceptance criteria',
+      '## Constraints & decisions', '## Open questions', '## Tickets']) {
+      assert.match(text, new RegExp(`^${h}\\b`, 'm'), h)
+    }
+    assert.match(text, /Status: draft \| approved/)
+  })
+})
