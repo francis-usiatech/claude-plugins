@@ -203,6 +203,53 @@ describe('plugin structure: step-3 review fixes', () => {
   })
 })
 
+describe('plugin structure: step-3 deferred minors', () => {
+  const approve = () => body(read('skills', 'approve-plan', 'SKILL.md'))
+  const verify = () => body(read('skills', 'verify', 'SKILL.md'))
+  const reviewer = () => body(read('agents', 'governance-reviewer.md'))
+  const assertBefore = (text, first, second) => {
+    const a = text.indexOf(first)
+    const b = text.indexOf(second)
+    assert.ok(a !== -1, `missing: ${first}`)
+    assert.ok(b !== -1, `missing: ${second}`)
+    assert.ok(a < b, `"${first}" comes before "${second}"`)
+  }
+
+  it('should keep the requirement-reference rule when the user overrides the route (M1)', () => {
+    assert.match(approve(), /an override changes the route, not the rule that every plan needs a requirement reference/i)
+  })
+
+  it('should write all evidence and task ticks in one edit (M2)', () => {
+    assert.match(verify(), /in one edit/)
+  })
+
+  it('should stamp evidence and flag stale evidence (M3)', () => {
+    assert.match(verify(), /\(shown, <UTC timestamp>\)/)
+    assert.match(verify(), /rewrite every evidence line/i)
+    assert.match(read('templates', 'plan.md'), /\(shown \| not shown, <UTC timestamp>\)/)
+    assert.match(reviewer(), /stamped before the newest modification of a changed file/)
+  })
+
+  it('should accept a spec as a reference only once approved (M4)', () => {
+    assert.match(approve(), /a spec counts only if it says `Status: approved`/i)
+  })
+
+  it('should check for an unfinished plan before routing (M6)', () => {
+    assertBefore(approve(), 'already exists and is unfinished', '## Route')
+  })
+
+  it('should check GitHub access before confirming and look labels up by exact name (M7)', () => {
+    const text = body(read('skills', 'to-tickets', 'SKILL.md'))
+    assertBefore(text, 'gh auth status', 'ask the user once to confirm before filing')
+    assert.match(text, /gh label list --search "spec:<slug>" --json name/)
+    assert.doesNotMatch(text, /\(`gh label list`\)/)
+  })
+
+  it('should not trigger approve-plan on any work without a plan (M8)', () => {
+    assert.doesNotMatch(read('skills', 'approve-plan', 'SKILL.md'), /starting work that has no plan yet/)
+  })
+})
+
 describe('plugin structure: release metadata', () => {
   it('should keep plugin, marketplace and both README versions in step', () => {
     const version = JSON.parse(read('.claude-plugin', 'plugin.json')).version
@@ -212,6 +259,6 @@ describe('plugin structure: release metadata', () => {
     const v = version.replace(/\./g, '\\.')
     assert.match(read('README.md'), new RegExp(`^\\| ${v} \\|`, 'm'), 'plugin README version row')
     assert.match(readFileSync(path.join(repo, 'README.md'), 'utf8'), new RegExp(`\\| UsiaTech Engineering \\| ${v}\\s*\\|`), 'root README table')
-    assert.equal(version, '0.7.0')
+    assert.match(version, /^\d+\.\d+\.\d+$/, 'plugin version is semver (M9)')
   })
 })

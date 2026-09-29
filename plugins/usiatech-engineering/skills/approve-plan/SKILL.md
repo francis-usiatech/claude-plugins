@@ -1,26 +1,27 @@
 ---
 name: approve-plan
-description: Records the plan the user has approved as .claude/plans/active.md, with measurable acceptance criteria and a task list, so governance can check scope and completion, and closes it when the work ships. Routes large work through clarify → to-spec → to-tickets first. Use when starting work that has no plan yet, right after the user approves a plan ("yes", "proceed", "approved"), when the user says "update the plan" or "change scope", or when work is finished ("close the plan").
+description: Records the plan the user has approved as .claude/plans/active.md, with measurable acceptance criteria and a task list, so governance can check scope and completion, and closes it when the work ships. Routes large work through clarify → to-spec → to-tickets first. Use when the user asks to plan a piece of work ("plan this", "make a plan"), right after the user approves a plan ("yes", "proceed", "approved"), when the user says "update the plan" or "change scope", or when work is finished ("close the plan").
 ---
 
 # Approve, update or close a plan
 
 The approved plan is the scope baseline. The governance guard asks for confirmation on any file edit outside the plan's **Files** list. The `governance-reviewer` agent checks the finished diff against it. Because the plan sets the scope, the guard also asks before every write to `.claude/plans/active.md`, so expect a confirmation prompt when you record or update it.
 
+Before routing, if `.claude/plans/active.md` already exists and is unfinished, ask whether to close it or replace it. Settle this first, so no clarify or spec work is spent while another plan is in progress.
+
 ## Route (before drafting)
 Pick the route and tell the user which rule decided it.
 - **Small**, when all of these hold:
-  - the work cites an existing requirement reference (intent §, capability ID, FR/AC, ADR, spec, `#issue`)
+  - the work cites an existing requirement reference (intent §, capability ID, FR/AC, ADR, spec, `#issue`). A spec counts only if it says `Status: approved`.
   - it touches 5 files or fewer
   - it adds no new skill, module, service or public interface
 - **Large**, anything else. Run `clarify` → `to-spec` → `to-tickets` first. The spec path and ticket IDs become the requirement references. Add the spec path to **Files**, since the spec is committed with the work.
   - A large-route plan covers one ticket, or a set the user lists, so it matches one PR. Copy only the ACs those tickets cover, with their spec IDs.
   - Each remaining ticket gets its own plan after the previous one closes.
-- The user can say "treat as small" or "treat as large". Record the override in the Change log.
+- The user can say "treat as small" or "treat as large". Record the override in the Change log. An override changes the route, not the rule that every plan needs a requirement reference: "treat as small" with no reference still needs one before the plan is recorded.
 
 ## Record
-1. If `.claude/plans/active.md` already exists and is unfinished, ask whether to close it or replace it.
-2. Draft the plan from `${CLAUDE_PLUGIN_ROOT}/templates/plan.md`:
+1. Draft the plan from `${CLAUDE_PLUGIN_ROOT}/templates/plan.md`:
    - **Goal:** one or two sentences.
    - **Requirement references:** the intent sections, capability IDs, FR/AC numbers, ADRs, D-items, spec path and issues this work implements. Every plan needs at least one. If there isn't one, tell the user the work has no requirement basis and offer the large route.
    - **Acceptance criteria:** AC1, AC2…, at least one. Each is measurable: an observable behaviour, a command and its expected result, or a metric. Rewrite vague ones ("works well", "is fast") with the user. Leave each `Evidence:` line empty; `verify` fills it.
@@ -29,8 +30,8 @@ Pick the route and tell the user which rule decided it.
    - **Commands and actions:** any risky action the plan needs (migrations, dependency adds, deploys). Only include those the user agreed to.
    - **Out of scope:** what this plan explicitly doesn't do.
    - **Approved:** the user's name and today's date, and `Route: small` or `Route: large` with the rule that decided it.
-3. Run the `governance-reviewer` agent on the draft in pre-flight mode. On the large route it also checks the plan against the spec and tickets. Fix a `BLOCK` before going on; a `FLAG` needs the user's decision.
-4. Show the draft and the pre-flight verdict. After the user confirms, write `.claude/plans/active.md` and show it in one short message.
+2. Run the `governance-reviewer` agent on the draft in pre-flight mode. On the large route it also checks the plan against the spec and tickets. Fix a `BLOCK` before going on; a `FLAG` needs the user's decision.
+3. Show the draft and the pre-flight verdict. After the user confirms, write `.claude/plans/active.md` and show it in one short message.
 
 ## Update (scope change)
 When new work falls outside the plan:

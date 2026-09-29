@@ -8,7 +8,7 @@
 
 ## Acceptance criteria
 - AC1: <measurable outcome: an observable behaviour, a command and its expected result, or a metric>
-  - Evidence: <filled by verify: passing test name, command output or observed result>
+  - Evidence: <filled by verify: passing test name, command output or observed result> (shown | not shown, <UTC timestamp>)
 
 ## Tasks
 - [ ] T1: <task> (covers AC1; ticket #NN or spec T1)

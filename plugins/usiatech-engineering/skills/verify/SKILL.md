@@ -21,7 +21,9 @@ description: Runs the repository's verification gate (typecheck, tests, build an
 6. **Check acceptance criteria**, only if `.claude/plans/active.md` has an `## Acceptance criteria` section, and only after the commands pass:
    - For each AC, find evidence produced in this session: a named passing test, command output, or a result you observed. Earlier sessions, memory and "should work" don't count.
    - Mark it `shown` with that evidence, or `not shown`.
-   - Write each evidence line under its AC in the plan (`- Evidence: <evidence> (shown)` or `(not shown)`). In the same edit, tick (`- [x]`) each task whose ACs are all `shown`. The guard asks before edits to the plan; that's expected.
+   - Rewrite every evidence line under its AC in the plan, even ones an earlier run filled, as `- Evidence: <evidence> (shown, <UTC timestamp>)` or `(not shown, <UTC timestamp>)`, e.g. `2026-09-28T17:50Z`. The stamp lets `governance-reviewer` spot evidence older than the latest change.
+   - Tick (`- [x]`) each task whose ACs are all `shown`.
+   - Collect everything first, then write all evidence lines and ticks in one edit. The guard asks before each edit to the plan, so one edit means one prompt.
 7. **Report:**
 
 | Check | Command | Result | Notes |
