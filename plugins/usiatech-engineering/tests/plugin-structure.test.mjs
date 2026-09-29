@@ -155,3 +155,13 @@ describe('plugin structure: step-3 approve-plan', () => {
     assert.match(text, /only the \*\*Files\*\* section/i)
   })
 })
+
+describe('plugin structure: step-3 verify and reviewer', () => {
+  it('should make verify report acceptance criteria without changing the gate verdict', () => {
+    const text = body(read('skills', 'verify', 'SKILL.md'))
+    assert.match(text, /\| AC \| Criterion \| Evidence \| Status \|/)
+    assert.match(text, /only if `\.claude\/plans\/active\.md` has an `## Acceptance criteria` section/)
+    assert.match(text, /Gate: PASS \(N of M criteria not shown\)/)
+    assert.match(text, /decided by the commands only/)
+  })
+})

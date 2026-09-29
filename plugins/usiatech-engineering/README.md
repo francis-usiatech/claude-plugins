@@ -6,7 +6,7 @@ Shared engineering workflow **and governance** for UsiaTech repositories (Waypoi
 
 | Type | Name | What it does |
 |---|---|---|
-| Skill | `verify` | Runs the repo's definition-of-done gate (from `.claude/engineering.json` or AGENTS.md) and reports PASS/FAIL |
+| Skill | `verify` | Runs the repo's definition-of-done gate (from `.claude/engineering.json` or AGENTS.md) and reports PASS/FAIL; checks the active plan's acceptance criteria against evidence from this session (unshown criteria warn, they don't fail the gate) |
 | Skill | `release` | Scoped staging → verify → reviewers → one conventional commit → PR → merge → `DDMMMYYYY-XX` tag → branch cleanup |
 | Skill | `user-guide-update` | Finds and updates affected user-guide pages and the changelog |
 | Skill | `setup-engineering` | Creates `.claude/engineering.json` for a repo and checks the AGENTS.md/CLAUDE.md layout |
