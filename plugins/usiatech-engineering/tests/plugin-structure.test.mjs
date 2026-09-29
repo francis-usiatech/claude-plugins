@@ -164,4 +164,13 @@ describe('plugin structure: step-3 verify and reviewer', () => {
     assert.match(text, /Gate: PASS \(N of M criteria not shown\)/)
     assert.match(text, /decided by the commands only/)
   })
+
+  it('should make governance-reviewer check acceptance criteria and spec consistency', () => {
+    const text = body(read('agents', 'governance-reviewer.md'))
+    assert.match(text, /7\. \*\*Acceptance criteria\*\* \(change review, only when the plan has an `## Acceptance criteria` section\)/)
+    assert.match(text, /`not shown`/)
+    assert.match(text, /Plans without the section get no acceptance-criteria findings/)
+    assert.match(text, /8\. \*\*Spec consistency\*\* \(pre-flight, only when the plan references a spec\)/)
+    assert.match(text, /non-goal/)
+  })
 })
