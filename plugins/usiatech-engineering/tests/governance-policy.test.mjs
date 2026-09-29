@@ -312,6 +312,8 @@ describe('evaluate: wrong-type config values', () => {
     ['askCommands with an empty pattern', { governance: { askCommands: [{ pattern: '' }] } }, /"governance\.askCommands\[0\]"/],
     ['git as a string', { git: 'main' }, /"git" must be an object/],
     ['releaseBranch as a number', { git: { releaseBranch: 42 } }, /"git\.releaseBranch" must be a non-empty string/],
+    ['allowlist as an object', { governance: { allowlist: { rule: 'wf-write-all' } } }, /"governance\.allowlist" must be an array/],
+    ['allowlist entry without a path or package', { governance: { allowlist: [{ rule: 'wf-write-all' }] } }, /"governance\.allowlist\[0\]"/],
   ]
   for (const [name, cfg, re] of cases) {
     it(`should ask and name the problem for ${name}`, () => {
@@ -462,5 +464,107 @@ describe('evaluate: secrets in edited content', () => {
   it('should allow ordinary content and placeholders', () => {
     assert.equal(run('Write', { file_path: 'src/a.ts', content: 'export const x = 1' }), null)
     assert.equal(run('Write', { file_path: 'docs/aws.md', content: 'AKIA' + 'IOSFODNN7EXAMPLE' }), null)
+  })
+})
+
+describe('evaluate: workflow content checks (R11, R15; AC9, AC12)', () => {
+  const WF = '.github/workflows/ci.yml'
+  const injection = 'on: issues\njobs:\n  a:\n    steps:\n      - run: echo "${{ github.event.issue.title }}"\n'
+  const unpinned = 'on: push\njobs:\n  a:\n    steps:\n      - uses: some-org/action@v1\n'
+  const clean = 'on: push\njobs:\n  a:\n    steps:\n      - run: echo ok\n'
+  const noAsk = { governance: { askPaths: [] } }
+  const run = (tool_name, tool_input, opts = {}) => evaluate({ tool_name, tool_input }, { root: opts.root || tempDir(), git: fakeGit(), ...opts })
+
+  it('should ask on a high-risk workflow Write even when askPaths is empty, naming the rule', () => {
+    const r = run('Write', { file_path: WF, content: injection }, { cfg: noAsk })
+    assert.equal(r.decision, 'ask')
+    assert.match(r.reason, /\[wf-untrusted-input, high\] \.github\/workflows\/ci\.yml:5/)
+    assert.equal(r.findings.length, 1)
+  })
+
+  it('should never deny for warnings and should allow a warning-only change outside askPaths', () => {
+    const r = run('Write', { file_path: WF, content: unpinned }, { cfg: noAsk })
+    assert.equal(r.decision, null)
+    assert.deepEqual(r.findings.map((f) => f.rule), ['wf-unpinned-action'])
+  })
+
+  it('should list every finding, warnings included, in the reason when it asks', () => {
+    const r = run('Write', { file_path: WF, content: injection + '      - uses: some-org/action@v1\n' })
+    assert.equal(r.decision, 'ask')
+    assert.match(r.reason, /wf-untrusted-input, high/)
+    assert.match(r.reason, /wf-unpinned-action, warning/)
+    assert.match(r.reason, /governance, CI or dependency file/, 'the askPaths reason is kept')
+  })
+
+  it('should check the post-edit content of an Edit, not just new_string', () => {
+    const root = tempDir()
+    writeFiles(root, { [WF]: 'on: pull_request\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n' })
+    const r = run('Edit', { file_path: WF, old_string: 'on: pull_request\n', new_string: 'on: pull_request_target\n' }, { root, cfg: noAsk })
+    assert.equal(r.decision, 'ask')
+    assert.match(r.reason, /wf-privileged-checkout/)
+  })
+
+  it('should apply MultiEdit edits in order and honour replace_all', () => {
+    const root = tempDir()
+    writeFiles(root, { [WF]: clean + '      - run: echo ok\n' })
+    const edits = [{ old_string: 'on: push', new_string: 'on: issues' }, { old_string: 'echo ok', new_string: 'echo ${{ github.event.issue.body }}', replace_all: true }]
+    const r = run('MultiEdit', { file_path: WF, edits }, { root, cfg: noAsk })
+    assert.equal(r.findings.length, 2)
+  })
+
+  it('should compare permissions against the file on disk before the edit', () => {
+    const root = tempDir()
+    const base = 'on: push\njobs:\n  a:\n    permissions:\n      contents: read\n    steps:\n      - run: echo ok\n'
+    writeFiles(root, { [WF]: base })
+    const r = run('Edit', { file_path: WF, old_string: 'contents: read', new_string: 'contents: write' }, { root, cfg: noAsk })
+    assert.deepEqual(r.findings.map((f) => f.rule), ['wf-permissions-widened'])
+  })
+
+  it('should not check files outside .github/workflows', () => {
+    assert.equal(run('Write', { file_path: 'docs/example.yml', content: injection }, { cfg: noAsk }), null)
+  })
+
+  it('should mark allowlisted findings suppressed so they do not force an ask', () => {
+    const cfg = { governance: { askPaths: [], allowlist: [{ rule: 'wf-untrusted-input', path: WF }] } }
+    const r = run('Write', { file_path: WF, content: injection }, { cfg })
+    assert.equal(r.decision, null)
+    assert.equal(r.findings[0].suppressed, true)
+  })
+
+  it('should ignore an allowlist entry that does not match', () => {
+    const cfg = { governance: { askPaths: [], allowlist: [{ rule: 'wf-untrusted-input', path: '.github/workflows/other.yml' }] } }
+    const r = run('Write', { file_path: WF, content: injection }, { cfg })
+    assert.equal(r.decision, 'ask')
+    assert.equal(r.findings[0].suppressed, false)
+  })
+
+  it('should keep a secret deny ahead of workflow findings', () => {
+    const r = run('Write', { file_path: WF, content: injection + '# AKIA' + 'Q'.repeat(16) + '\n' })
+    assert.equal(r.decision, 'deny')
+  })
+
+  it('should allow a clean workflow outside askPaths with no findings', () => {
+    assert.equal(run('Write', { file_path: WF, content: clean }, { cfg: noAsk }), null)
+  })
+
+  it('should check new_string as the content of an Edit that creates a new file', () => {
+    const r = run('Edit', { file_path: WF, old_string: '', new_string: injection }, { cfg: noAsk })
+    assert.equal(r.decision, 'ask')
+    assert.deepEqual(r.findings.map((f) => f.rule), ['wf-untrusted-input'])
+  })
+
+  it('should ask when the post-edit content of a workflow cannot be worked out', () => {
+    const root = tempDir()
+    writeFiles(root, { [WF]: clean })
+    for (const [tool, ti] of [
+      ['Edit', { file_path: WF, old_string: 'not in the file', new_string: 'x' }],
+      ['Edit', { file_path: '.github/workflows/new.yml', old_string: 'x', new_string: injection }],
+      ['MultiEdit', { file_path: WF, edits: 'nope' }],
+      ['Write', { file_path: WF }],
+    ]) {
+      const r = run(tool, ti, { root, cfg: noAsk })
+      assert.equal(r?.decision, 'ask', `${tool} ${JSON.stringify(ti)}`)
+      assert.match(r.reason, /could not work out the file content after this edit/)
+    }
   })
 })

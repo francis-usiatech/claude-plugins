@@ -13,7 +13,7 @@ Plan references use these IDs (e.g. "Improvement roadmap step 3: B1, B2").
 | 1 | Hardening | A1–A5, A11, A12 | Shipped v0.5.0 (plan-file scope fix in v0.5.1) |
 | 2 | Test-first and review depth | B4, B5, B7, B8, A8, A9 | Shipped v0.6.0 (PR #4) |
 | 3 | Front of the process: clarify → spec → tickets → plan → approve | B1, B2, B3, A10 | Shipped v0.7.0 (PR #6) |
-| 4 | Security and supply chain | B9, B10 | Not started |
+| 4 | Security and supply chain | B9, B10 | In progress: B10 done (#10, unreleased); B9 next (#11, ships as v0.8.0) |
 | 5 | Delivery and operations | B11–B19 | Not started |
 | 6 | Plugin health | B20–B25 | Not started |
 
@@ -51,7 +51,7 @@ Not yet assigned to a step: A6, A7 (deferred from step 2) and B6.
 | B7 | `silent-failure-reviewer` agent | Anthropic pr-review-toolkit | Done (step 2) |
 | B8 | `security-reviewer` agent plus a secret guard on edited content | Anthropic `security-guidance`, trailofbits `insecure-defaults` | Done (step 2) |
 | B9 | Supply-chain check on dependency changes: advisories, abandoned packages, typosquatting | trailofbits `supply-chain-risk-auditor` | Step 4 |
-| B10 | CI workflow audit of `.github/workflows` for AI-action injection and `pull_request_target` misuse | trailofbits `agentic-actions-auditor`, ECC AgentShield | Step 4 |
+| B10 | CI workflow audit of `.github/workflows` for AI-action injection and `pull_request_target` misuse | trailofbits `agentic-actions-auditor`, ECC AgentShield | Done (step 4, #10) |
 
 ### Delivery and operations (step 5)
 

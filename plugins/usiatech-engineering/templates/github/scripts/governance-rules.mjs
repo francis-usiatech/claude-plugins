@@ -62,6 +62,48 @@ export const PLAN_PATH = '.claude/plans/active.md'
 // Files the guard's own bookkeeping writes; never subject to ask/plan checks.
 export const GUARD_EXEMPT_PATHS = ['.claude/plans/**', '.claude/governance-log.jsonl']
 
+// Content rules for workflow (B10) files. Findings are { rule, tier, file, line, detail, package? }; tier is 'high'
+// (the guard asks, CI fails unless labelled) or 'warning' (reported only).
+export { checkWorkflow, isWorkflowPath, TIER } from './workflow-rules.mjs'
+
+/**
+ * Validates engineering.json → governance.allowlist. Each entry needs a rule ID plus a path glob or a package name,
+ * so an entry can't switch a rule off everywhere (a path made only of wildcards, like `**`, is rejected for the same
+ * reason). Invalid entries are dropped and reported.
+ * @returns {{ entries: { rule: string, path?: string, package?: string }[], problems: string[] }}
+ */
+export const parseAllowlist = (list) => {
+  if (list == null) return { entries: [], problems: [] }
+  if (!Array.isArray(list)) return { entries: [], problems: ['"governance.allowlist" must be an array of { rule, path | package, reason } objects'] }
+  const entries = []
+  const problems = []
+  list.forEach((e, i) => {
+    const str = (k) => typeof e?.[k] === 'string' && e[k] !== ''
+    if (!isPlainObject(e) || !str('rule') || !(str('path') || str('package'))) {
+      problems.push(`"governance.allowlist[${i}]" needs a string "rule" and a string "path" or "package"`)
+      return
+    }
+    if (str('path') && /^[*?/]+$/.test(e.path)) {
+      problems.push(`"governance.allowlist[${i}]" has a path made of only wildcards ("${e.path}"); name the files it covers`)
+      return
+    }
+    entries.push({ rule: e.rule, ...(str('path') && { path: e.path }), ...(str('package') && { package: e.package }) })
+  })
+  return { entries, problems }
+}
+
+// Marks each finding suppressed (true/false). Suppressed findings are still reported and logged, but never block.
+export const applyAllowlist = (findings, entries, ignoreCase = false) => findings.map((f) => ({
+  ...f,
+  suppressed: entries.some((e) => e.rule === f.rule
+    && (!e.path || globToRegExp(e.path, ignoreCase).test(f.file))
+    && (!e.package || e.package === f.package)),
+}))
+
+export const blockingFindings = (findings) => findings.filter((f) => f.tier === 'high' && !f.suppressed)
+
+export const formatFinding = (f) => `[${f.rule}, ${f.tier}${f.suppressed ? ', suppressed' : ''}] ${f.file}:${f.line} ${f.detail}`
+
 // Secrets in edited content: [reason, regex source]. Provider formats are near-certain and denied (case-sensitive);
 // generic credential assignments are fuzzier and ask (case-insensitive).
 export const DENY_CONTENT = [

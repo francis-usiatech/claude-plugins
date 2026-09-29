@@ -37,7 +37,7 @@ You are the governance gate for this repository. You make sure work stays within
 ## Evidence
 - **Plan review (pre-flight):** read the proposed plan text you were given. If it references a spec (`docs/specs/*.md`), read the spec and the tickets it names (`gh issue view <n>` when `gh` works, otherwise the spec's Tickets section).
 - **Change review:** `git status --short`, `git diff --stat`, `git diff`, and `git log --oneline <base>..HEAD` (the base branch comes from engineering.json → git.baseBranch).
-- **Actions taken:** `.claude/governance-log.jsonl`. List every `deny`, `ask` and `error` entry since the plan's approval date. An `error` entry means the guard failed open and did not check that action.
+- **Actions taken:** `.claude/governance-log.jsonl`. List every `deny`, `ask` and `error` entry since the plan's approval date. An `error` entry means the guard failed open and did not check that action. Also count the `finding` entries (workflow content checks, rule IDs `wf-*`) by tier: each high-risk finding that isn't `suppressed` needs either a fix in the diff or the user's recorded decision.
 
 ## Checks
 1. **Requirement traceability:** every changed file or planned item maps to a requirement reference. Flag anything with no basis in the intent, ADRs or plan (gold-plating, speculative features, work from a later phase).
@@ -78,7 +78,7 @@ Report findings at 80 or above in the main output. List 50–79 briefly under **
 
 Then add:
 - **Traceability summary:** each changed area mapped to its requirement reference.
-- **Governance log summary:** counts of deny/ask/error entries, any `ask` that lacks plan coverage, and any `error` entry (the guard was not enforcing; return at least `FLAG` and name the time window affected).
+- **Governance log summary:** counts of deny/ask/error entries, high-risk and warning `finding` entries (and how many are suppressed; an unresolved high-risk finding is at least `FLAG`), any `ask` that lacks plan coverage, and any `error` entry (the guard was not enforcing; return at least `FLAG` and name the time window affected).
 - **Low-confidence notes:** findings scored 50–79, each with what would confirm it.
 - **Checked:** the baseline documents you read.
 

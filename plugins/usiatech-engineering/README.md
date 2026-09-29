@@ -20,7 +20,8 @@ Shared engineering workflow **and governance** for UsiaTech repositories (Waypoi
 | Agent | `convention-reviewer` | Read-only review of a diff against the repo's root and folder AGENTS.md |
 | Agent | `silent-failure-reviewer` | Read-only review for swallowed errors, masking fallbacks, lost async errors, ignored exit codes and tests that can't fail |
 | Agent | `security-reviewer` | Read-only security review of a diff: injection, access control, input handling, secrets, SSRF/path traversal, crypto, dependencies and CI workflows |
-| Hook | Governance guard (PreToolUse on Bash + edits) | **Deny:** catastrophic or rule-breaking actions and edits that write secrets. **Ask:** risky commands, likely hard-coded credentials, governance/CI/dependency files, edits outside the approved plan. **Log:** every decision to `.claude/governance-log.jsonl` |
+| Agent | `workflow-reviewer` | Read-only review of `.github/workflows/` changes: privileged triggers running PR code, script and prompt injection, exposed secrets, pinning and token permissions; judges the `wf-*` rule findings |
+| Hook | Governance guard (PreToolUse on Bash + edits) | **Deny:** catastrophic or rule-breaking actions and edits that write secrets. **Ask:** risky commands, likely hard-coded credentials, high-risk workflow content, governance/CI/dependency files, edits outside the approved plan. **Log:** every decision and workflow finding to `.claude/governance-log.jsonl` |
 
 ## Per-repo configuration: `.claude/engineering.json`
 Start from `templates/engineering.json` (or run the `setup-engineering` skill).
@@ -35,7 +36,7 @@ Start from `templates/engineering.json` (or run the `setup-engineering` skill).
 | `allowEnvExample` | Allow edits to `.env.example` (default `true`) |
 | `userGuide` | Guide folder, changelog file, optional manifest |
 | `reviewers` | Agents `release` runs before committing, in two stages: `governance-reviewer` first, then the rest in parallel (default adds `convention-reviewer`, `silent-failure-reviewer`, `security-reviewer`; repo-specific ones allowed) |
-| `governance` | `protectedBranches`, `askPaths`, `requirePlan`, extra `denyCommands` / `askCommands` (regex + reason), `rulesFile` |
+| `governance` | `protectedBranches`, `askPaths`, `requirePlan`, extra `denyCommands` / `askCommands` (regex + reason), `allowlist` (see below), `rulesFile` |
 
 ## Governance model (layered)
 
@@ -53,12 +54,13 @@ Start from `templates/engineering.json` (or run the `setup-engineering` skill).
   - branch flow (only `develop` or `hotfix/*` into `main`)
   - no `.env` files, no edits to committed immutable files
   - governance/CI/dependency changes need the `governance-approved` label
+  - workflow content checks on each changed `.github/workflows/*.yml` (below): high-risk findings fail unless labelled; warnings are listed
   - gitleaks secrets scan
 - `verify-gate`: the same `.claude/engineering.json` gate as the local `verify` skill.
 - `ai-governance-review`: Claude Code GitHub Action applies `REVIEW.md` + AGENTS.md + `governance.md` + intent/ADRs. It returns a structured PASS/FLAG/BLOCK verdict, posts inline comments, and keeps one verdict comment per commit.
 - `governance-gate` (required check): fails on failed checks or verify, on BLOCK or ERROR, on FLAG without the label, or when there's no verdict for the head commit.
 
-Scripts and rules are read from the **base branch** (`_gov/`), so a PR can't weaken its own gate. The PR description is passed to the reviewer as untrusted data. Fork PRs get no AI review (secrets are withheld), so they fail the gate until a maintainer re-opens them from a branch.
+Scripts and rules are read from the **base branch** (`_gov/`), so a PR can't change the checks it is judged by. The workflow file itself is the exception: GitHub runs `pr-governance.yml` from the PR, so a PR that edits it can change or skip the gate. The checks flag such edits (`.github/**` needs the approval label), but to enforce that, add a repository ruleset with **Require workflows to pass** pointing at the base-branch workflow, or require Code Owner review on `.github/**`. The PR description is passed to the reviewer as untrusted data. Fork PRs get no AI review (secrets are withheld), so they fail the gate until a maintainer re-opens them from a branch.
 
 **Default guard rules**
 - **Deny:**
@@ -81,6 +83,22 @@ Scripts and rules are read from the **base branch** (`_gov/`), so a PR can't wea
   - edits that look like a hard-coded credential (`password = "…"`, `apiKey: "…"`)
   - edits outside the approved plan, and edits to the plan itself (`.claude/plans/active.md`)
   - any action while `.claude/engineering.json` is malformed or has an invalid command pattern (default deny rules still apply)
+
+**Workflow content checks** (`templates/github/scripts/workflow-rules.mjs`). The guard runs them on the post-edit content of any `.github/workflows/*.yml` edit, and `governance-checks` runs them on each changed workflow in a PR. Both compare against the previous version: the file on disk locally, the base-branch file in CI.
+
+| Rule | Tier | Catches |
+|---|---|---|
+| `wf-privileged-checkout` | high | `pull_request_target` / `workflow_run` jobs that check out PR-controlled code |
+| `wf-privileged-secrets` | high | secrets (or `secrets: inherit`) in such a job |
+| `wf-untrusted-input` | high | untrusted event text (`github.event.*` titles, bodies, branch names, commit messages, `github.head_ref`), or a whole event object such as `toJSON(github.event)` or `join(github.event.issue.*)`, in `run:`, an `actions/github-script` script, or an AI action's inputs. Expressions are matched in any case, spacing or `['key']` notation |
+| `wf-unparsed` | high | parts of the file the checks can't read: YAML anchors, aliases, merge keys, tags or explicit keys; double-quoted escapes other than `\" \\ \n \t \/` (GitHub decodes `\x24` to `$`); quoted strings or `[ ]` / `{ }` collections that span lines, and quotes or brackets that never close; `jobs`, a job, `steps` or a step of the wrong type; lines the parser skipped; or (in the guard) an edit whose result can't be worked out. The checks fail closed rather than pass a file they only partly read |
+| `wf-unpinned-action` | warning | third-party actions and reusable workflows not pinned to a 40-character SHA (`actions/*`, `github/*` and local actions exempt) |
+| `wf-write-all` | warning | `permissions: write-all` |
+| `wf-permissions-widened` | warning | a scope that grows compared with the previous version, or an explicit `permissions` block that is removed |
+
+High-risk findings make the guard ask, even when the path isn't in `askPaths`, and fail the CI checks unless the PR has the approval label. Warnings never block. Every finding is logged as `"decision": "finding"` with `rule`, `tier`, `file`, `line` and `detail`, and `governance-reviewer` counts them. The existing label requirement for `.github/**` changes is unchanged. The new checks add to it; they don't replace it.
+
+To accept a known finding, add an entry to `governance.allowlist`: `{ "rule": "wf-unpinned-action", "path": ".github/workflows/pr-governance.yml", "reason": "…" }`. Each entry needs a rule ID plus a `path` glob or a `package` name, so a rule can't be turned off everywhere; a path made only of wildcards (`**`, `*`, `**/*`) is rejected. Allowlisted findings are still reported and logged as `suppressed`, but they don't block. CI reads the allowlist from the base branch, so a PR can't allowlist its own findings. The template's allowlist ships empty. The shipped `pr-governance.yml` gets one warning (`anthropics/claude-code-action@v1` is on a major tag): pin it to a SHA, or allowlist it with a reason as shown above.
 
 All default rules live in one module, `templates/github/scripts/governance-rules.mjs`. The guard hook imports the plugin's copy. `setup-engineering` copies it into `.github/scripts/` with the CI scripts, which read the repo's copy. The two match at install time. After upgrading the plugin, re-copy `templates/github/scripts/` or the PR checks keep the older rules.
 

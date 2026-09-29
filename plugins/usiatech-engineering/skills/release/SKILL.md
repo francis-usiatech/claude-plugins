@@ -20,7 +20,7 @@ Repo `AGENTS.md` rules win on conflict.
 3. Run the `verify` skill. Stop if the gate fails.
 4. Review in two stages, using the agents in `reviewers`:
    - **Stage 1 (scope and requirements):** run `governance-reviewer` on its own first. A `BLOCK` stops here. A `FLAG` needs the user's explicit decision, recorded in the plan's change log, before stage 2. Don't spend stage 2 on work that may be thrown away.
-   - **Stage 2 (code quality):** run the other reviewers in parallel (default `convention-reviewer`, `silent-failure-reviewer`, `security-reviewer`; repos may add their own, e.g. `security-tenancy-auditor`). Resolve every blocking finding before committing. List nits in the PR.
+   - **Stage 2 (code quality):** run the other reviewers in parallel (default `convention-reviewer`, `silent-failure-reviewer`, `security-reviewer`; repos may add their own, e.g. `security-tenancy-auditor`). Also run `workflow-reviewer` when the diff touches `.github/workflows/`. Resolve every blocking finding before committing. List nits in the PR.
    - Reviewers only report findings with confidence 80 or above. Check a low-confidence note yourself before acting on it.
    - If `reviewers` doesn't include `governance-reviewer`, say in the PR that stage 1 was skipped.
 5. Commit once, in conventional format: `type(scope): summary` (≤ 72 chars), with a body giving the why, references (intent §, ADR, issue) and migration notes.

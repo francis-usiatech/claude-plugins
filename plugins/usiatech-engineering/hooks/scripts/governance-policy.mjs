@@ -9,7 +9,8 @@ import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import {
   matchAny, isSecretEnvFile, escapeRegExp, isPlainObject, isStringArray, findSecret, DENY_COMMANDS, ASK_COMMANDS,
-  DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH,
+  DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH, parseAllowlist,
+  checkWorkflow, isWorkflowPath, applyAllowlist, blockingFindings, formatFinding, TIER,
 } from '../../templates/github/scripts/governance-rules.mjs'
 
 const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit']
@@ -80,6 +81,9 @@ export const sanitizeConfig = (raw) => {
     })
   }
   const repoRules = { deny: compile('denyCommands', 'repo deny rule'), ask: compile('askCommands', 'repo ask rule') }
+  const allow = parseAllowlist(gov.allowlist)
+  problems.push(...allow.problems)
+  gov.allowlist = allow.entries
   return { cfg, gov, repoRules, problems }
 }
 
@@ -134,7 +138,7 @@ const decideBash = (cmd, { cfg, gov, repoRules }, git, root) => {
   return null
 }
 
-const decideEdit = (file, { cfg, gov }, git, root, p, ic, text = '') => {
+const decideEdit = (file, { cfg, gov }, git, root, p, ic, tool, ti) => {
   const relNative = p.relative(root, p.resolve(root, file))
   // On Windows a path on another drive comes back absolute rather than starting with "..".
   if (relNative.startsWith('..') || p.isAbsolute(relNative)) return decision('ask', `Edit outside the project folder (${file}).`, file)
@@ -150,13 +154,50 @@ const decideEdit = (file, { cfg, gov }, git, root, p, ic, text = '') => {
   }
 
   // Before the plan/exempt/ask checks: a secret is never fine, wherever it is written.
-  const secret = findSecret(text)
+  const secret = findSecret(editedText(tool, ti))
   if (secret?.decision === 'deny') return decision('deny', `The edit writes what looks like a ${secret.why}. Keep secrets in env files or a secret manager.`, rel)
+  const findings = isWorkflowPath(rel) ? workflowFindings(rel, tool, ti, gov, root, p, ic) : []
+  const blocking = blockingFindings(findings)
   const scope = decideScope(rel, gov, root, ic)
-  if (!secret) return scope
-  // A credential ask must not hide a scope or governance ask; the user confirms both at once.
-  const credential = `The edit looks like it hard-codes a ${secret.why}. Confirm it is not a real secret.`
-  return decision('ask', scope ? `${credential} Also: ${scope.reason}` : credential, rel)
+  // A credential or workflow ask must not hide a scope or governance ask; the user confirms them all at once.
+  const reasons = [
+    secret && `The edit looks like it hard-codes a ${secret.why}. Confirm it is not a real secret.`,
+    blocking.length && `The workflow change has ${blocking.length} high-risk finding(s).`,
+    scope?.reason,
+  ].filter(Boolean)
+  const result = reasons.length
+    ? decision('ask', reasons.join(' Also: ') + (findings.length ? ` Findings: ${findings.map(formatFinding).join(' ')}` : ''), rel)
+    : findings.length ? decision(null, '', rel) : null
+  if (result && findings.length) result.findings = findings
+  return result
+}
+
+// The file as it would be after the edit, or null when that can't be worked out.
+const postEditContent = (tool, ti, before) => {
+  if (tool === 'Write') return typeof ti.content === 'string' ? ti.content : null
+  const edits = tool === 'Edit' ? [ti] : tool === 'MultiEdit' && Array.isArray(ti.edits) ? ti.edits : []
+  if (!edits.length) return null
+  // An edit whose first old_string is empty creates the file from its new_string.
+  let text = before ?? (edits[0]?.old_string === '' ? '' : null)
+  if (text == null) return null
+  for (const e of edits) {
+    if (typeof e?.old_string !== 'string' || typeof e?.new_string !== 'string' || !text.includes(e.old_string)) return null
+    text = e.replace_all ? text.split(e.old_string).join(e.new_string) : text.replace(e.old_string, () => e.new_string)
+  }
+  return text
+}
+
+// R11: the shared workflow rules run on the post-edit content; the base is the file on disk before the edit.
+const workflowFindings = (rel, tool, ti, gov, root, p, ic) => {
+  // An unreadable file throws: the hook logs it as a fail-open error rather than skipping the checks silently.
+  const abs = p.join(root, rel)
+  const before = existsSync(abs) ? readFileSync(abs, 'utf8') : null
+  const content = postEditContent(tool, ti, before)
+  // Fail closed: without the resulting file the rules can't run, so ask rather than let the edit through unchecked.
+  if (content == null) {
+    return [{ rule: 'wf-unparsed', tier: TIER.HIGH, file: rel, line: 1, suppressed: false, detail: 'The guard could not work out the file content after this edit, so the workflow checks did not run.' }]
+  }
+  return applyAllowlist(checkWorkflow({ file: rel, content, base: before }), gov.allowlist || [], ic)
 }
 
 // Plan, governance-file and plan-scope checks for a project-relative path.
@@ -182,7 +223,9 @@ const decideScope = (rel, gov, root, ic) => {
  * @param {typeof gitProbe} [opts.git]    git access (injectable for tests)
  * @param {typeof path} [opts.pathApi]    path module (path.win32 in tests)
  * @param {boolean} [opts.caseInsensitive] match paths ignoring case (defaults to true on Windows/macOS)
- * @returns {{ decision: 'deny'|'ask', reason: string, target: string } | null}  null means allow
+ * @returns {{ decision: 'deny'|'ask'|null, reason: string, target: string, findings?: object[] } | null}
+ *   null, or decision null, means allow. findings (workflow content checks) are set whenever there are any, so the
+ *   hook can log them even when the edit is allowed.
  */
 export const evaluate = (input, { root, cfg = {}, configError = null, git = gitProbe, pathApi = path, caseInsensitive = CASE_INSENSITIVE_FS }) => {
   const tool = input.tool_name || ''
@@ -201,11 +244,13 @@ export const evaluate = (input, { root, cfg = {}, configError = null, git = gitP
     if (typeof target !== 'string') {
       target = JSON.stringify(target)
       result = decision('ask', 'The edit target is not a file path string. Confirm the edit.', target)
-    } else result = decideEdit(target, safe, git, root, pathApi, caseInsensitive, editedText(tool, ti))
+    } else result = decideEdit(target, safe, git, root, pathApi, caseInsensitive, tool, ti)
   } else return null
 
   // Default deny rules still hold with a broken config; anything else becomes a confirmation.
   if (!problems.length || result?.decision === 'deny') return result
   const warn = `Config problem: ${problems.join('; ')}. Repo-specific rules are not fully applied until it is fixed.`
-  return decision('ask', result ? `${result.reason} ${warn}` : warn, result?.target ?? target)
+  const asked = decision('ask', result?.decision ? `${result.reason} ${warn}` : warn, result?.target ?? target)
+  if (result?.findings) asked.findings = result.findings
+  return asked
 }

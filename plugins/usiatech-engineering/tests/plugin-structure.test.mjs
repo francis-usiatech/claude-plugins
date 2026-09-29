@@ -250,6 +250,48 @@ describe('plugin structure: step-3 deferred minors', () => {
   })
 })
 
+describe('plugin structure: step-4 workflow checks (B10)', () => {
+  it('should ship a read-only workflow-reviewer agent', () => {
+    assert.ok(agents.includes('workflow-reviewer'))
+    assert.match(body(read('agents', 'workflow-reviewer.md')), /pull_request_target/)
+  })
+
+  it('should run workflow-reviewer in release stage 2 only when .github/workflows/ changes', () => {
+    const text = body(read('skills', 'release', 'SKILL.md'))
+    const stage2 = text.slice(text.indexOf('Stage 2'))
+    assert.match(stage2, /`workflow-reviewer`[^\n]*`\.github\/workflows\/`/)
+  })
+
+  it('should point security-reviewer at workflow-reviewer for depth', () => {
+    assert.match(body(read('agents', 'security-reviewer.md')), /`workflow-reviewer`/)
+  })
+
+  it('should make governance-reviewer count workflow findings from the guard log', () => {
+    const text = body(read('agents', 'governance-reviewer.md'))
+    assert.match(text, /`finding`/)
+    assert.match(text, /high-risk/)
+  })
+
+  it('should say the PR workflow file runs from the PR and how to enforce the gate', () => {
+    const readme = read('README.md')
+    assert.doesNotMatch(readme, /can't weaken its own gate/)
+    assert.match(readme, /runs `pr-governance\.yml` from the PR/)
+    assert.match(readme, /Require workflows to pass/)
+  })
+
+  it('should ship the config template with no live allowlist entries', () => {
+    // A live entry would suppress a finding in every repo that copies the template.
+    assert.deepEqual(JSON.parse(read('templates', 'engineering.json')).governance.allowlist, [])
+  })
+
+  it('should document an allowlist entry shape that parseAllowlist accepts', async () => {
+    const { parseAllowlist } = await import('../templates/github/scripts/governance-rules.mjs')
+    const sample = [{ rule: 'wf-unpinned-action', path: '.github/workflows/pr-governance.yml', reason: 'major tag kept on purpose' }]
+    assert.deepEqual(parseAllowlist(sample), { entries: [{ rule: 'wf-unpinned-action', path: '.github/workflows/pr-governance.yml' }], problems: [] })
+    assert.match(read('README.md'), /"rule": "wf-unpinned-action", "path": "\.github\/workflows\/pr-governance\.yml"/)
+  })
+})
+
 describe('plugin structure: release metadata', () => {
   it('should keep plugin, marketplace and both README versions in step', () => {
     const version = JSON.parse(read('.claude-plugin', 'plugin.json')).version

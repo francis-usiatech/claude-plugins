@@ -187,3 +187,93 @@ describe('governance-checks: case and .env.example', () => {
     assert.equal((await runChecks({ repo, config: { allowEnvExample: false } })).code, 1)
   })
 })
+
+describe('governance-checks: workflow content (R12, R15; AC8, AC10, AC12)', () => {
+  const WF = '.github/workflows/ci.yml'
+  const injection = 'on: issues\njobs:\n  a:\n    steps:\n      - run: echo "${{ github.event.issue.title }}"\n'
+  const unpinned = 'on: push\njobs:\n  a:\n    steps:\n      - uses: some-org/action@v1\n'
+  const noAsk = { governance: { askPaths: [] } }
+
+  it('should fail on a high-risk workflow finding even when askPaths does not cover the file', async () => {
+    const repo = makeRepo({ headFiles: { [WF]: injection } })
+    const r = await runChecks({ repo, config: noAsk })
+    assert.equal(r.code, 1, r.stdout)
+    assert.match(r.stdout, /\[wf-untrusted-input, high\] \.github\/workflows\/ci\.yml:5/)
+  })
+
+  it('should pass a warning-only change outside askPaths and list the warning', async () => {
+    const repo = makeRepo({ headFiles: { [WF]: unpinned } })
+    const r = await runChecks({ repo, config: noAsk })
+    assert.equal(r.code, 0, r.stdout)
+    assert.match(r.summary, /⚠️ \[wf-unpinned-action, warning\]/)
+  })
+
+  it('should turn a high-risk failure into a pass with the approval label', async () => {
+    const repo = makeRepo({ headFiles: { [WF]: injection } })
+    const r = await runChecks({ repo, config: noAsk, labels: ['governance-approved'] })
+    assert.equal(r.code, 0, r.stdout)
+    assert.match(r.stdout, /high-risk.*Accepted via label "governance-approved"/)
+  })
+
+  it('should keep the existing label requirement for workflow files under the default askPaths', async () => {
+    const repo = makeRepo({ headFiles: { [WF]: unpinned } })
+    const r = await runChecks({ repo })
+    assert.equal(r.code, 1)
+    assert.match(r.stdout, /Governance\/CI\/dependency files changed: \.github\/workflows\/ci\.yml/)
+    assert.match(r.stdout, /wf-unpinned-action/)
+  })
+
+  it('should compare permissions with the base-branch version of the file', async () => {
+    const base = 'on: push\njobs:\n  a:\n    permissions:\n      contents: read\n    steps:\n      - run: echo ok\n'
+    const repo = makeRepo({ baseFiles: { [WF]: base }, headFiles: { [WF]: base.replace('contents: read', 'contents: write') } })
+    const r = await runChecks({ repo, config: noAsk })
+    assert.equal(r.code, 0, r.stdout)
+    assert.match(r.stdout, /wf-permissions-widened, warning.*contents: read → write/)
+  })
+
+  it('should mark allowlisted findings suppressed and not fail on them', async () => {
+    const repo = makeRepo({ headFiles: { [WF]: injection } })
+    const r = await runChecks({ repo, config: { governance: { askPaths: [], allowlist: [{ rule: 'wf-untrusted-input', path: WF }] } } })
+    assert.equal(r.code, 0, r.stdout)
+    assert.match(r.stdout, /\[wf-untrusted-input, high, suppressed\]/)
+  })
+
+  it('should ignore an allowlist entry that does not match', async () => {
+    const repo = makeRepo({ headFiles: { [WF]: injection } })
+    const r = await runChecks({ repo, config: { governance: { askPaths: [], allowlist: [{ rule: 'wf-untrusted-input', path: '.github/workflows/other.yml' }] } } })
+    assert.equal(r.code, 1, r.stdout)
+  })
+
+  it('should fail with a readable reason for an invalid allowlist', async () => {
+    const repo = makeRepo({ headFiles: { 'src/a.ts': 'x' } })
+    const r = await runChecks({ repo, config: { governance: { allowlist: [{ rule: 'wf-write-all' }] } } })
+    assert.equal(r.code, 1)
+    assert.match(r.stdout, /"governance\.allowlist\[0\]"/)
+  })
+
+  it('should not check a deleted workflow', async () => {
+    const repo = makeRepo({ baseFiles: { [WF]: injection }, headFiles: { [WF]: null, 'src/a.ts': 'x' } })
+    const r = await runChecks({ repo, config: noAsk })
+    assert.equal(r.code, 0, r.stdout)
+    assert.doesNotMatch(r.stdout, /wf-/)
+  })
+
+  it('should check a workflow with a non-ASCII file name and apply the label check to it', async () => {
+    const wf = '.github/workflows/é.yml'
+    const repo = makeRepo({ headFiles: { [wf]: injection } })
+    const r = await runChecks({ repo })
+    assert.equal(r.code, 1, r.stdout)
+    assert.match(r.stdout, /\[wf-untrusted-input, high\] \.github\/workflows\/é\.yml:5/)
+    assert.match(r.stdout, /Governance\/CI\/dependency files changed: \.github\/workflows\/é\.yml/)
+  })
+
+  it('should check a renamed workflow against its old base version', async () => {
+    const base = 'on: push\npermissions:\n  contents: read\njobs:\n  a:\n    steps:\n      - run: echo ok\n'
+    const repo = makeRepo({
+      baseFiles: { '.github/workflows/old.yml': base },
+      headFiles: { '.github/workflows/old.yml': null, '.github/workflows/new.yml': base.replace('contents: read', 'contents: write') },
+    })
+    const r = await runChecks({ repo, config: noAsk })
+    assert.match(r.stdout, /wf-permissions-widened/)
+  })
+})

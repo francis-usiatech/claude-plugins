@@ -1,0 +1,13 @@
+name: AI reply
+on:
+  issue_comment:
+    types: [created]
+jobs:
+  reply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-action@0123456789abcdef0123456789abcdef01234567
+        with:
+          prompt: |
+            Answer this comment:
+            ${{ github.event.comment.body }}

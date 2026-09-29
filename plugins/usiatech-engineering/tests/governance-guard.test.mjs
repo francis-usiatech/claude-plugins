@@ -88,3 +88,31 @@ describe('governance-guard hook', () => {
     assert.equal(readLog(root)[0].target.length, 300)
   })
 })
+
+describe('governance-guard hook: workflow findings (R16; AC13)', () => {
+  const content = 'on: issues\njobs:\n  a:\n    steps:\n      - uses: some-org/action@v1\n      - run: echo "${{ github.event.issue.title }}"\n'
+
+  it('should log one entry per finding with rule, tier, file and detail', async () => {
+    const root = tempDir()
+    const r = await runGuard(root, { tool_name: 'Write', tool_input: { file_path: '.github/workflows/ci.yml', content } })
+    assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'ask')
+    const found = readLog(root).filter((e) => e.decision === 'finding')
+    assert.deepEqual(found.map((e) => `${e.rule}:${e.tier}`).sort(), ['wf-unpinned-action:warning', 'wf-untrusted-input:high'])
+    for (const e of found) {
+      assert.equal(e.file, '.github/workflows/ci.yml')
+      assert.ok(e.detail.length > 0)
+      assert.equal(e.suppressed, false)
+    }
+    assert.equal(readLog(root).filter((e) => e.decision === 'ask').length, 1)
+  })
+
+  it('should log warning findings even when the edit is allowed', async () => {
+    const root = tempDir()
+    writeFiles(root, { '.claude/engineering.json': JSON.stringify({ governance: { askPaths: [] } }) })
+    const r = await runGuard(root, { tool_name: 'Write', tool_input: { file_path: '.github/workflows/ci.yml', content: 'on: push\njobs:\n  a:\n    steps:\n      - uses: some-org/action@v1\n' } })
+    assert.equal(r.stdout, '')
+    const log = readLog(root)
+    assert.deepEqual(log.map((e) => e.decision), ['finding'])
+    assert.equal(log[0].rule, 'wf-unpinned-action')
+  })
+})
