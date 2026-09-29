@@ -370,8 +370,11 @@ describe('checkWorkflow: pinning and permissions (R10; AC8)', () => {
   })
 
   it('should warn when an explicit permission block is removed', () => {
-    const content = fixture('perms-base.yml').replace('    permissions:\n      contents: read\n', '')
-    assert.deepEqual(rules(checkWorkflow({ file: '.github/workflows/x.yml', content, base: fixture('perms-base.yml') })), ['wf-permissions-widened:warning'])
+    const base = fixture('perms-base.yml')
+    // \r? because Windows checkouts can give the fixture CRLF line endings.
+    const content = base.replace(/    permissions:\r?\n      contents: read\r?\n/, '')
+    assert.notEqual(content, base)
+    assert.deepEqual(rules(checkWorkflow({ file: '.github/workflows/x.yml', content, base })), ['wf-permissions-widened:warning'])
   })
 
   it('should not warn when permissions stay the same or narrow, or when there is no base', () => {
