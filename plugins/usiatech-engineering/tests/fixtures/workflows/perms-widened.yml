@@ -1,0 +1,9 @@
+name: Docs
+on: push
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - run: echo docs

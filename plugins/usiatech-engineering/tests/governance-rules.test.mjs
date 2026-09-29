@@ -2,7 +2,8 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   globToRegExp, matchAny, isSecretEnvFile, findSecret, DENY_COMMANDS, ASK_COMMANDS,
-  DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS,
+  DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, parseAllowlist, applyAllowlist, blockingFindings, formatFinding,
+  checkWorkflow, isWorkflowPath,
 } from '../templates/github/scripts/governance-rules.mjs'
 
 describe('globToRegExp', () => {
@@ -125,5 +126,68 @@ describe('findSecret', () => {
 
   it('should find a secret after an earlier placeholder match', () => {
     assert.equal(findSecret('AKIA' + 'IOSFODNN7EXAMPLE and ' + 'AKIA' + 'R'.repeat(16)).decision, 'deny')
+  })
+})
+
+describe('allowlist (R15)', () => {
+  const finding = { rule: 'wf-unpinned-action', tier: 'warning', file: '.github/workflows/ci.yml', line: 7, detail: 'x' }
+
+  it('should keep valid entries and report invalid ones by index', () => {
+    const { entries, problems } = parseAllowlist([
+      { rule: 'wf-unpinned-action', path: '.github/workflows/ci.yml', reason: 'vendor action' },
+      { rule: 'wf-write-all' },
+      { path: '.github/workflows/*.yml' },
+      'wf-write-all',
+    ])
+    assert.equal(entries.length, 1)
+    assert.deepEqual(problems.map((p) => p.match(/\[(\d)\]/)[1]), ['1', '2', '3'])
+  })
+
+  it('should reject a path made only of wildcards, which would switch the rule off everywhere', () => {
+    for (const p of ['**', '*', '**/*', '*/**', '/**']) {
+      const { entries, problems } = parseAllowlist([{ rule: 'wf-untrusted-input', path: p }])
+      assert.equal(entries.length, 0, p)
+      assert.match(problems[0], /"governance\.allowlist\[0\]".*only wildcards/, p)
+    }
+    assert.equal(parseAllowlist([{ rule: 'wf-untrusted-input', path: '.github/workflows/*.yml' }]).entries.length, 1)
+  })
+
+  it('should report a non-array allowlist and treat a missing one as empty', () => {
+    assert.match(parseAllowlist({ rule: 'x' }).problems[0], /"governance\.allowlist" must be an array/)
+    assert.deepEqual(parseAllowlist(undefined), { entries: [], problems: [] })
+  })
+
+  it('should mark a finding suppressed when rule and path glob both match', () => {
+    const { entries } = parseAllowlist([{ rule: 'wf-unpinned-action', path: '.github/workflows/*.yml' }])
+    assert.equal(applyAllowlist([finding], entries)[0].suppressed, true)
+  })
+
+  it('should change nothing when the rule or the path does not match', () => {
+    for (const e of [{ rule: 'wf-write-all', path: '.github/workflows/ci.yml' }, { rule: 'wf-unpinned-action', path: '.github/workflows/other.yml' }]) {
+      const { entries } = parseAllowlist([e])
+      assert.equal(applyAllowlist([finding], entries)[0].suppressed, false, JSON.stringify(e))
+    }
+  })
+
+  it('should match a package entry against the finding package', () => {
+    const { entries } = parseAllowlist([{ rule: 'npm-install-script', package: 'esbuild' }])
+    assert.equal(applyAllowlist([{ ...finding, rule: 'npm-install-script', package: 'esbuild' }], entries)[0].suppressed, true)
+    assert.equal(applyAllowlist([{ ...finding, rule: 'npm-install-script', package: 'other' }], entries)[0].suppressed, false)
+  })
+
+  it('should only count unsuppressed high findings as blocking', () => {
+    const high = { ...finding, rule: 'wf-untrusted-input', tier: 'high' }
+    assert.deepEqual(blockingFindings([finding, { ...high, suppressed: true }]), [])
+    assert.deepEqual(blockingFindings([finding, high]), [high])
+  })
+
+  it('should format a finding with rule, tier, location and suppression', () => {
+    assert.equal(formatFinding(finding), '[wf-unpinned-action, warning] .github/workflows/ci.yml:7 x')
+    assert.equal(formatFinding({ ...finding, suppressed: true }), '[wf-unpinned-action, warning, suppressed] .github/workflows/ci.yml:7 x')
+  })
+
+  it('should re-export the workflow rules so guard and CI share one module', () => {
+    assert.equal(typeof checkWorkflow, 'function')
+    assert.ok(isWorkflowPath('.github/workflows/ci.yml'))
   })
 })

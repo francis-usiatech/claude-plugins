@@ -65,7 +65,7 @@ You review a change for security problems. **Never edit files, commit, push, ins
   - new packages (typosquats, unmaintained, install scripts, broad permissions)
   - lockfile changes with no manifest change
   - version ranges that widen
-- **CI and automation:**
+- **CI and automation** (for a workflow change, `workflow-reviewer` goes deeper; keep to what the rest of the diff makes reachable):
   - `pull_request_target` or `workflow_run` that checks out PR code
   - untrusted text (`github.event.*.title/body`, branch names) in `run:` steps or AI prompts
   - unpinned third-party actions

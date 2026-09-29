@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // usiatech-engineering: governance guard (PreToolUse on Bash, Edit, MultiEdit, Write, NotebookEdit).
 // Reads the hook payload, asks governance-policy.mjs for a decision and reports it to Claude Code.
-// Every deny/ask is appended to .claude/governance-log.jsonl.
+// Every deny/ask, and every workflow content finding (decision "finding"), is appended to .claude/governance-log.jsonl.
 // Internal errors fail open (exit 0) so a bug never wedges a session, but they are logged as
 // decision "error" so the governance-reviewer can see that the guard was not enforcing.
 import { existsSync, appendFileSync, mkdirSync } from 'node:fs'
@@ -33,7 +33,11 @@ try {
   const { evaluate, loadConfig } = await import('./governance-policy.mjs')
   const { cfg, error } = loadConfig(root)
   const result = evaluate(input, { root, cfg, configError: error })
-  if (result) {
+  // One entry per workflow/dependency finding (R16), whether or not the edit is allowed.
+  for (const f of result?.findings || []) {
+    logDecision(root, { tool, target: result.target, decision: 'finding', rule: f.rule, tier: f.tier, file: f.file, line: f.line, detail: f.detail, suppressed: !!f.suppressed })
+  }
+  if (result?.decision) {
     logDecision(root, { tool, target: result.target, decision: result.decision, reason: result.reason })
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {

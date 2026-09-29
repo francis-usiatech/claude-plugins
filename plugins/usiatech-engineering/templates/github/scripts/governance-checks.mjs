@@ -5,7 +5,10 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, existsSync, appendFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { matchAny, isSecretEnvFile, isPlainObject, isStringArray, DEFAULT_ASK_PATHS } from './governance-rules.mjs'
+import {
+  matchAny, isSecretEnvFile, isPlainObject, isStringArray, DEFAULT_ASK_PATHS,
+  checkWorkflow, isWorkflowPath, parseAllowlist, applyAllowlist, blockingFindings, formatFinding,
+} from './governance-rules.mjs'
 
 // Developers check out on case-insensitive file systems, where `.ENV` or `Agents.MD` is the same file.
 const IGNORE_CASE = true
@@ -18,6 +21,7 @@ const configPath = path.join(govRoot, '.claude/engineering.json')
 
 const errors = []
 const notes = []
+const warnings = []
 
 // A broken base-branch config fails the checks with a readable reason; the defaults apply for the bad keys.
 const configError = (msg) => errors.push(`Base-branch .claude/engineering.json: ${msg}`)
@@ -82,8 +86,17 @@ if (base === releaseBranch && head !== baseBranch && !/^hotfix\//.test(head)) {
 }
 
 // 3. Changed files
-const diff = execFileSync('git', ['diff', '--name-status', `origin/${base}...HEAD`], { encoding: 'utf8' }).trim()
-const changes = diff ? diff.split('\n').map((l) => l.split('\t')) : []
+// -z gives raw, unquoted paths (git otherwise quotes non-ASCII names, which would slip past every path check).
+// Records are NUL-separated: status, path, and a second path for renames and copies.
+const diffFields = execFileSync('git', ['-c', 'core.quotePath=false', 'diff', '--name-status', '-z', `origin/${base}...HEAD`], { encoding: 'utf8' })
+  .split('\0').filter(Boolean)
+const changes = []
+for (let i = 0; i < diffFields.length;) {
+  const status = diffFields[i]
+  const count = /^[RC]/.test(status) ? 2 : 1
+  changes.push([status, ...diffFields.slice(i + 1, i + 1 + count)])
+  i += 1 + count
+}
 const govPaths = stringList(gov, 'askPaths', 'governance.askPaths', DEFAULT_ASK_PATHS)
 const immutable = stringList(cfg, 'immutableWhenCommitted', 'immutableWhenCommitted', [])
 const govTouched = []
@@ -102,9 +115,35 @@ if (govTouched.length) {
   else errors.push(`${msg} The Document Owner must review and add the label "${approvalLabel}".`)
 }
 
+// 4. Workflow content (R12): the shared rules on each added, changed or renamed workflow, compared with its
+// base-branch version. Unsuppressed high-risk findings fail unless labelled; the rest are reported.
+const allow = parseAllowlist(gov.allowlist)
+allow.problems.forEach((p) => configError(`${p}.`))
+const show = (ref, p) => execFileSync('git', ['show', `${ref}:${p}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+const findings = []
+for (const [status, p1, p2] of changes) {
+  const target = p2 || p1
+  if (status === 'D' || !isWorkflowPath(target)) continue
+  try {
+    const before = status === 'A' ? null : show(`origin/${base}`, p1)
+    findings.push(...checkWorkflow({ file: target, content: show('HEAD', target), base: before }))
+  } catch (e) {
+    errors.push(`Could not read ${target} to check its workflow content: ${e.message.split('\n')[0]}`)
+  }
+}
+const checked = applyAllowlist(findings, allow.entries, IGNORE_CASE)
+const blocking = blockingFindings(checked)
+if (blocking.length) {
+  const msg = `Workflow changes have ${blocking.length} high-risk finding(s): ${blocking.map(formatFinding).join(' ')}`
+  if (approved) notes.push(`${msg} Accepted via label "${approvalLabel}".`)
+  else errors.push(`${msg} Fix them, allowlist them in the base-branch .claude/engineering.json, or have the Document Owner add the label "${approvalLabel}".`)
+}
+for (const f of checked.filter((x) => !blocking.includes(x))) warnings.push(formatFinding(f))
+
 // Report
 const lines = ['## Governance checks', '', `Files changed: ${changes.length}`, '']
 for (const e of errors) lines.push(`- ❌ ${e}`)
+for (const w of warnings) lines.push(`- ⚠️ ${w}`)
 for (const n of notes) lines.push(`- ℹ️ ${n}`)
 if (!errors.length) lines.push('- ✅ All deterministic governance checks passed.')
 const out = lines.join('\n') + '\n'

@@ -1,0 +1,14 @@
+name: Triage safely
+on:
+  issues:
+    types: [opened]
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Echo title
+        env:
+          TITLE: ${{ github.event.issue.title }}
+        run: |
+          # the title arrives through the environment, never the script text
+          echo "$TITLE"
