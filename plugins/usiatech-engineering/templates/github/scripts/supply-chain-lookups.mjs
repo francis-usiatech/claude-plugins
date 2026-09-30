@@ -96,7 +96,8 @@ export const registryFindings = ({ target, result, now = Date.now() }) => {
   const cutoff = new Date(now)
   cutoff.setUTCFullYear(cutoff.getUTCFullYear() - 2)
   const latest = Date.parse(result.latestTime)
-  if (latest < cutoff.getTime()) findings.push({ rule: 'sc-stale', tier: TIER.WARNING, ...at, detail: `"${target.name}" has had no release since ${result.latestTime.slice(0, 10)}, more than 2 years ago.` })
+  if (Number.isNaN(latest)) findings.push({ rule: 'sc-stale', tier: TIER.WARNING, ...at, detail: `"${target.name}" has no readable latest release date on the registry, so its release date is unknown; check it is maintained.` })
+  else if (latest < cutoff.getTime()) findings.push({ rule: 'sc-stale', tier: TIER.WARNING, ...at, detail: `"${target.name}" has had no release since ${result.latestTime.slice(0, 10)}, more than 2 years ago.` })
   const hooks = INSTALL_HOOKS.filter((h) => result.scripts?.[h])
   if (hooks.length) findings.push({ rule: 'sc-install-script', tier: TIER.WARNING, ...at, detail: `"${target.name}@${result.version}" runs ${hooks.join(', ')} script(s) when installed; check what they do.` })
   return findings

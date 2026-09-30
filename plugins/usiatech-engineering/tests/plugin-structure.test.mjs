@@ -339,6 +339,104 @@ describe('plugin structure: step-4 supply-chain checks (B9; AC15)', () => {
   })
 })
 
+describe('plugin structure: shipped CI kit hardening (#13)', () => {
+  const WORKFLOW = path.join('templates', 'github', 'workflows', 'pr-governance.yml')
+  const aiReview = async () => {
+    const { parseWorkflowYaml } = await import('../templates/github/scripts/workflow-rules.mjs')
+    const job = parseWorkflowYaml(read(WORKFLOW)).doc.jobs['ai-governance-review']
+    const action = job.steps.find((s) => String(s.uses).startsWith('anthropics/claude-code-action@'))
+    assert.ok(action, 'no claude-code-action step')
+    return { job, action }
+  }
+
+  it('should pass its own workflow rules with no unpinned action and no parse problem (AC1)', async () => {
+    const { checkWorkflow } = await import('../templates/github/scripts/workflow-rules.mjs')
+    const findings = checkWorkflow({ file: '.github/workflows/pr-governance.yml', content: read(WORKFLOW) })
+    assert.deepEqual(findings.filter((f) => ['wf-unpinned-action', 'wf-unparsed'].includes(f.rule)), [])
+    const { action } = await aiReview()
+    assert.match(action.uses, /^anthropics\/claude-code-action@[0-9a-f]{40}$/)
+  })
+
+  it('should pin every container image to a digest and never use :latest (AC2)', () => {
+    const images = read(WORKFLOW).match(/\b(?:ghcr\.io|docker\.io|quay\.io)\/\S+/g) ?? []
+    assert.ok(images.length > 0, 'no container image found')
+    for (const image of images) {
+      assert.match(image, /@sha256:[0-9a-f]{64}$/, image)
+      assert.doesNotMatch(image, /:latest\b/, image)
+    }
+  })
+
+  it('should keep the PR\'s own .claude settings, hooks and MCP servers out of the AI review (AC3)', async () => {
+    const { action } = await aiReview()
+    assert.match(action.with.claude_args, /--setting-sources user\b/)
+  })
+
+  it('should give the AI review no Bash tool and hand it a pre-generated diff and log instead (AC4)', async () => {
+    const { job, action } = await aiReview()
+    const tools = action.with.claude_args.match(/--allowedTools "([^"]*)"/)?.[1]
+    assert.ok(tools, 'no --allowedTools')
+    assert.doesNotMatch(tools, /Bash/)
+    const before = job.steps.slice(0, job.steps.indexOf(action)).map((s) => s.run ?? '').join('\n')
+    for (const file of ['.pr-diff.patch', '.pr-log.txt']) {
+      assert.ok(before.includes(`> ${file}`), `${file} not written before the review`)
+      assert.ok(action.with.prompt.includes(`\`${file}\``), `${file} not named in the prompt`)
+    }
+  })
+
+  it('should ship a governance ruleset template and apply it only after approval (AC5)', () => {
+    const ruleset = JSON.parse(read('templates', 'ruleset-governance.json'))
+    const rule = (type) => ruleset.rules.find((r) => r.type === type)
+    assert.deepEqual(rule('required_status_checks').parameters.required_status_checks.map((c) => c.context), ['governance-gate'])
+    assert.equal(rule('pull_request').parameters.require_code_owner_review, true)
+    const setup = body(read('skills', 'setup-engineering', 'SKILL.md'))
+    assert.match(setup, /`templates\/ruleset-governance\.json`[^\n]*after the user approves/)
+    const readme = read('README.md')
+    assert.match(readme, /`templates\/ruleset-governance\.json`/)
+    assert.match(readme, /required status check alone does not stop/i)
+  })
+
+  it('should keep review on for solo owners and let the admin bypass each PR on the record (fix A)', () => {
+    const ruleset = JSON.parse(read('templates', 'ruleset-governance.json'))
+    assert.deepEqual(ruleset.bypass_actors, [{ actor_id: 5, actor_type: 'RepositoryRole', bypass_mode: 'pull_request' }])
+    const setup = body(read('skills', 'setup-engineering', 'SKILL.md'))
+    assert.doesNotMatch(setup, /require_code_owner_review` to `false/)
+    assert.match(setup, /unprotected/)
+    assert.doesNotMatch(read('templates', 'github', 'CODEOWNERS'), /keep that setting OFF/)
+  })
+
+  it('should refuse to apply the ruleset while CODEOWNERS or the ruleset still hold placeholders (fix B)', () => {
+    const setup = body(read('skills', 'setup-engineering', 'SKILL.md'))
+    const step = setup.split('\n').find((l) => l.includes('ruleset-governance.json'))
+    for (const placeholder of ['@OWNER', '<baseBranch>', '<releaseBranch>']) assert.ok(step.includes(`\`${placeholder}\``), placeholder)
+    assert.match(step, /before the POST/)
+  })
+
+  it('should stop the AI review reading the runner\'s credentials and environment (fix C)', async () => {
+    const { job, action } = await aiReview()
+    for (const step of job.steps.filter((s) => String(s.uses).startsWith('actions/checkout@'))) {
+      assert.equal(String(step.with['persist-credentials']), 'false', JSON.stringify(step.with))
+    }
+    const denied = action.with.claude_args.match(/--disallowedTools "([^"]*)"/)?.[1] ?? ''
+    for (const rule of ['Read(//proc/**)', 'Read(~/.claude/**)', 'Read(//home/runner/work/_temp/**)', 'Read(./.git/**)']) assert.ok(denied.split(',').includes(rule), rule)
+  })
+
+  it('should never deny a read inside the workspace, which sits under the runner home folder', async () => {
+    const { action } = await aiReview()
+    const denied = action.with.claude_args.match(/--disallowedTools "([^"]*)"/)?.[1] ?? ''
+    const workspaceFile = '/home/runner/work/repo/repo/.pr-diff.patch'
+    for (const rule of denied.split(',')) {
+      const prefix = rule.replace(/^Read\((.*)\)$/, '$1').replace(/^~/, '/home/runner').replace(/^\/\//, '/').replace(/\*\*$/, '')
+      assert.ok(!workspaceFile.startsWith(prefix), `${rule} denies ${workspaceFile}`)
+    }
+  })
+
+  it('should diff every file as text so .gitattributes cannot hide it from the review (fix D)', async () => {
+    const { job } = await aiReview()
+    const diff = job.steps.map((s) => s.run ?? '').join('\n').split('\n').find((l) => l.includes('> .pr-diff.patch'))
+    assert.match(diff, /git diff --text --no-ext-diff /)
+  })
+})
+
 describe('plugin structure: release metadata', () => {
   it('should keep plugin, marketplace and both README versions in step', () => {
     const version = JSON.parse(read('.claude-plugin', 'plugin.json')).version

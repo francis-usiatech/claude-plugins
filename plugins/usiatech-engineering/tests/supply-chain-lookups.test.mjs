@@ -55,6 +55,14 @@ describe('registryFindings (R4, R5, D9; AC4)', () => {
     assert.deepEqual(registryFindings({ target: target(), result: found({ latestTime: yearsAgo(2, -1) }), now: NOW }), [])
   })
 
+  it('should warn when the latest release date is missing or unreadable instead of skipping the staleness check', () => {
+    for (const latestTime of [null, undefined, 'not a date']) {
+      const findings = registryFindings({ target: target(), result: found({ latestTime }), now: NOW })
+      assert.deepEqual(rules(findings), ['sc-stale:warning'], String(latestTime))
+      assert.match(findings[0].detail, /release date is unknown/)
+    }
+  })
+
   it('should warn about preinstall, install or postinstall scripts', () => {
     for (const hook of ['preinstall', 'install', 'postinstall']) {
       const [f, ...rest] = registryFindings({ target: target(), result: found({ scripts: { [hook]: 'node build.js', test: 'jest' } }), now: NOW })

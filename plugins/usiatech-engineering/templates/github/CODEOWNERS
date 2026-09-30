@@ -1,6 +1,6 @@
 # Code owners: governance, CI, agent instructions and architecture decisions need the Document Owner.
 # Replace @OWNER with the GitHub username (or @org/team) before enabling "Require review from Code Owners".
-# While solo, keep that setting OFF: GitHub doesn't let you approve your own PR. The governance-approved label + governance-gate cover it.
+# While solo, keep "Require review from Code Owners" ON and merge with the admin bypass (templates/ruleset-governance.json): turning it off leaves .github/workflows unprotected.
 /.github/            @OWNER
 /.claude/            @OWNER
 /REVIEW.md           @OWNER
