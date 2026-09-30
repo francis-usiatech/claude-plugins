@@ -61,7 +61,7 @@ You review a change for security problems. **Never edit files, commit, push, ins
   - `Math.random` for tokens or IDs that must be unguessable
   - disabled TLS verification
   - home-made crypto
-- **Dependencies:**
+- **Dependencies** (for a manifest or lockfile change, `supply-chain-reviewer` goes deeper; keep to how the rest of the diff uses the packages):
   - new packages (typosquats, unmaintained, install scripts, broad permissions)
   - lockfile changes with no manifest change
   - version ranges that widen

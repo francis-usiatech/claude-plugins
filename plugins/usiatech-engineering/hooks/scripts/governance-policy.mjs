@@ -1,5 +1,5 @@
-// usiatech-engineering: governance guard decision logic. Pure apart from the injectable git probe,
-// so tests can call evaluate() directly. The hook entry point is governance-guard.mjs.
+// usiatech-engineering: governance guard decision logic. Pure apart from the injectable git probe and
+// dependency lookups, so tests can call evaluate() directly. The hook entry point is governance-guard.mjs.
 //
 // Decisions: deny (refused) · ask (user must confirm) · null (allow, normal permission flow continues)
 // Repo config: .claude/engineering.json  (keys: protectedPaths, immutableWhenCommitted, allowEnvExample, governance{...})
@@ -10,8 +10,9 @@ import path from 'node:path'
 import {
   matchAny, isSecretEnvFile, escapeRegExp, isPlainObject, isStringArray, findSecret, DENY_COMMANDS, ASK_COMMANDS,
   DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH, parseAllowlist,
-  checkWorkflow, isWorkflowPath, applyAllowlist, blockingFindings, formatFinding, TIER,
+  checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, applyAllowlist, blockingFindings, formatFinding, TIER,
 } from '../../templates/github/scripts/governance-rules.mjs'
+import { lookupTargets, runLookups, createLookups } from '../../templates/github/scripts/supply-chain-lookups.mjs'
 
 const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit']
 const CASE_INSENSITIVE_FS = ['win32', 'darwin'].includes(process.platform)
@@ -138,7 +139,7 @@ const decideBash = (cmd, { cfg, gov, repoRules }, git, root) => {
   return null
 }
 
-const decideEdit = (file, { cfg, gov }, git, root, p, ic, tool, ti) => {
+const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net) => {
   const relNative = p.relative(root, p.resolve(root, file))
   // On Windows a path on another drive comes back absolute rather than starting with "..".
   if (relNative.startsWith('..') || p.isAbsolute(relNative)) return decision('ask', `Edit outside the project folder (${file}).`, file)
@@ -156,19 +157,23 @@ const decideEdit = (file, { cfg, gov }, git, root, p, ic, tool, ti) => {
   // Before the plan/exempt/ask checks: a secret is never fine, wherever it is written.
   const secret = findSecret(editedText(tool, ti))
   if (secret?.decision === 'deny') return decision('deny', `The edit writes what looks like a ${secret.why}. Keep secrets in env files or a secret manager.`, rel)
-  const findings = isWorkflowPath(rel) ? workflowFindings(rel, tool, ti, gov, root, p, ic) : []
+  const kind = isWorkflowPath(rel) ? 'workflow' : dependencyKind(rel) ? 'dependency' : null
+  const { findings, failures } = kind === 'workflow' ? { findings: workflowFindings(rel, tool, ti, gov, root, p, ic), failures: [] }
+    : kind === 'dependency' ? await dependencyFindings(rel, tool, ti, gov, root, p, ic, net)
+    : { findings: [], failures: [] }
   const blocking = blockingFindings(findings)
   const scope = decideScope(rel, gov, root, ic)
-  // A credential or workflow ask must not hide a scope or governance ask; the user confirms them all at once.
+  // A credential or content ask must not hide a scope or governance ask; the user confirms them all at once.
   const reasons = [
     secret && `The edit looks like it hard-codes a ${secret.why}. Confirm it is not a real secret.`,
-    blocking.length && `The workflow change has ${blocking.length} high-risk finding(s).`,
+    blocking.length && `The ${kind} change has ${blocking.length} high-risk finding(s).`,
     scope?.reason,
   ].filter(Boolean)
   const result = reasons.length
     ? decision('ask', reasons.join(' Also: ') + (findings.length ? ` Findings: ${findings.map(formatFinding).join(' ')}` : ''), rel)
-    : findings.length ? decision(null, '', rel) : null
+    : findings.length || failures.length ? decision(null, '', rel) : null
   if (result && findings.length) result.findings = findings
+  if (result && failures.length) result.failures = failures
   return result
 }
 
@@ -187,17 +192,36 @@ const postEditContent = (tool, ti, before) => {
   return text
 }
 
-// R11: the shared workflow rules run on the post-edit content; the base is the file on disk before the edit.
-const workflowFindings = (rel, tool, ti, gov, root, p, ic) => {
-  // An unreadable file throws: the hook logs it as a fail-open error rather than skipping the checks silently.
+// The file on disk before the edit (the base) and after it (null when that can't be worked out).
+// An unreadable file throws: the hook logs it as a fail-open error rather than skipping the checks silently.
+const readEdit = (rel, tool, ti, root, p) => {
   const abs = p.join(root, rel)
   const before = existsSync(abs) ? readFileSync(abs, 'utf8') : null
-  const content = postEditContent(tool, ti, before)
-  // Fail closed: without the resulting file the rules can't run, so ask rather than let the edit through unchecked.
-  if (content == null) {
-    return [{ rule: 'wf-unparsed', tier: TIER.HIGH, file: rel, line: 1, suppressed: false, detail: 'The guard could not work out the file content after this edit, so the workflow checks did not run.' }]
-  }
+  return { before, content: postEditContent(tool, ti, before) }
+}
+
+// Fail closed: without the resulting file the rules can't run, so ask rather than let the edit through unchecked.
+const unreadableEdit = (rule, rel, checks) =>
+  ({ rule, tier: TIER.HIGH, file: rel, line: 1, suppressed: false, detail: `The guard could not work out the file content after this edit, so the ${checks} checks did not run.` })
+
+// R11: the shared workflow rules run on the post-edit content; the base is the file on disk before the edit.
+const workflowFindings = (rel, tool, ti, gov, root, p, ic) => {
+  const { before, content } = readEdit(rel, tool, ti, root, p)
+  if (content == null) return [unreadableEdit('wf-unparsed', rel, 'workflow')]
   return applyAllowlist(checkWorkflow({ file: rel, content, base: before }), gov.allowlist || [], ic)
+}
+
+// B9: offline dependency rules, then the registry and advisory lookups under the guard's deadline (R13, R14).
+// A failed lookup is returned in `failures` for the hook to log; the offline findings stand either way.
+// A lockfile edited on its own counts as drift here: the guard sees one file at a time.
+const dependencyFindings = async (rel, tool, ti, gov, root, p, ic, net) => {
+  const { before, content } = readEdit(rel, tool, ti, root, p)
+  if (content == null) return { findings: [unreadableEdit('sc-unparsed', rel, 'dependency')], failures: [] }
+  const file = { file: rel, content, base: before }
+  const offline = checkDependencies(file)
+  // lookupTargets skips a file the parser can't read, so an sc-unparsed file makes no lookups.
+  const { findings, failures } = await runLookups({ targets: lookupTargets([file]), lookups: net.lookups ?? createLookups(), deadlineMs: net.deadlineMs })
+  return { findings: applyAllowlist([...offline, ...findings], gov.allowlist || [], ic), failures }
 }
 
 // Plan, governance-file and plan-scope checks for a project-relative path.
@@ -223,11 +247,13 @@ const decideScope = (rel, gov, root, ic) => {
  * @param {typeof gitProbe} [opts.git]    git access (injectable for tests)
  * @param {typeof path} [opts.pathApi]    path module (path.win32 in tests)
  * @param {boolean} [opts.caseInsensitive] match paths ignoring case (defaults to true on Windows/macOS)
- * @returns {{ decision: 'deny'|'ask'|null, reason: string, target: string, findings?: object[] } | null}
- *   null, or decision null, means allow. findings (workflow content checks) are set whenever there are any, so the
- *   hook can log them even when the edit is allowed.
+ * @param {{ registry: Function, advisories: Function }} [opts.lookups] dependency lookups (stubs in tests; npm by default)
+ * @param {number} [opts.lookupDeadlineMs] shared deadline for the lookups (GUARD_DEADLINE_MS by default)
+ * @returns {Promise<{ decision: 'deny'|'ask'|null, reason: string, target: string, findings?: object[], failures?: object[] } | null>}
+ *   null, or decision null, means allow. findings (workflow and dependency content checks) and failures (lookups
+ *   that failed open) are set whenever there are any, so the hook can log them even when the edit is allowed.
  */
-export const evaluate = (input, { root, cfg = {}, configError = null, git = gitProbe, pathApi = path, caseInsensitive = CASE_INSENSITIVE_FS }) => {
+export const evaluate = async (input, { root, cfg = {}, configError = null, git = gitProbe, pathApi = path, caseInsensitive = CASE_INSENSITIVE_FS, lookups, lookupDeadlineMs }) => {
   const tool = input.tool_name || ''
   const ti = input.tool_input || {}
   const safe = sanitizeConfig(cfg)
@@ -244,7 +270,7 @@ export const evaluate = (input, { root, cfg = {}, configError = null, git = gitP
     if (typeof target !== 'string') {
       target = JSON.stringify(target)
       result = decision('ask', 'The edit target is not a file path string. Confirm the edit.', target)
-    } else result = decideEdit(target, safe, git, root, pathApi, caseInsensitive, tool, ti)
+    } else result = await decideEdit(target, safe, git, root, pathApi, caseInsensitive, tool, ti, { lookups, deadlineMs: lookupDeadlineMs })
   } else return null
 
   // Default deny rules still hold with a broken config; anything else becomes a confirmation.
@@ -252,5 +278,23 @@ export const evaluate = (input, { root, cfg = {}, configError = null, git = gitP
   const warn = `Config problem: ${problems.join('; ')}. Repo-specific rules are not fully applied until it is fixed.`
   const asked = decision('ask', result?.decision ? `${result.reason} ${warn}` : warn, result?.target ?? target)
   if (result?.findings) asked.findings = result.findings
+  if (result?.failures) asked.failures = result.failures
   return asked
+}
+
+/**
+ * The governance-log entries for one decision, in order: each content finding (R16), each lookup that failed open
+ * (R13; logged as decision "error", like other fail-opens, A11), then the deny or ask itself.
+ * @param {Awaited<ReturnType<typeof evaluate>>} result
+ * @param {string} tool
+ * @returns {object[]}
+ */
+export const logEntries = (result, tool) => {
+  if (!result) return []
+  const at = { tool, target: result.target }
+  return [
+    ...(result.findings || []).map((f) => ({ ...at, decision: 'finding', rule: f.rule, tier: f.tier, file: f.file, line: f.line, detail: f.detail, suppressed: !!f.suppressed })),
+    ...(result.failures || []).map((f) => ({ ...at, decision: 'error', lookup: f.lookup, reason: `lookup failed open (${f.lookup}): ${f.reason}` })),
+    ...(result.decision ? [{ ...at, decision: result.decision, reason: result.reason }] : []),
+  ]
 }

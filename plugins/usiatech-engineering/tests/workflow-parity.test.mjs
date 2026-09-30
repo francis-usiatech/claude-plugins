@@ -1,37 +1,50 @@
-// AC14 (R17): the guard and the CI checks give the same findings for the same workflow change,
-// because both call the shared rules in governance-rules.mjs.
+// AC14 (R17): the guard and the CI checks give the same findings for the same workflow or dependency change,
+// because both call the shared rules in governance-rules.mjs and the lookups in supply-chain-lookups.mjs.
 import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { evaluate } from '../hooks/scripts/governance-policy.mjs'
 import { parseWorkflowYaml } from '../templates/github/scripts/workflow-rules.mjs'
+import { runGovernanceChecks } from '../templates/github/scripts/governance-checks.mjs'
 import { makeRepo, makeGovTree, runNode, tempDir, writeFiles, cleanupTempDirs, PLUGIN_ROOT } from './helpers.mjs'
 
 after(cleanupTempDirs)
 
 const FIXTURES = path.join(PLUGIN_ROOT, 'tests', 'fixtures', 'workflows')
+const DEP_FIXTURES = path.join(PLUGIN_ROOT, 'tests', 'fixtures', 'deps')
 // Fixtures that need a previous version of the file to compare against.
 const BASES = { 'perms-widened.yml': 'perms-base.yml' }
 const config = { governance: { askPaths: [] } }
+const env = { PR_BODY: '## Requirement references\n- FR-01\n', PR_LABELS: '[]', BASE_REF: 'develop', HEAD_REF: 'feature/x' }
 const read = (name) => readFileSync(path.join(FIXTURES, name), 'utf8')
 const key = (list) => list.sort().join(' ')
+const reportTiers = (report) => key([...report.matchAll(/\[((?:wf|sc)-[a-z-]+), (high|warning)(?:, suppressed)?\]/g)].map((m) => `${m[1]}:${m[2]}`))
 
-const guardTiers = (file, content, base) => {
+const guardTiers = async (file, content, base, lookups) => {
   const root = tempDir()
   if (base != null) writeFiles(root, { [file]: base })
   const git = { currentBranch: () => 'feature/x', isTracked: () => false }
-  const r = evaluate({ tool_name: 'Write', tool_input: { file_path: file, content } }, { root, cfg: config, git })
+  const r = await evaluate({ tool_name: 'Write', tool_input: { file_path: file, content } }, { root, cfg: config, git, lookups })
+  assert.equal(r?.failures, undefined, `guard lookup failures for ${file}`)
   return key((r?.findings || []).map((f) => `${f.rule}:${f.tier}`))
 }
 
+const repoFor = (file, content, base) =>
+  makeRepo({ baseFiles: { 'README.md': 'base\n', ...(base != null && { [file]: base }) }, headFiles: { [file]: content } })
+
+// The shipped entry point, with the real lookups; workflow changes make no lookups.
 const ciTiers = async (file, content, base) => {
-  const repo = makeRepo({ baseFiles: { 'README.md': 'base\n', ...(base != null && { [file]: base }) }, headFiles: { [file]: content } })
-  const r = await runNode(path.join(makeGovTree(config), 'governance-checks.mjs'), {
-    cwd: repo,
-    env: { PR_BODY: '## Requirement references\n- FR-01\n', PR_LABELS: '[]', BASE_REF: 'develop', HEAD_REF: 'feature/x' },
-  })
-  return key([...r.stdout.matchAll(/\[(wf-[a-z-]+), (high|warning)(?:, suppressed)?\]/g)].map((m) => `${m[1]}:${m[2]}`))
+  const r = await runNode(path.join(makeGovTree(config), 'governance-checks.mjs'), { cwd: repoFor(file, content, base), env })
+  return reportTiers(r.stdout)
+}
+
+// The exported CI function with stub lookups (D7).
+const ciDependencyTiers = async (file, content, base, lookups) => {
+  const govRoot = path.resolve(makeGovTree(config), '..', '..')
+  const r = await runGovernanceChecks({ env, lookups, cwd: repoFor(file, content, base), govRoot })
+  assert.doesNotMatch(r.report, /lookup unavailable/, `CI lookup failures for ${file}`)
+  return reportTiers(r.report)
 }
 
 describe('workflow rules: guard and CI parity (AC14)', () => {
@@ -45,7 +58,7 @@ describe('workflow rules: guard and CI parity (AC14)', () => {
     it(`should give the same tiers for ${name}`, async () => {
       const file = `.github/workflows/${name}`
       const base = BASES[name] ? read(BASES[name]) : null
-      assert.equal(await ciTiers(file, read(name), base), guardTiers(file, read(name), base))
+      assert.equal(await ciTiers(file, read(name), base), await guardTiers(file, read(name), base))
     })
   }
 
@@ -58,10 +71,69 @@ describe('workflow rules: guard and CI parity (AC14)', () => {
     }
   })
 
-  it('should find high-risk issues in the high-risk fixtures, so parity is not trivially empty', () => {
+  it('should find high-risk issues in the high-risk fixtures, so parity is not trivially empty', async () => {
     for (const name of ['prt-checkout-head.yml', 'prt-checkout-secrets.yml', 'run-injection.yml', 'ai-prompt-injection.yml']) {
-      assert.match(guardTiers(`.github/workflows/${name}`, read(name), null), /:high/, name)
+      assert.match(await guardTiers(`.github/workflows/${name}`, read(name), null), /:high/, name)
     }
-    assert.match(guardTiers('.github/workflows/perms-widened.yml', read('perms-widened.yml'), read('perms-base.yml')), /wf-permissions-widened:warning/)
+    assert.match(await guardTiers('.github/workflows/perms-widened.yml', read('perms-widened.yml'), read('perms-base.yml')), /wf-permissions-widened:warning/)
+  })
+})
+
+describe('dependency rules: guard and CI parity with stub lookups (AC14)', () => {
+  const readDep = (name) => readFileSync(path.join(DEP_FIXTURES, name), 'utf8')
+  const targetFile = (name) =>
+    name.startsWith('package-lock') ? 'package-lock.json'
+      : name.startsWith('package.') ? 'package.json'
+        : name.startsWith('pnpm-lock') ? 'pnpm-lock.yaml'
+          : 'yarn.lock'
+  // Paired as in the rules tests: X.after.* against X.before.*, other package.json variants against
+  // package.before.json; the rest are added files.
+  const baseOf = (name) => {
+    const before = name.replace('.after.', '.before.')
+    if (before !== name && existsSync(path.join(DEP_FIXTURES, before))) return before
+    if (targetFile(name) === 'package.json' && name !== 'package.before.json') return 'package.before.json'
+    return null
+  }
+  const fixtures = readdirSync(DEP_FIXTURES).filter((f) => /\.(json|ya?ml|lock)$/.test(f))
+  const cases = [
+    ...fixtures.map((name) => ({ name, file: targetFile(name), content: readDep(name), base: baseOf(name) && readDep(baseOf(name)) })),
+    { name: 'unparseable package.json', file: 'package.json', content: '{ not json', base: readDep('package.before.json') },
+  ]
+
+  // The same answers on both sides, chosen so the lookups give findings of every kind for the fixture names.
+  const ADVISORIES = { '@scope/util': 'critical', debug: 'moderate' }
+  const REGISTRY = {
+    react: { deprecated: 'use a newer major' },
+    vitest: { latestTime: '2020-01-01T00:00:00.000Z' },
+    fsevents: { scripts: { install: 'node-gyp rebuild' } },
+  }
+  const lookups = {
+    registry: async (name) => ['expresss', 'lodahs'].includes(name)
+      ? { found: false }
+      : { found: true, version: '1.0.0', deprecated: null, latestTime: new Date().toISOString(), scripts: {}, ...REGISTRY[name] },
+    advisories: async (entries) => Object.fromEntries(Object.keys(entries).filter((n) => ADVISORIES[n]).map((n) => [n, [{ severity: ADVISORIES[n], title: 'stub advisory' }]])),
+  }
+
+  it('should have a fixture for each lockfile format and the manifest', () => {
+    assert.deepEqual([...new Set(fixtures.map(targetFile))].sort(), ['package-lock.json', 'package.json', 'pnpm-lock.yaml', 'yarn.lock'])
+  })
+
+  const seen = []
+  for (const c of cases) {
+    it(`should give the same tiers for ${c.name}`, async () => {
+      const guard = await guardTiers(c.file, c.content, c.base, lookups)
+      assert.equal(await ciDependencyTiers(c.file, c.content, c.base, lookups), guard)
+      seen.push(guard)
+    })
+  }
+
+  it('should cover every dependency rule and lookup finding, so parity is not trivially empty', () => {
+    const rules = new Set(seen.join(' ').split(' ').filter(Boolean))
+    const expected = [
+      'sc-typosquat:high', 'sc-unparsed:high', 'sc-advisory:high', 'sc-advisory:warning', 'sc-lockfile-drift:warning',
+      'sc-range-widened:warning', 'sc-non-registry:warning', 'sc-not-found:warning', 'sc-deprecated:warning',
+      'sc-stale:warning', 'sc-install-script:warning', 'sc-resolved:high', 'sc-alias:warning',
+    ]
+    assert.deepEqual(expected.filter((r) => !rules.has(r)), [], `seen: ${[...rules].sort().join(' ')}`)
   })
 })

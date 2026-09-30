@@ -50,7 +50,7 @@
     "security-reviewer"
   ],
   "governance": {
-    "$comment": "Guard settings. Commands are case-insensitive regexes. Defaults already cover destructive git/SQL/rm, curl|sh, --no-verify, dependency adds, remote/infra commands, secrets reads and sudo. allowlist suppresses one workflow/dependency finding by rule ID plus a path glob or package name (still reported, never blocks), e.g. {\"rule\": \"wf-unpinned-action\", \"path\": \".github/workflows/pr-governance.yml\", \"reason\": \"...\"}; it ships empty. approvalLabel and requirementRefPattern (null = default C-number/FR/AC/ADR/D-item/\u00a7/#issue) are also used by the PR governance workflow.",
+    "$comment": "Guard settings. Commands are case-insensitive regexes. Defaults already cover destructive git/SQL/rm, curl|sh, --no-verify, dependency adds, remote/infra commands, secrets reads and sudo. allowlist suppresses one workflow/dependency finding by rule ID plus a path glob or package name (still reported, never blocks), e.g. {\"rule\": \"wf-unpinned-action\", \"path\": \".github/workflows/pr-governance.yml\", \"reason\": \"...\"} or {\"rule\": \"sc-install-script\", \"package\": \"esbuild\", \"reason\": \"postinstall only fetches its platform binary\"}; it ships empty. approvalLabel and requirementRefPattern (null = default C-number/FR/AC/ADR/D-item/\u00a7/#issue) are also used by the PR governance workflow.",
     "protectedBranches": [
       "main",
       "master"

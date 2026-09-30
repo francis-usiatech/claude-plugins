@@ -71,11 +71,11 @@ Dependency and CI workflow changes are the easiest way to compromise a repo: a t
 - The guard hook timeout is 10 s (`hooks/hooks.json`). The network lookups and the offline checks have to fit inside it.
 - No new runtime dependencies: Node built-ins and global `fetch` only. Lockfile and workflow YAML parsing has to work without a YAML library, so parsing is limited to the structures the rules need.
 - Lookups use public endpoints that need no API key (the npm registry and a public advisory database).
-- **New decision, suggest an ADR:** the guard hook now makes outbound network calls at edit time. Until now it ran entirely offline, and this changes its trust and latency profile.
+- **New decision, suggest an ADR:** the guard hook now makes outbound network calls at edit time. Until now it ran entirely offline, and this changes its trust and latency profile. Recorded in [ADR 0001](../adr/0001-guard-network-lookups.md).
 
 ## Open questions
-- Which advisory source (npm bulk advisory endpoint, OSV or GitHub Advisory DB)? Deferred: this is an implementation choice for the B9 ticket, limited to keyless public endpoints by the constraint above.
-- Size and source of the bundled popular-package list, and the name-distance threshold? Deferred: set in the B9 ticket. The fixture cases in AC2 have to hold whatever is chosen.
+- Which advisory source (npm bulk advisory endpoint, OSV or GitHub Advisory DB)? Resolved in #11 (plan D1): the npm bulk advisory endpoint, with full packuments from registry.npmjs.org for registry data (D2) and version selection per D4.
+- Size and source of the bundled popular-package list, and the name-distance threshold? Resolved in #11 (plan D3): about 200 popular npm names kept in the shared module; an added unscoped name of 5+ characters at optimal-string-alignment distance 1 is high risk.
 - Exact list of AI or agent actions R8 recognises (for example `anthropics/claude-code-action`, `openai/*`)? Deferred: set in the B10 ticket as a list kept in the shared rule module.
 
 ## Tickets
