@@ -292,6 +292,53 @@ describe('plugin structure: step-4 workflow checks (B10)', () => {
   })
 })
 
+describe('plugin structure: step-4 supply-chain checks (B9; AC15)', () => {
+  it('should ship a read-only supply-chain-reviewer agent that covers the sc-* findings', () => {
+    assert.ok(agents.includes('supply-chain-reviewer'))
+    const text = body(read('agents', 'supply-chain-reviewer.md'))
+    for (const rule of ['sc-typosquat', 'sc-advisory', 'sc-lockfile-drift', 'sc-install-script']) assert.match(text, new RegExp(`\`${rule}\``), rule)
+    assert.match(text, /Never edit files/)
+  })
+
+  it('should run supply-chain-reviewer in release stage 2 only when a manifest or lockfile changes', () => {
+    const text = body(read('skills', 'release', 'SKILL.md'))
+    const line = text.slice(text.indexOf('Stage 2')).split('\n')[0]
+    assert.match(line, /`supply-chain-reviewer`/)
+    for (const f of ['package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock']) assert.ok(line.includes(`\`${f}\``), f)
+  })
+
+  it('should point security-reviewer at supply-chain-reviewer for depth', () => {
+    assert.match(body(read('agents', 'security-reviewer.md')), /`supply-chain-reviewer`/)
+  })
+
+  it('should show a package allowlist entry in the config template that parseAllowlist accepts', async () => {
+    const { parseAllowlist } = await import('../templates/github/scripts/governance-rules.mjs')
+    const comment = JSON.parse(read('templates', 'engineering.json')).governance.$comment
+    const sample = comment.match(/\{"rule": "sc-[^}]*"package"[^}]*\}/)?.[0]
+    assert.ok(sample, 'no sc-* package example in governance.$comment')
+    const parsed = parseAllowlist([JSON.parse(sample)])
+    assert.deepEqual(parsed.problems, [])
+    assert.ok(parsed.entries[0].package && !parsed.entries[0].path)
+  })
+
+  it('should record the guard network lookups in ADR 0001 and resolve the spec questions it answers', () => {
+    const repo = path.join(PLUGIN_ROOT, '..', '..')
+    const adr = readFileSync(path.join(repo, 'docs', 'adr', '0001-guard-network-lookups.md'), 'utf8')
+    assert.match(adr, /^Status: (Proposed|Accepted)/m)
+    assert.match(adr, /registry\.npmjs\.org/)
+    const spec = readFileSync(path.join(repo, 'docs', 'specs', '2026-09-28-security-supply-chain.md'), 'utf8')
+    const open = spec.slice(spec.indexOf('## Open questions'), spec.indexOf('## Tickets'))
+    for (const q of ['advisory source', 'popular-package list']) assert.match(open, new RegExp(`${q}[^\\n]*Resolved`, 'i'), q)
+    assert.match(spec, /0001-guard-network-lookups\.md/)
+  })
+
+  it('should make governance-reviewer count dependency findings and lookup fail-opens', () => {
+    const text = body(read('agents', 'governance-reviewer.md'))
+    assert.match(text, /`sc-\*`/)
+    assert.match(text, /lookup failed open/)
+  })
+})
+
 describe('plugin structure: release metadata', () => {
   it('should keep plugin, marketplace and both README versions in step', () => {
     const version = JSON.parse(read('.claude-plugin', 'plugin.json')).version

@@ -1,9 +1,10 @@
 import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
-import { evaluate, loadConfig, planFiles, gitProbe } from '../hooks/scripts/governance-policy.mjs'
-import { tempDir, cleanupTempDirs, writeFiles, makeRepo, git } from './helpers.mjs'
+import { evaluate, loadConfig, planFiles, gitProbe, logEntries } from '../hooks/scripts/governance-policy.mjs'
+import { GUARD_DEADLINE_MS } from '../templates/github/scripts/supply-chain-lookups.mjs'
+import { tempDir, cleanupTempDirs, writeFiles, makeRepo, git, PLUGIN_ROOT } from './helpers.mjs'
 
 after(cleanupTempDirs)
 
@@ -22,7 +23,7 @@ describe('evaluate: Bash deny rules', () => {
     'sudo shutdown now',
     'chmod -R 777 .',
   ]) {
-    it(`should deny: ${cmd}`, () => assert.equal(bash(cmd)?.decision, 'deny'))
+    it(`should deny: ${cmd}`, async () => assert.equal((await bash(cmd))?.decision, 'deny'))
   }
 })
 
@@ -45,140 +46,140 @@ describe('evaluate: Bash ask rules', () => {
     'cat .env.local',
     'sudo apt update',
   ]) {
-    it(`should ask: ${cmd}`, () => assert.equal(bash(cmd)?.decision, 'ask'))
+    it(`should ask: ${cmd}`, async () => assert.equal((await bash(cmd))?.decision, 'ask'))
   }
 
   for (const cmd of ['npm install', 'npm ci', 'git status', 'cat .env.example', 'ls -la', 'rm file.txt', 'ansible-playbook site.yml --check']) {
-    it(`should allow: ${cmd}`, () => assert.equal(bash(cmd), null))
+    it(`should allow: ${cmd}`, async () => assert.equal((await bash(cmd)), null))
   }
 })
 
 describe('evaluate: protected branches', () => {
-  it('should ask for a commit while on main', () => {
-    const r = bash('git commit -m "x"', { branch: 'main' })
+  it('should ask for a commit while on main', async () => {
+    const r = (await bash('git commit -m "x"', { branch: 'main' }))
     assert.equal(r.decision, 'ask')
     assert.match(r.reason, /protected branch "main"/)
   })
 
-  it('should allow a commit on a feature branch', () => {
-    assert.equal(bash('git commit -m "x"', { branch: 'feature/x' }), null)
+  it('should allow a commit on a feature branch', async () => {
+    assert.equal((await bash('git commit -m "x"', { branch: 'feature/x' })), null)
   })
 
-  it('should ask for a push that targets main from a feature branch', () => {
-    assert.match(bash('git push origin main').reason, /Push to protected branch "main"/)
+  it('should ask for a push that targets main from a feature branch', async () => {
+    assert.match((await bash('git push origin main')).reason, /Push to protected branch "main"/)
   })
 
-  it('should ask for a push that targets main with a quoted refspec', () => {
+  it('should ask for a push that targets main with a quoted refspec', async () => {
     for (const cmd of ['git push origin "main"', "git push origin 'main'", 'git push origin "HEAD:main"', 'git push origin HEAD:"main"', "git push origin 'refs/heads/main' && echo ok"]) {
-      assert.equal(bash(cmd)?.decision, 'ask', cmd)
+      assert.equal((await bash(cmd))?.decision, 'ask', cmd)
     }
   })
 
-  it('should flag a quoted force push as a force push', () => {
-    assert.match(bash('git push origin "+main"').reason, /force push/)
-    assert.match(bash("git push origin '+feature/x'").reason, /force push/)
+  it('should flag a quoted force push as a force push', async () => {
+    assert.match((await bash('git push origin "+main"')).reason, /force push/)
+    assert.match((await bash("git push origin '+feature/x'")).reason, /force push/)
   })
 
-  it('should not treat branches that merely contain the name as protected', () => {
+  it('should not treat branches that merely contain the name as protected', async () => {
     for (const cmd of ['git push origin feature/main-x', 'git push origin "feature/main"', 'git push origin mainline']) {
-      assert.equal(bash(cmd), null, cmd)
+      assert.equal((await bash(cmd)), null, cmd)
     }
   })
 
-  it('should name the guarded git action, not the first git command', () => {
-    assert.match(bash('git add . && git commit -m x', { branch: 'main' }).reason, /^Git commit while on protected branch/)
+  it('should name the guarded git action, not the first git command', async () => {
+    assert.match((await bash('git add . && git commit -m x', { branch: 'main' })).reason, /^Git commit while on protected branch/)
   })
 
-  it('should use governance.protectedBranches when configured', () => {
+  it('should use governance.protectedBranches when configured', async () => {
     const cfg = { governance: { protectedBranches: ['release'] } }
-    assert.equal(bash('git commit -m x', { branch: 'main', cfg }), null)
-    assert.equal(bash('git commit -m x', { branch: 'release', cfg }).decision, 'ask')
+    assert.equal((await bash('git commit -m x', { branch: 'main', cfg })), null)
+    assert.equal((await bash('git commit -m x', { branch: 'release', cfg })).decision, 'ask')
   })
 
-  it('should fall back to git.releaseBranch', () => {
-    assert.equal(bash('git merge develop', { branch: 'prod', cfg: { git: { releaseBranch: 'prod' } } }).decision, 'ask')
+  it('should fall back to git.releaseBranch', async () => {
+    assert.equal((await bash('git merge develop', { branch: 'prod', cfg: { git: { releaseBranch: 'prod' } } })).decision, 'ask')
   })
 })
 
 describe('evaluate: repo command rules', () => {
-  it('should apply repo deny and ask rules with their reasons', () => {
+  it('should apply repo deny and ask rules with their reasons', async () => {
     const cfg = { governance: { denyCommands: [{ pattern: 'deploy:prod', reason: 'prod deploy' }], askCommands: [{ pattern: 'seed' }] } }
-    assert.equal(bash('pnpm deploy:prod', { cfg }).reason, 'Blocked: prod deploy.')
-    assert.match(bash('pnpm seed', { cfg }).reason, /repo ask rule/)
+    assert.equal((await bash('pnpm deploy:prod', { cfg })).reason, 'Blocked: prod deploy.')
+    assert.match((await bash('pnpm seed', { cfg })).reason, /repo ask rule/)
   })
 
-  it('should turn an invalid repo pattern into a confirmation instead of crashing', () => {
+  it('should turn an invalid repo pattern into a confirmation instead of crashing', async () => {
     const cfg = { governance: { askCommands: [{ pattern: '(unclosed', reason: 'bad' }] } }
-    const r = bash('ls', { cfg })
+    const r = (await bash('ls', { cfg }))
     assert.equal(r.decision, 'ask')
     assert.match(r.reason, /invalid command pattern "\(unclosed"/)
   })
 
-  it('should still deny default-dangerous commands when a repo pattern is invalid', () => {
+  it('should still deny default-dangerous commands when a repo pattern is invalid', async () => {
     const cfg = { governance: { denyCommands: [{ pattern: '[' }] } }
-    assert.equal(bash('rm -rf /', { cfg }).decision, 'deny')
+    assert.equal((await bash('rm -rf /', { cfg })).decision, 'deny')
   })
 })
 
 describe('evaluate: file edits', () => {
-  it('should deny edits to env files but allow .env.example', () => {
-    assert.equal(edit('.env').decision, 'deny')
-    assert.equal(edit('apps/web/.env.local').decision, 'deny')
-    assert.equal(edit('.env.example'), null)
+  it('should deny edits to env files but allow .env.example', async () => {
+    assert.equal((await edit('.env')).decision, 'deny')
+    assert.equal((await edit('apps/web/.env.local')).decision, 'deny')
+    assert.equal((await edit('.env.example')), null)
   })
 
-  it('should deny .env.example when allowEnvExample is false', () => {
-    assert.equal(edit('.env.example', { cfg: { allowEnvExample: false } }).decision, 'deny')
+  it('should deny .env.example when allowEnvExample is false', async () => {
+    assert.equal((await edit('.env.example', { cfg: { allowEnvExample: false } })).decision, 'deny')
   })
 
-  it('should deny edits under default and configured protected paths', () => {
-    assert.equal(edit('packages/db/generated/client.ts').decision, 'deny')
-    assert.equal(edit('src/gen/api.ts', { cfg: { protectedPaths: ['src/gen/**'] } }).decision, 'deny')
+  it('should deny edits under default and configured protected paths', async () => {
+    assert.equal((await edit('packages/db/generated/client.ts')).decision, 'deny')
+    assert.equal((await edit('src/gen/api.ts', { cfg: { protectedPaths: ['src/gen/**'] } })).decision, 'deny')
   })
 
-  it('should deny edits to committed immutable files only', () => {
+  it('should deny edits to committed immutable files only', async () => {
     const root = tempDir()
     writeFiles(root, { 'migrations/001.sql': 'select 1;' })
     const cfg = { immutableWhenCommitted: ['migrations/*.sql'] }
-    assert.equal(edit('migrations/001.sql', { root, cfg, tracked: true }).decision, 'deny')
-    assert.equal(edit('migrations/001.sql', { root, cfg, tracked: false }), null)
-    assert.equal(edit('migrations/002.sql', { root, cfg, tracked: true }), null, 'a new file does not exist yet')
+    assert.equal((await edit('migrations/001.sql', { root, cfg, tracked: true })).decision, 'deny')
+    assert.equal((await edit('migrations/001.sql', { root, cfg, tracked: false })), null)
+    assert.equal((await edit('migrations/002.sql', { root, cfg, tracked: true })), null, 'a new file does not exist yet')
   })
 
-  it('should ask before editing governance, CI and dependency files', () => {
+  it('should ask before editing governance, CI and dependency files', async () => {
     for (const f of ['.claude/engineering.json', 'AGENTS.md', 'apps/api/AGENTS.md', 'CLAUDE.md', 'REVIEW.md', '.github/workflows/ci.yml', '.github/CODEOWNERS', 'package.json', 'apps/web/package.json']) {
-      assert.equal(edit(f)?.decision, 'ask', f)
+      assert.equal((await edit(f))?.decision, 'ask', f)
     }
   })
 
-  it('should never ask about the guard bookkeeping files', () => {
-    assert.equal(edit('.claude/governance-log.jsonl'), null)
-    assert.equal(edit('.claude/plans/archive/2026-09-28-guard.md'), null)
+  it('should never ask about the guard bookkeeping files', async () => {
+    assert.equal((await edit('.claude/governance-log.jsonl')), null)
+    assert.equal((await edit('.claude/plans/archive/2026-09-28-guard.md')), null)
   })
 
-  it('should ask before editing the active plan, which sets the edit scope', () => {
-    assert.match(edit('.claude/plans/active.md').reason, /approved plan sets the edit scope/)
-    assert.equal(edit('.claude/plans/active.md', { cfg: { governance: { requirePlan: true } } }).decision, 'ask')
+  it('should ask before editing the active plan, which sets the edit scope', async () => {
+    assert.match((await edit('.claude/plans/active.md')).reason, /approved plan sets the edit scope/)
+    assert.equal((await edit('.claude/plans/active.md', { cfg: { governance: { requirePlan: true } } })).decision, 'ask')
   })
 
-  it('should ask for edits outside the project folder', () => {
+  it('should ask for edits outside the project folder', async () => {
     const root = tempDir()
-    assert.match(edit(path.join(root, '..', 'elsewhere.txt'), { root }).reason, /outside the project folder/)
+    assert.match((await edit(path.join(root, '..', 'elsewhere.txt'), { root })).reason, /outside the project folder/)
   })
 
-  it('should resolve absolute paths inside the project', () => {
+  it('should resolve absolute paths inside the project', async () => {
     const root = tempDir()
-    assert.equal(edit(path.join(root, '.env'), { root }).decision, 'deny')
+    assert.equal((await edit(path.join(root, '.env'), { root })).decision, 'deny')
   })
 
-  it('should read notebook_path for NotebookEdit and ignore events without a path', () => {
+  it('should read notebook_path for NotebookEdit and ignore events without a path', async () => {
     const root = tempDir()
-    assert.equal(evaluate({ tool_name: 'NotebookEdit', tool_input: { notebook_path: '.env' } }, { root, git: fakeGit() }).decision, 'deny')
-    assert.equal(evaluate({ tool_name: 'Write', tool_input: {} }, { root, git: fakeGit() }), null)
+    assert.equal((await evaluate({ tool_name: 'NotebookEdit', tool_input: { notebook_path: '.env' } }, { root, git: fakeGit() })).decision, 'deny')
+    assert.equal((await evaluate({ tool_name: 'Write', tool_input: {} }, { root, git: fakeGit() })), null)
   })
 
-  it('should ignore tools the guard does not cover', () => {
-    assert.equal(evaluate({ tool_name: 'Read', tool_input: { file_path: '.env' } }, { root: tempDir(), git: fakeGit() }), null)
+  it('should ignore tools the guard does not cover', async () => {
+    assert.equal((await evaluate({ tool_name: 'Read', tool_input: { file_path: '.env' } }, { root: tempDir(), git: fakeGit() })), null)
   })
 })
 
@@ -189,69 +190,69 @@ describe('evaluate: approved plan scope', () => {
     return root
   }
 
-  it('should allow files covered by the plan', () => {
+  it('should allow files covered by the plan', async () => {
     const root = planRoot()
-    assert.equal(edit('src/a/b.ts', { root }), null)
-    assert.equal(edit('docs/guide.md', { root }), null)
+    assert.equal((await edit('src/a/b.ts', { root })), null)
+    assert.equal((await edit('docs/guide.md', { root })), null)
   })
 
-  it('should ask for files outside the plan, including ones listed under other sections', () => {
+  it('should ask for files outside the plan, including ones listed under other sections', async () => {
     const root = planRoot()
-    assert.match(edit('lib/util.ts', { root }).reason, /not in the approved plan/)
+    assert.match((await edit('lib/util.ts', { root })).reason, /not in the approved plan/)
   })
 
-  it('should ask when requirePlan is set and no plan is active', () => {
-    assert.match(edit('src/a.ts', { cfg: { governance: { requirePlan: true } } }).reason, /No approved plan/)
+  it('should ask when requirePlan is set and no plan is active', async () => {
+    assert.match((await edit('src/a.ts', { cfg: { governance: { requirePlan: true } } })).reason, /No approved plan/)
   })
 
-  it('should allow when no plan is active and requirePlan is off', () => {
-    assert.equal(edit('src/a.ts'), null)
+  it('should allow when no plan is active and requirePlan is off', async () => {
+    assert.equal((await edit('src/a.ts')), null)
   })
 
-  it('should treat spec files like any other file: allowed with no plan, asked with requirePlan', () => {
-    assert.equal(edit('docs/specs/2026-01-01-x.md'), null)
-    assert.match(edit('docs/specs/2026-01-01-x.md', { cfg: { governance: { requirePlan: true } } }).reason, /No approved plan/)
+  it('should treat spec files like any other file: allowed with no plan, asked with requirePlan', async () => {
+    assert.equal((await edit('docs/specs/2026-01-01-x.md')), null)
+    assert.match((await edit('docs/specs/2026-01-01-x.md', { cfg: { governance: { requirePlan: true } } })).reason, /No approved plan/)
   })
 
-  it('should not take scope from the Tasks or Acceptance criteria sections', () => {
+  it('should not take scope from the Tasks or Acceptance criteria sections', async () => {
     const root = tempDir()
     writeFiles(root, { '.claude/plans/active.md': '# Plan\n\n## Acceptance criteria\n- AC1: `lib/a.ts` works\n  - Evidence: \n\n## Tasks\n- [ ] T1: edit `lib/b.ts` (covers AC1)\n\n## Files\n- `src/**`\n' })
-    assert.equal(edit('src/x.ts', { root }), null)
-    assert.match(edit('lib/b.ts', { root }).reason, /not in the approved plan/)
-    assert.match(edit('lib/a.ts', { root }).reason, /not in the approved plan/)
+    assert.equal((await edit('src/x.ts', { root })), null)
+    assert.match((await edit('lib/b.ts', { root })).reason, /not in the approved plan/)
+    assert.match((await edit('lib/a.ts', { root })).reason, /not in the approved plan/)
   })
 })
 
 describe('evaluate: config errors', () => {
-  it('should turn an otherwise allowed action into a confirmation that names the problem', () => {
-    const r = bash('ls', { configError: 'could not be parsed: Unexpected token' })
+  it('should turn an otherwise allowed action into a confirmation that names the problem', async () => {
+    const r = (await bash('ls', { configError: 'could not be parsed: Unexpected token' }))
     assert.equal(r.decision, 'ask')
     assert.match(r.reason, /Config problem: \.claude\/engineering\.json could not be parsed/)
     assert.equal(r.target, 'ls')
   })
 
-  it('should keep default deny rules', () => {
-    assert.equal(bash('rm -rf /', { configError: 'not a JSON object' }).decision, 'deny')
+  it('should keep default deny rules', async () => {
+    assert.equal((await bash('rm -rf /', { configError: 'not a JSON object' })).decision, 'deny')
   })
 
-  it('should combine the reason with an existing ask', () => {
-    const r = bash('git reset --hard', { configError: 'not a JSON object' })
+  it('should combine the reason with an existing ask', async () => {
+    const r = (await bash('git reset --hard', { configError: 'not a JSON object' }))
     assert.match(r.reason, /discarding work.*Config problem/)
   })
 })
 
 describe('loadConfig', () => {
-  it('should return an empty config without error when the file is missing', () => {
+  it('should return an empty config without error when the file is missing', async () => {
     assert.deepEqual(loadConfig(tempDir()), { cfg: {}, error: null })
   })
 
-  it('should parse a valid config', () => {
+  it('should parse a valid config', async () => {
     const root = tempDir()
     writeFiles(root, { '.claude/engineering.json': '{"git":{"baseBranch":"dev"}}' })
     assert.equal(loadConfig(root).cfg.git.baseBranch, 'dev')
   })
 
-  it('should report malformed JSON and non-object configs', () => {
+  it('should report malformed JSON and non-object configs', async () => {
     const bad = tempDir()
     writeFiles(bad, { '.claude/engineering.json': '{ "verify": [ ' })
     assert.match(loadConfig(bad).error, /could not be parsed/)
@@ -262,14 +263,14 @@ describe('loadConfig', () => {
 })
 
 describe('planFiles', () => {
-  it('should return null without a plan and an empty list for a plan with no Files section', () => {
+  it('should return null without a plan and an empty list for a plan with no Files section', async () => {
     assert.equal(planFiles(tempDir()), null)
     const root = tempDir()
     writeFiles(root, { '.claude/plans/active.md': '# Plan\n\n## Goal\nx\n' })
     assert.deepEqual(planFiles(root), [])
   })
 
-  it('should handle CRLF line endings', () => {
+  it('should handle CRLF line endings', async () => {
     const root = tempDir()
     writeFiles(root, { '.claude/plans/active.md': '## Files\r\n- `a.ts`\r\n* b.ts\r\n' })
     assert.deepEqual(planFiles(root), ['a.ts', 'b.ts'])
@@ -277,7 +278,7 @@ describe('planFiles', () => {
 })
 
 describe('gitProbe', () => {
-  it('should report tracked and untracked files in a real repo', () => {
+  it('should report tracked and untracked files in a real repo', async () => {
     const repo = makeRepo({ baseFiles: { 'tracked.txt': 'x' } })
     writeFiles(repo, { 'untracked.txt': 'y' })
     assert.equal(gitProbe.isTracked(repo, 'tracked.txt'), true)
@@ -285,7 +286,7 @@ describe('gitProbe', () => {
     assert.equal(gitProbe.currentBranch(repo), git(repo, 'rev-parse', '--abbrev-ref', 'HEAD'))
   })
 
-  it('should not pass file names through a shell', () => {
+  it('should not pass file names through a shell', async () => {
     const repo = makeRepo()
     gitProbe.isTracked(repo, 'x$(touch pwned).sql')
     gitProbe.isTracked(repo, 'x`touch pwned2`.sql')
@@ -293,7 +294,7 @@ describe('gitProbe', () => {
     assert.equal(existsSync(path.join(repo, 'pwned2')), false)
   })
 
-  it('should return empty/false outside a repo instead of throwing', () => {
+  it('should return empty/false outside a repo instead of throwing', async () => {
     const dir = tempDir()
     assert.equal(gitProbe.currentBranch(dir), '')
     assert.equal(gitProbe.isTracked(dir, 'a.txt'), false)
@@ -316,105 +317,105 @@ describe('evaluate: wrong-type config values', () => {
     ['allowlist entry without a path or package', { governance: { allowlist: [{ rule: 'wf-write-all' }] } }, /"governance\.allowlist\[0\]"/],
   ]
   for (const [name, cfg, re] of cases) {
-    it(`should ask and name the problem for ${name}`, () => {
-      const r = edit('src/a.ts', { cfg })
+    it(`should ask and name the problem for ${name}`, async () => {
+      const r = (await edit('src/a.ts', { cfg }))
       assert.equal(r?.decision, 'ask', name)
       assert.match(r.reason, re)
-      assert.equal(bash('ls', { cfg })?.decision, 'ask', 'Bash is covered too')
+      assert.equal((await bash('ls', { cfg }))?.decision, 'ask', 'Bash is covered too')
     })
   }
 
-  it('should not deny every command when a repo rule has no pattern', () => {
-    assert.equal(bash('ls', { cfg: { governance: { denyCommands: ['deploy:prod'] } } }).decision, 'ask')
+  it('should not deny every command when a repo rule has no pattern', async () => {
+    assert.equal((await bash('ls', { cfg: { governance: { denyCommands: ['deploy:prod'] } } })).decision, 'ask')
   })
 
-  it('should fall back to default paths when a configured list is invalid', () => {
-    assert.equal(edit('generated/x.ts', { cfg: { protectedPaths: 'nope' } }).decision, 'deny')
-    assert.match(edit('AGENTS.md', { cfg: { governance: { askPaths: 'nope' } } }).reason, /governance, CI or dependency file/)
+  it('should fall back to default paths when a configured list is invalid', async () => {
+    assert.equal((await edit('generated/x.ts', { cfg: { protectedPaths: 'nope' } })).decision, 'deny')
+    assert.match((await edit('AGENTS.md', { cfg: { governance: { askPaths: 'nope' } } })).reason, /governance, CI or dependency file/)
   })
 
-  it('should keep valid repo rules when a sibling rule is invalid', () => {
+  it('should keep valid repo rules when a sibling rule is invalid', async () => {
     const cfg = { governance: { denyCommands: [{ pattern: 'deploy:prod', reason: 'prod deploy' }, 'bad'] } }
-    assert.equal(bash('pnpm deploy:prod', { cfg }).reason, 'Blocked: prod deploy.')
+    assert.equal((await bash('pnpm deploy:prod', { cfg })).reason, 'Blocked: prod deploy.')
   })
 
-  it('should fall back to main when releaseBranch is invalid', () => {
-    const r = bash('git push origin main', { cfg: { git: { releaseBranch: 42 } } })
+  it('should fall back to main when releaseBranch is invalid', async () => {
+    const r = (await bash('git push origin main', { cfg: { git: { releaseBranch: 42 } } }))
     assert.match(r.reason, /Push to protected branch "main"/)
     assert.match(r.reason, /"git\.releaseBranch" must be a non-empty string/)
   })
 
-  it('should ask instead of throwing when the edit path is not a string', () => {
+  it('should ask instead of throwing when the edit path is not a string', async () => {
     for (const file_path of [42, { path: 'a.ts' }, ['a.ts']]) {
-      const r = evaluate({ tool_name: 'Write', tool_input: { file_path } }, { root: tempDir(), git: fakeGit() })
+      const r = (await evaluate({ tool_name: 'Write', tool_input: { file_path } }, { root: tempDir(), git: fakeGit() }))
       assert.equal(r?.decision, 'ask', JSON.stringify(file_path))
       assert.match(r.reason, /not a file path string/)
     }
-    const broken = evaluate({ tool_name: 'Write', tool_input: { file_path: 42 } }, { root: tempDir(), git: fakeGit(), configError: 'not a JSON object' })
+    const broken = (await evaluate({ tool_name: 'Write', tool_input: { file_path: 42 } }, { root: tempDir(), git: fakeGit(), configError: 'not a JSON object' }))
     assert.match(broken.reason, /not a file path string.*Config problem/)
   })
 
-  it('should allow an event without a path even when the config is broken', () => {
-    assert.equal(evaluate({ tool_name: 'Write', tool_input: {} }, { root: tempDir(), git: fakeGit(), configError: 'not a JSON object' }), null)
+  it('should allow an event without a path even when the config is broken', async () => {
+    assert.equal((await evaluate({ tool_name: 'Write', tool_input: {} }, { root: tempDir(), git: fakeGit(), configError: 'not a JSON object' })), null)
   })
 })
 
 describe('evaluate: Windows paths', () => {
   const win = (file_path, opts = {}) => evaluate({ tool_name: 'Edit', tool_input: { file_path } }, { root: String.raw`C:\repo`, git: fakeGit(), pathApi: path.win32, caseInsensitive: true, ...opts })
 
-  it('should ask for an edit on another drive', () => {
-    assert.match(win(String.raw`D:\x\a.txt`).reason, /outside the project folder/)
+  it('should ask for an edit on another drive', async () => {
+    assert.match((await win(String.raw`D:\x\a.txt`)).reason, /outside the project folder/)
   })
 
-  it('should ask for an edit that climbs out of the project', () => {
-    assert.match(win(String.raw`C:\other\a.txt`).reason, /outside the project folder/)
+  it('should ask for an edit that climbs out of the project', async () => {
+    assert.match((await win(String.raw`C:\other\a.txt`)).reason, /outside the project folder/)
   })
 
-  it('should normalise backslashes before matching', () => {
-    assert.equal(win(String.raw`C:\repo\apps\web\.env.local`).decision, 'deny')
-    assert.equal(win(String.raw`packages\db\generated\client.ts`).decision, 'deny')
-    assert.equal(win(String.raw`.github\workflows\ci.yml`).decision, 'ask')
+  it('should normalise backslashes before matching', async () => {
+    assert.equal((await win(String.raw`C:\repo\apps\web\.env.local`)).decision, 'deny')
+    assert.equal((await win(String.raw`packages\db\generated\client.ts`)).decision, 'deny')
+    assert.equal((await win(String.raw`.github\workflows\ci.yml`)).decision, 'ask')
   })
 
-  it('should treat a different drive-letter case as the same drive', () => {
-    assert.equal(win(String.raw`c:\repo\.env`).decision, 'deny')
+  it('should treat a different drive-letter case as the same drive', async () => {
+    assert.equal((await win(String.raw`c:\repo\.env`)).decision, 'deny')
   })
 })
 
 describe('evaluate: case-insensitive file systems', () => {
   const ci = (file_path) => edit(file_path, { caseInsensitive: true })
 
-  it('should catch env files and governance files regardless of case', () => {
-    assert.equal(ci('.ENV').decision, 'deny')
-    assert.equal(ci('.Env.Local').decision, 'deny')
-    assert.equal(ci('.ENV.EXAMPLE'), null)
-    assert.equal(ci('Generated/x.ts').decision, 'deny')
-    assert.equal(ci('Agents.MD').decision, 'ask')
-    assert.equal(ci('.Claude/engineering.json').decision, 'ask')
-    assert.match(ci('.claude/Plans/Active.md').reason, /approved plan sets the edit scope/)
+  it('should catch env files and governance files regardless of case', async () => {
+    assert.equal((await ci('.ENV')).decision, 'deny')
+    assert.equal((await ci('.Env.Local')).decision, 'deny')
+    assert.equal((await ci('.ENV.EXAMPLE')), null)
+    assert.equal((await ci('Generated/x.ts')).decision, 'deny')
+    assert.equal((await ci('Agents.MD')).decision, 'ask')
+    assert.equal((await ci('.Claude/engineering.json')).decision, 'ask')
+    assert.match((await ci('.claude/Plans/Active.md')).reason, /approved plan sets the edit scope/)
   })
 
-  it('should match exactly when case-sensitive', () => {
-    assert.equal(edit('.ENV', { caseInsensitive: false }), null)
+  it('should match exactly when case-sensitive', async () => {
+    assert.equal((await edit('.ENV', { caseInsensitive: false })), null)
   })
 })
 
 describe('evaluate: protected branch matching', () => {
-  it('should ask for pushes that target the branch as a refspec', () => {
+  it('should ask for pushes that target the branch as a refspec', async () => {
     for (const cmd of ['git push origin main', 'git push origin HEAD:main', 'git push origin refs/heads/main', 'git push origin main && echo ok']) {
-      assert.equal(bash(cmd)?.decision, 'ask', cmd)
+      assert.equal((await bash(cmd))?.decision, 'ask', cmd)
     }
   })
 
-  it('should not ask for branches that merely contain the name', () => {
-    assert.equal(bash('git push origin feature/main-fix'), null)
-    assert.equal(bash('git push origin maintenance'), null)
+  it('should not ask for branches that merely contain the name', async () => {
+    assert.equal((await bash('git push origin feature/main-fix')), null)
+    assert.equal((await bash('git push origin maintenance')), null)
   })
 
-  it('should handle branch names with regex characters', () => {
+  it('should handle branch names with regex characters', async () => {
     const cfg = { governance: { protectedBranches: ['c++'] } }
-    assert.equal(bash('git push origin c++', { cfg }).decision, 'ask')
-    assert.equal(bash('git push origin cxx', { cfg }), null)
+    assert.equal((await bash('git push origin c++', { cfg })).decision, 'ask')
+    assert.equal((await bash('git push origin cxx', { cfg })), null)
   })
 })
 
@@ -423,47 +424,47 @@ describe('evaluate: secrets in edited content', () => {
   const awsKey = 'AKIA' + 'Q'.repeat(16)
   const run = (tool_name, tool_input, opts = {}) => evaluate({ tool_name, tool_input }, { root: opts.root || tempDir(), git: fakeGit(), ...opts })
 
-  it('should deny writing a provider key with any edit tool', () => {
-    assert.equal(run('Write', { file_path: 'src/a.ts', content: `const k = '${awsKey}'` }).decision, 'deny')
-    assert.equal(run('Edit', { file_path: 'src/a.ts', old_string: 'x', new_string: awsKey }).decision, 'deny')
-    assert.equal(run('MultiEdit', { file_path: 'src/a.ts', edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'c', new_string: awsKey }] }).decision, 'deny')
-    assert.equal(run('NotebookEdit', { notebook_path: 'n.ipynb', new_source: awsKey }).decision, 'deny')
+  it('should deny writing a provider key with any edit tool', async () => {
+    assert.equal((await run('Write', { file_path: 'src/a.ts', content: `const k = '${awsKey}'` })).decision, 'deny')
+    assert.equal((await run('Edit', { file_path: 'src/a.ts', old_string: 'x', new_string: awsKey })).decision, 'deny')
+    assert.equal((await run('MultiEdit', { file_path: 'src/a.ts', edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'c', new_string: awsKey }] })).decision, 'deny')
+    assert.equal((await run('NotebookEdit', { notebook_path: 'n.ipynb', new_source: awsKey })).decision, 'deny')
   })
 
-  it('should ask on a hard-coded credential assignment', () => {
-    assert.match(run('Write', { file_path: 'src/db.ts', content: 'const password = "' + 'h'.repeat(16) + '"' }).reason, /hard-coded credential/)
+  it('should ask on a hard-coded credential assignment', async () => {
+    assert.match((await run('Write', { file_path: 'src/db.ts', content: 'const password = "' + 'h'.repeat(16) + '"' })).reason, /hard-coded credential/)
   })
 
-  it('should not echo the secret in the reason', () => {
-    const r = run('Write', { file_path: 'src/a.ts', content: awsKey })
+  it('should not echo the secret in the reason', async () => {
+    const r = (await run('Write', { file_path: 'src/a.ts', content: awsKey }))
     assert.match(r.reason, /AWS access key/)
     assert.ok(!r.reason.includes(awsKey))
     assert.equal(r.target, 'src/a.ts')
   })
 
-  it('should deny before plan and ask paths', () => {
-    assert.equal(run('Write', { file_path: '.claude/plans/active.md', content: awsKey }).decision, 'deny')
-    assert.equal(run('Edit', { file_path: 'package.json', old_string: 'x', new_string: awsKey }).decision, 'deny')
+  it('should deny before plan and ask paths', async () => {
+    assert.equal((await run('Write', { file_path: '.claude/plans/active.md', content: awsKey })).decision, 'deny')
+    assert.equal((await run('Edit', { file_path: 'package.json', old_string: 'x', new_string: awsKey })).decision, 'deny')
   })
 
-  it('should keep path reasons when a credential only asks', () => {
+  it('should keep path reasons when a credential only asks', async () => {
     const cred = 'password: "' + 'h'.repeat(16) + '"'
-    const pkg = run('Edit', { file_path: 'package.json', old_string: 'x', new_string: cred })
+    const pkg = (await run('Edit', { file_path: 'package.json', old_string: 'x', new_string: cred }))
     assert.equal(pkg.decision, 'ask')
     assert.match(pkg.reason, /hard-coded credential/)
     assert.match(pkg.reason, /governance, CI or dependency file/)
-    assert.match(run('Write', { file_path: '.claude/plans/active.md', content: cred }).reason, /approved plan sets the edit scope/)
+    assert.match((await run('Write', { file_path: '.claude/plans/active.md', content: cred })).reason, /approved plan sets the edit scope/)
   })
 
-  it('should ignore non-string content and malformed edits', () => {
-    assert.equal(run('Write', { file_path: 'src/a.ts', content: 42 }), null)
-    assert.equal(run('MultiEdit', { file_path: 'src/a.ts', edits: 'nope' }), null)
-    assert.equal(run('MultiEdit', { file_path: 'src/a.ts', edits: [null, { new_string: 7 }] }), null)
+  it('should ignore non-string content and malformed edits', async () => {
+    assert.equal((await run('Write', { file_path: 'src/a.ts', content: 42 })), null)
+    assert.equal((await run('MultiEdit', { file_path: 'src/a.ts', edits: 'nope' })), null)
+    assert.equal((await run('MultiEdit', { file_path: 'src/a.ts', edits: [null, { new_string: 7 }] })), null)
   })
 
-  it('should allow ordinary content and placeholders', () => {
-    assert.equal(run('Write', { file_path: 'src/a.ts', content: 'export const x = 1' }), null)
-    assert.equal(run('Write', { file_path: 'docs/aws.md', content: 'AKIA' + 'IOSFODNN7EXAMPLE' }), null)
+  it('should allow ordinary content and placeholders', async () => {
+    assert.equal((await run('Write', { file_path: 'src/a.ts', content: 'export const x = 1' })), null)
+    assert.equal((await run('Write', { file_path: 'docs/aws.md', content: 'AKIA' + 'IOSFODNN7EXAMPLE' })), null)
   })
 })
 
@@ -475,85 +476,85 @@ describe('evaluate: workflow content checks (R11, R15; AC9, AC12)', () => {
   const noAsk = { governance: { askPaths: [] } }
   const run = (tool_name, tool_input, opts = {}) => evaluate({ tool_name, tool_input }, { root: opts.root || tempDir(), git: fakeGit(), ...opts })
 
-  it('should ask on a high-risk workflow Write even when askPaths is empty, naming the rule', () => {
-    const r = run('Write', { file_path: WF, content: injection }, { cfg: noAsk })
+  it('should ask on a high-risk workflow Write even when askPaths is empty, naming the rule', async () => {
+    const r = (await run('Write', { file_path: WF, content: injection }, { cfg: noAsk }))
     assert.equal(r.decision, 'ask')
     assert.match(r.reason, /\[wf-untrusted-input, high\] \.github\/workflows\/ci\.yml:5/)
     assert.equal(r.findings.length, 1)
   })
 
-  it('should never deny for warnings and should allow a warning-only change outside askPaths', () => {
-    const r = run('Write', { file_path: WF, content: unpinned }, { cfg: noAsk })
+  it('should never deny for warnings and should allow a warning-only change outside askPaths', async () => {
+    const r = (await run('Write', { file_path: WF, content: unpinned }, { cfg: noAsk }))
     assert.equal(r.decision, null)
     assert.deepEqual(r.findings.map((f) => f.rule), ['wf-unpinned-action'])
   })
 
-  it('should list every finding, warnings included, in the reason when it asks', () => {
-    const r = run('Write', { file_path: WF, content: injection + '      - uses: some-org/action@v1\n' })
+  it('should list every finding, warnings included, in the reason when it asks', async () => {
+    const r = (await run('Write', { file_path: WF, content: injection + '      - uses: some-org/action@v1\n' }))
     assert.equal(r.decision, 'ask')
     assert.match(r.reason, /wf-untrusted-input, high/)
     assert.match(r.reason, /wf-unpinned-action, warning/)
     assert.match(r.reason, /governance, CI or dependency file/, 'the askPaths reason is kept')
   })
 
-  it('should check the post-edit content of an Edit, not just new_string', () => {
+  it('should check the post-edit content of an Edit, not just new_string', async () => {
     const root = tempDir()
     writeFiles(root, { [WF]: 'on: pull_request\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n' })
-    const r = run('Edit', { file_path: WF, old_string: 'on: pull_request\n', new_string: 'on: pull_request_target\n' }, { root, cfg: noAsk })
+    const r = (await run('Edit', { file_path: WF, old_string: 'on: pull_request\n', new_string: 'on: pull_request_target\n' }, { root, cfg: noAsk }))
     assert.equal(r.decision, 'ask')
     assert.match(r.reason, /wf-privileged-checkout/)
   })
 
-  it('should apply MultiEdit edits in order and honour replace_all', () => {
+  it('should apply MultiEdit edits in order and honour replace_all', async () => {
     const root = tempDir()
     writeFiles(root, { [WF]: clean + '      - run: echo ok\n' })
     const edits = [{ old_string: 'on: push', new_string: 'on: issues' }, { old_string: 'echo ok', new_string: 'echo ${{ github.event.issue.body }}', replace_all: true }]
-    const r = run('MultiEdit', { file_path: WF, edits }, { root, cfg: noAsk })
+    const r = (await run('MultiEdit', { file_path: WF, edits }, { root, cfg: noAsk }))
     assert.equal(r.findings.length, 2)
   })
 
-  it('should compare permissions against the file on disk before the edit', () => {
+  it('should compare permissions against the file on disk before the edit', async () => {
     const root = tempDir()
     const base = 'on: push\njobs:\n  a:\n    permissions:\n      contents: read\n    steps:\n      - run: echo ok\n'
     writeFiles(root, { [WF]: base })
-    const r = run('Edit', { file_path: WF, old_string: 'contents: read', new_string: 'contents: write' }, { root, cfg: noAsk })
+    const r = (await run('Edit', { file_path: WF, old_string: 'contents: read', new_string: 'contents: write' }, { root, cfg: noAsk }))
     assert.deepEqual(r.findings.map((f) => f.rule), ['wf-permissions-widened'])
   })
 
-  it('should not check files outside .github/workflows', () => {
-    assert.equal(run('Write', { file_path: 'docs/example.yml', content: injection }, { cfg: noAsk }), null)
+  it('should not check files outside .github/workflows', async () => {
+    assert.equal((await run('Write', { file_path: 'docs/example.yml', content: injection }, { cfg: noAsk })), null)
   })
 
-  it('should mark allowlisted findings suppressed so they do not force an ask', () => {
+  it('should mark allowlisted findings suppressed so they do not force an ask', async () => {
     const cfg = { governance: { askPaths: [], allowlist: [{ rule: 'wf-untrusted-input', path: WF }] } }
-    const r = run('Write', { file_path: WF, content: injection }, { cfg })
+    const r = (await run('Write', { file_path: WF, content: injection }, { cfg }))
     assert.equal(r.decision, null)
     assert.equal(r.findings[0].suppressed, true)
   })
 
-  it('should ignore an allowlist entry that does not match', () => {
+  it('should ignore an allowlist entry that does not match', async () => {
     const cfg = { governance: { askPaths: [], allowlist: [{ rule: 'wf-untrusted-input', path: '.github/workflows/other.yml' }] } }
-    const r = run('Write', { file_path: WF, content: injection }, { cfg })
+    const r = (await run('Write', { file_path: WF, content: injection }, { cfg }))
     assert.equal(r.decision, 'ask')
     assert.equal(r.findings[0].suppressed, false)
   })
 
-  it('should keep a secret deny ahead of workflow findings', () => {
-    const r = run('Write', { file_path: WF, content: injection + '# AKIA' + 'Q'.repeat(16) + '\n' })
+  it('should keep a secret deny ahead of workflow findings', async () => {
+    const r = (await run('Write', { file_path: WF, content: injection + '# AKIA' + 'Q'.repeat(16) + '\n' }))
     assert.equal(r.decision, 'deny')
   })
 
-  it('should allow a clean workflow outside askPaths with no findings', () => {
-    assert.equal(run('Write', { file_path: WF, content: clean }, { cfg: noAsk }), null)
+  it('should allow a clean workflow outside askPaths with no findings', async () => {
+    assert.equal((await run('Write', { file_path: WF, content: clean }, { cfg: noAsk })), null)
   })
 
-  it('should check new_string as the content of an Edit that creates a new file', () => {
-    const r = run('Edit', { file_path: WF, old_string: '', new_string: injection }, { cfg: noAsk })
+  it('should check new_string as the content of an Edit that creates a new file', async () => {
+    const r = (await run('Edit', { file_path: WF, old_string: '', new_string: injection }, { cfg: noAsk }))
     assert.equal(r.decision, 'ask')
     assert.deepEqual(r.findings.map((f) => f.rule), ['wf-untrusted-input'])
   })
 
-  it('should ask when the post-edit content of a workflow cannot be worked out', () => {
+  it('should ask when the post-edit content of a workflow cannot be worked out', async () => {
     const root = tempDir()
     writeFiles(root, { [WF]: clean })
     for (const [tool, ti] of [
@@ -562,9 +563,158 @@ describe('evaluate: workflow content checks (R11, R15; AC9, AC12)', () => {
       ['MultiEdit', { file_path: WF, edits: 'nope' }],
       ['Write', { file_path: WF }],
     ]) {
-      const r = run(tool, ti, { root, cfg: noAsk })
+      const r = (await run(tool, ti, { root, cfg: noAsk }))
       assert.equal(r?.decision, 'ask', `${tool} ${JSON.stringify(ti)}`)
       assert.match(r.reason, /could not work out the file content after this edit/)
     }
+  })
+})
+
+describe('evaluate: dependency checks with lookups (R2, R3, R13, R14; AC3, AC11)', () => {
+  const noAsk = { governance: { askPaths: [] } }
+  const manifest = (deps) => JSON.stringify({ name: 'app', dependencies: deps }, null, 2) + '\n'
+  const lock = (pkgs) => JSON.stringify({ lockfileVersion: 3, packages: { '': {}, ...Object.fromEntries(Object.entries(pkgs).map(([n, v]) => [`node_modules/${n}`, { version: v }])) } }, null, 2)
+  const current = { found: true, version: '1.0.0', deprecated: null, latestTime: new Date().toISOString(), scripts: {} }
+  const stubs = (over = {}) => ({ registry: async () => current, advisories: async () => ({}), ...over })
+  // runLookups turns a throwing stub into a failure record, so the stubs count their calls for the test to check.
+  const untouched = () => {
+    const calls = []
+    const refuse = (kind) => async () => {
+      calls.push(kind)
+      throw new Error(`no ${kind} lookup expected`)
+    }
+    return { registry: refuse('registry'), advisories: refuse('advisories'), calls }
+  }
+  const run = (tool_name, tool_input, opts = {}) => evaluate({ tool_name, tool_input }, { root: opts.root || tempDir(), git: fakeGit(), cfg: noAsk, lookups: stubs(), ...opts })
+  const rules = (r) => (r?.findings || []).map((f) => `${f.rule}:${f.tier}`).sort()
+  const failOpens = (r) => logEntries(r, 'Write').filter((e) => e.decision === 'error')
+
+  it('should still ask on a typosquat when another dependency is named constructor (F2)', async () => {
+    const r = await run('Write', { file_path: 'package.json', content: manifest({ constructor: '1.0.0', expresss: '^4.0.0' }) })
+    assert.equal(r.decision, 'ask')
+    assert.match(r.reason, /\[sc-typosquat, high\]/)
+    assert.equal(r.failures, undefined)
+  })
+
+  it('should ask on a typosquat in package.json even when askPaths is empty', async () => {
+    const r = await run('Write', { file_path: 'package.json', content: manifest({ expresss: '^4.0.0' }) })
+    assert.equal(r.decision, 'ask')
+    assert.match(r.reason, /dependency change has 1 high-risk finding/)
+    assert.match(r.reason, /\[sc-typosquat, high\] package\.json:4/)
+  })
+
+  it('should ask on a critical advisory in a lockfile, which is not an ask path', async () => {
+    const lookups = stubs({ advisories: async () => ({ ms: [{ severity: 'critical', title: 'Remote code execution' }] }) })
+    const r = await run('Write', { file_path: 'package-lock.json', content: lock({ ms: '2.0.0' }) }, { lookups })
+    assert.equal(r.decision, 'ask')
+    assert.deepEqual(rules(r), ['sc-advisory:high', 'sc-lockfile-drift:warning'])
+  })
+
+  it('should allow, and report, a moderate advisory', async () => {
+    const lookups = stubs({ advisories: async () => ({ 'left-pad': [{ severity: 'moderate', title: 'ReDoS' }] }) })
+    const r = await run('Write', { file_path: 'package.json', content: manifest({ 'left-pad': '1.3.0' }) }, { lookups })
+    assert.equal(r.decision, null)
+    assert.deepEqual(rules(r), ['sc-advisory:warning'])
+  })
+
+  it('should check the post-edit content of an Edit to an existing package.json against the file on disk', async () => {
+    const root = tempDir()
+    writeFiles(root, { 'package.json': manifest({ react: '^18.0.0' }) })
+    const lookups = stubs({ registry: async () => ({ ...current, deprecated: 'no longer maintained' }) })
+    const r = await run('Edit', { file_path: 'package.json', old_string: '"react": "^18.0.0"', new_string: '"react": "^18.0.0",\n    "old-lib": "1.0.0"' }, { root, lookups })
+    assert.deepEqual(rules(r), ['sc-deprecated:warning'], 'only the added dependency is looked up')
+  })
+
+  it('should return the offline result and log one fail-open entry when the advisory lookup fails', async () => {
+    const lookups = stubs({ advisories: async () => { throw new Error('HTTP 503') } })
+    const r = await run('Write', { file_path: 'package.json', content: manifest({ expresss: '^4.0.0' }) }, { lookups })
+    assert.equal(r.decision, 'ask')
+    assert.deepEqual(rules(r), ['sc-typosquat:high'])
+    const [entry, ...rest] = failOpens(r)
+    assert.equal(rest.length, 0)
+    assert.equal(entry.lookup, 'advisories')
+    assert.match(entry.reason, /^lookup failed open \(advisories\): .*HTTP 503/)
+    assert.equal(entry.target, 'package.json')
+  })
+
+  it('should log a fail-open even when the edit is otherwise allowed', async () => {
+    const lookups = stubs({ registry: async () => { throw new Error('ECONNRESET') } })
+    const r = await run('Write', { file_path: 'package.json', content: manifest({ 'left-pad': '1.3.0' }) }, { lookups })
+    assert.equal(r.decision, null)
+    assert.deepEqual(failOpens(r).map((e) => e.lookup), ['registry'])
+  })
+
+  it('should return a decision within the hook timeout when a lookup never resolves (AC11)', { timeout: 3000 }, async () => {
+    const never = () => new Promise(() => {})
+    const started = Date.now()
+    const r = await run('Write', { file_path: 'package.json', content: manifest({ expresss: '^4.0.0' }) }, { lookups: { registry: never, advisories: never }, lookupDeadlineMs: 50 })
+    assert.ok(Date.now() - started < 1000)
+    assert.equal(r.decision, 'ask', 'the offline typosquat finding still asks')
+    assert.deepEqual(failOpens(r).map((e) => e.lookup).sort(), ['advisories', 'registry'])
+    assert.match(failOpens(r)[0].reason, /timed out after 50 ms/)
+  })
+
+  it('should keep the default lookup deadline inside the hook timeout, with time for Node to start', async () => {
+    const hooks = JSON.parse(readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8'))
+    const guard = hooks.hooks.PreToolUse.flatMap((m) => m.hooks).find((h) => /governance-guard/.test(h.command))
+    assert.ok(GUARD_DEADLINE_MS <= guard.timeout * 1000 - 3000, `${GUARD_DEADLINE_MS} ms vs a ${guard.timeout} s hook timeout`)
+  })
+
+  it('should not look up non-registry specifiers, and warn about them (D9)', async () => {
+    const lookups = untouched()
+    const r = await run('Write', { file_path: 'package.json', content: manifest({ shared: 'workspace:*' }) }, { lookups })
+    assert.deepEqual(rules(r), ['sc-non-registry:warning'])
+    assert.deepEqual(lookups.calls, [])
+  })
+
+  it('should not run lookups when the file cannot be parsed, and ask instead', async () => {
+    const lookups = untouched()
+    const r = await run('Write', { file_path: 'package.json', content: '{ not json' }, { lookups })
+    assert.equal(r.decision, 'ask')
+    assert.deepEqual(rules(r), ['sc-unparsed:high'])
+    assert.deepEqual(lookups.calls, [])
+  })
+
+  it('should ask when the post-edit content of a dependency file cannot be worked out', async () => {
+    const lookups = untouched()
+    const r = await run('Edit', { file_path: 'package-lock.json', old_string: 'x', new_string: 'y' }, { lookups })
+    assert.equal(r.decision, 'ask')
+    assert.deepEqual(rules(r), ['sc-unparsed:high'])
+    assert.deepEqual(lookups.calls, [])
+  })
+
+  it('should not run lookups for files that are not manifests or lockfiles', async () => {
+    const lookups = untouched()
+    assert.equal(await run('Write', { file_path: 'src/index.js', content: 'export default 1\n' }, { lookups }), null)
+    assert.equal(await run('Write', { file_path: 'node_modules/x/package.json', content: manifest({ expresss: '1' }) }, { lookups }), null)
+    assert.deepEqual(lookups.calls, [])
+  })
+
+  it('should not ask for a suppressed typosquat, but still log it', async () => {
+    const cfg = { governance: { askPaths: [], allowlist: [{ rule: 'sc-typosquat', package: 'expresss' }] } }
+    const r = await run('Write', { file_path: 'package.json', content: manifest({ expresss: '^4.0.0' }) }, { cfg })
+    assert.equal(r.decision, null)
+    assert.equal(r.findings[0].suppressed, true)
+    assert.deepEqual(logEntries(r, 'Write').map((e) => `${e.decision}:${e.rule}:${e.suppressed}`), ['finding:sc-typosquat:true'])
+  })
+})
+
+describe('logEntries (R16, A11)', () => {
+  it('should log each finding, then each fail-open, then the decision', () => {
+    const result = {
+      decision: 'ask', reason: 'why', target: 'package.json',
+      findings: [{ rule: 'sc-typosquat', tier: 'high', file: 'package.json', line: 3, detail: 'd', suppressed: false }],
+      failures: [{ lookup: 'registry', reason: 'timed out after 6000 ms' }],
+    }
+    assert.deepEqual(logEntries(result, 'Write'), [
+      { tool: 'Write', target: 'package.json', decision: 'finding', rule: 'sc-typosquat', tier: 'high', file: 'package.json', line: 3, detail: 'd', suppressed: false },
+      { tool: 'Write', target: 'package.json', decision: 'error', lookup: 'registry', reason: 'lookup failed open (registry): timed out after 6000 ms' },
+      { tool: 'Write', target: 'package.json', decision: 'ask', reason: 'why' },
+    ])
+  })
+
+  it('should log nothing for an allowed action with no findings', () => {
+    assert.deepEqual(logEntries(null, 'Bash'), [])
+    assert.deepEqual(logEntries({ decision: null, reason: '', target: 'x' }, 'Write'), [])
   })
 })

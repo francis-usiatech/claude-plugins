@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { makeRepo, makeGovTree, runNode, writeFiles, cleanupTempDirs } from './helpers.mjs'
+import { runGovernanceChecks } from '../templates/github/scripts/governance-checks.mjs'
 
 after(cleanupTempDirs)
 
@@ -275,5 +276,114 @@ describe('governance-checks: workflow content (R12, R15; AC8, AC10, AC12)', () =
     })
     const r = await runChecks({ repo, config: noAsk })
     assert.match(r.stdout, /wf-permissions-widened/)
+  })
+})
+
+describe('governance-checks: dependency content with stub lookups (R1–R6, R13; AC3, D7)', () => {
+  const noAsk = { governance: { askPaths: [] } }
+  const env = (labels = []) => ({ PR_BODY: GOOD_BODY, PR_LABELS: JSON.stringify(labels), BASE_REF: 'develop', HEAD_REF: 'feature/x' })
+  const manifest = (deps) => JSON.stringify({ name: 'app', dependencies: deps }, null, 2) + '\n'
+  const lock = (pkgs) => JSON.stringify({ lockfileVersion: 3, packages: { '': {}, ...Object.fromEntries(Object.entries(pkgs).map(([n, v]) => [`node_modules/${n}`, { version: v }])) } }, null, 2)
+  const current = { found: true, version: '1.0.0', deprecated: null, latestTime: new Date().toISOString(), scripts: {} }
+  const stubs = (over = {}) => ({ registry: async () => current, advisories: async () => ({}), ...over })
+  // runLookups turns a throwing stub into a failure record, so the stubs count their calls for the test to check.
+  const untouched = () => {
+    const calls = []
+    const refuse = (kind) => async () => {
+      calls.push(kind)
+      throw new Error(`no ${kind} lookup expected`)
+    }
+    return { registry: refuse('registry'), advisories: refuse('advisories'), calls }
+  }
+  const check = ({ repo, config = noAsk, labels = [], lookups = stubs() }) =>
+    runGovernanceChecks({ env: env(labels), lookups, cwd: repo, govRoot: path.resolve(makeGovTree(config), '..', '..') })
+
+  it('should fail on a typosquat in package.json and pass it with the approval label', async () => {
+    const repo = makeRepo({ baseFiles: { 'package.json': manifest({}) }, headFiles: { 'package.json': manifest({ expresss: '^4.0.0' }) } })
+    const r = await check({ repo })
+    assert.equal(r.exitCode, 1, r.report)
+    assert.match(r.report, /Dependency changes have 1 high-risk finding\(s\): \[sc-typosquat, high\] package\.json:4/)
+    assert.equal((await check({ repo, labels: ['governance-approved'] })).exitCode, 0)
+  })
+
+  it('should fail on a critical advisory and report a moderate one as a warning', async () => {
+    const repo = makeRepo({ headFiles: { 'package.json': manifest({ 'left-pad': '1.3.0' }) } })
+    const critical = await check({ repo, lookups: stubs({ advisories: async () => ({ 'left-pad': [{ severity: 'critical', title: 'RCE' }] }) }) })
+    assert.equal(critical.exitCode, 1)
+    assert.match(critical.report, /\[sc-advisory, high\]/)
+    const moderate = await check({ repo, lookups: stubs({ advisories: async () => ({ 'left-pad': [{ severity: 'moderate', title: 'ReDoS' }] }) }) })
+    assert.equal(moderate.exitCode, 0, moderate.report)
+    assert.match(moderate.report, /⚠️ \[sc-advisory, warning\]/)
+  })
+
+  it('should fail closed with "lookup unavailable" naming the lookup, even with the approval label (AC3)', async () => {
+    const repo = makeRepo({ headFiles: { 'package.json': manifest({ 'left-pad': '1.3.0' }) } })
+    const lookups = stubs({ advisories: async () => { throw new Error('HTTP 503') } })
+    for (const labels of [[], ['governance-approved']]) {
+      const r = await check({ repo, labels, lookups })
+      assert.equal(r.exitCode, 1, r.report)
+      assert.match(r.report, /❌ Dependency lookup unavailable: advisories \(.*HTTP 503.*\)/)
+    }
+  })
+
+  it('should fail closed when a lookup misses the deadline', { timeout: 5000 }, async () => {
+    const repo = makeRepo({ headFiles: { 'package.json': manifest({ 'left-pad': '1.3.0' }) } })
+    const never = () => new Promise(() => {})
+    const r = await runGovernanceChecks({ env: env(), lookups: { registry: never, advisories: never }, lookupDeadlineMs: 50, cwd: repo, govRoot: path.resolve(makeGovTree(noAsk), '..', '..') })
+    assert.equal(r.exitCode, 1)
+    assert.match(r.report, /lookup unavailable: registry .*timed out after 50 ms/)
+  })
+
+  it('should look up the exact lockfile version when the manifest and lockfile change together, without a drift warning', async () => {
+    const calls = []
+    const registry = []
+    const repo = makeRepo({ headFiles: { 'package.json': manifest({ express: '^4.18.0' }), 'package-lock.json': lock({ express: '4.21.2' }) } })
+    const lookups = stubs({
+      advisories: async (entries) => { calls.push(entries); return {} },
+      registry: async (name, version) => { registry.push(`${name}@${version}`); return current },
+    })
+    const r = await check({ repo, lookups })
+    assert.equal(r.exitCode, 0, r.report)
+    assert.deepEqual(calls, [{ express: ['4.21.2'] }])
+    assert.deepEqual(registry, ['express@4.21.2'], 'the added manifest dependency gets a registry lookup at the pinned version')
+    assert.doesNotMatch(r.report, /sc-lockfile-drift/)
+  })
+
+  it('should warn about a lockfile-only change and a widened range (AC5)', async () => {
+    const drift = makeRepo({ baseFiles: { 'package-lock.json': lock({ ms: '2.1.2' }) }, headFiles: { 'package-lock.json': lock({ ms: '2.1.3' }) } })
+    assert.match((await check({ repo: drift })).report, /⚠️ \[sc-lockfile-drift, warning\]/)
+    const widened = makeRepo({ baseFiles: { 'package.json': manifest({ ms: '^2.1.0' }) }, headFiles: { 'package.json': manifest({ ms: '*' }) } })
+    const r = await check({ repo: widened })
+    assert.equal(r.exitCode, 0, r.report)
+    assert.match(r.report, /⚠️ \[sc-range-widened, warning\]/)
+  })
+
+  it('should fail on a dependency file it cannot read, without lookups', async () => {
+    const repo = makeRepo({ headFiles: { 'apps/web/package.json': '{ not json' } })
+    const lookups = untouched()
+    const r = await check({ repo, lookups })
+    assert.equal(r.exitCode, 1)
+    assert.match(r.report, /\[sc-unparsed, high\] apps\/web\/package\.json:1/)
+    assert.deepEqual(lookups.calls, [])
+  })
+
+  it('should not look anything up for a PR without dependency changes, or for a deleted manifest', async () => {
+    const lookups = untouched()
+    assert.equal((await check({ repo: makeRepo({ headFiles: { 'src/a.js': 'x\n' } }), lookups })).exitCode, 0)
+    const deleted = makeRepo({ baseFiles: { 'package.json': manifest({ expresss: '1.0.0' }) }, headFiles: { 'package.json': null } })
+    assert.equal((await check({ repo: deleted, lookups })).exitCode, 0)
+    assert.deepEqual(lookups.calls, [])
+  })
+
+  it('should honour an allowlisted package from the base-branch config', async () => {
+    const config = { governance: { askPaths: [], allowlist: [{ rule: 'sc-typosquat', package: 'expresss', reason: 'internal fork' }] } }
+    const repo = makeRepo({ headFiles: { 'package.json': manifest({ expresss: '^4.0.0' }) } })
+    const r = await check({ repo, config })
+    assert.equal(r.exitCode, 0, r.report)
+    assert.match(r.report, /\[sc-typosquat, high, suppressed\]/)
+  })
+
+  it('should refuse to run without lookups, so a caller cannot skip them by accident', async () => {
+    await assert.rejects(runGovernanceChecks({ env: env() }), /needs the dependency lookups/)
   })
 })

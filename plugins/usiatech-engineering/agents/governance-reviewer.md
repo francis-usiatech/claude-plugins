@@ -37,7 +37,7 @@ You are the governance gate for this repository. You make sure work stays within
 ## Evidence
 - **Plan review (pre-flight):** read the proposed plan text you were given. If it references a spec (`docs/specs/*.md`), read the spec and the tickets it names (`gh issue view <n>` when `gh` works, otherwise the spec's Tickets section).
 - **Change review:** `git status --short`, `git diff --stat`, `git diff`, and `git log --oneline <base>..HEAD` (the base branch comes from engineering.json → git.baseBranch).
-- **Actions taken:** `.claude/governance-log.jsonl`. List every `deny`, `ask` and `error` entry since the plan's approval date. An `error` entry means the guard failed open and did not check that action. Also count the `finding` entries (workflow content checks, rule IDs `wf-*`) by tier: each high-risk finding that isn't `suppressed` needs either a fix in the diff or the user's recorded decision.
+- **Actions taken:** `.claude/governance-log.jsonl`. List every `deny`, `ask` and `error` entry since the plan's approval date. An `error` entry means the guard failed open and did not check that action; a `lookup failed open` entry means the dependency advisory or registry lookup did not run for that edit (the offline dependency rules still did). Also count the `finding` entries (workflow content checks, rule IDs `wf-*`; dependency checks, rule IDs `sc-*`) by tier: each high-risk finding that isn't `suppressed` needs either a fix in the diff or the user's recorded decision.
 
 ## Checks
 1. **Requirement traceability:** every changed file or planned item maps to a requirement reference. Flag anything with no basis in the intent, ADRs or plan (gold-plating, speculative features, work from a later phase).

@@ -65,6 +65,9 @@ export const GUARD_EXEMPT_PATHS = ['.claude/plans/**', '.claude/governance-log.j
 // Content rules for workflow (B10) files. Findings are { rule, tier, file, line, detail, package? }; tier is 'high'
 // (the guard asks, CI fails unless labelled) or 'warning' (reported only).
 export { checkWorkflow, isWorkflowPath, TIER } from './workflow-rules.mjs'
+// Content rules for npm manifests and lockfiles (B9), in the same finding shape; network lookups live in
+// supply-chain-lookups.mjs.
+export { checkDependencies, dependencyKind } from './supply-chain-rules.mjs'
 
 /**
  * Validates engineering.json → governance.allowlist. Each entry needs a rule ID plus a path glob or a package name,
