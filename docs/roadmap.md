@@ -14,10 +14,11 @@ Plan references use these IDs (e.g. "Improvement roadmap step 3: B1, B2").
 | 2 | Test-first and review depth | B4, B5, B7, B8, A8, A9 | Shipped v0.6.0 (PR #4) |
 | 3 | Front of the process: clarify → spec → tickets → plan → approve | B1, B2, B3, A10 | Shipped v0.7.0 (PR #6) |
 | 4 | Security and supply chain | B9, B10 | Shipped v0.8.0 (B10 #10, B9 #11) |
+| 4.1 | Hardening follow-ups | #13 CI kit items, #16 staleness | Shipped v0.8.1 |
 | 5 | Delivery and operations | B11–B19 | Not started |
 | 6 | Plugin health | B20–B25 | Not started |
 
-Not yet assigned to a step: A6, A7 (deferred from step 2) and B6.
+Not yet assigned to a step: A6, A7 (deferred from step 2), B6 and B26–B28.
 
 ## A. Improvements to existing components
 
@@ -71,9 +72,19 @@ Not yet assigned to a step: A6, A7 (deferred from step 2) and B6.
 
 | # | Feature | Inspired by |
 |---|---|---|
-| B20 | Skill evals: scripted scenarios checking each skill fires and follows its steps | superpowers evals, wshobson `plugin-eval`, `skill-creator` |
+| B20 | Skill evals: scripted scenarios checking each skill fires and follows its steps; build on the native `claude plugin eval` rather than a custom harness | superpowers evals, wshobson `plugin-eval`, `skill-creator`, `claude plugin eval` |
 | B21 | `ask-usiatech` router skill that picks the right skill | mattpocock `ask-matt`, addyosmani |
 | B22 | `diagnose-session`: explain from the governance log why the guard or a skill did or didn't fire | superpowers `diagnosing-superpowers` |
 | B23 | Governance log report: deny/ask counts, most-overridden rules, plans closed vs abandoned | ECC reports |
 | B24 | Learning loop: suggest `governance.md` rules from repeated asks and denials | ECC continuous-learning, `hookify` |
 | B25 | Reference checklists (definition of done, security, accessibility, performance) loaded on demand | addyosmani, wshobson |
+
+### Test and review quality (unassigned)
+
+Found in a 2026-09-30 comparison with the installed engineering plugins. None is on another step yet.
+
+| # | Feature | Inspired by |
+|---|---|---|
+| B26 | `mutation-test` skill: break each fix point on purpose and confirm a test fails, with a report per mutation (the B9/B10 fix sets did this by hand) | trailofbits `mutation-testing` |
+| B27 | Finding verification: before a low-confidence reviewer finding is fixed or deferred, try to reproduce it and mark it confirmed or false positive | trailofbits `fp-check`, `variant-analysis` |
+| B28 | `test-coverage-reviewer` agent: checks that the tests in a diff cover the new behaviour and edge cases, not just that they pass | Anthropic pr-review-toolkit `pr-test-analyzer` |
