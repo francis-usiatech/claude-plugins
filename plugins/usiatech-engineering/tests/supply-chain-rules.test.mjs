@@ -273,7 +273,10 @@ describe('parseDependencies: layouts the parser does not expect fail closed (F1)
   })
 
   it('should report a pnpm package entry without a resolution', () => {
-    assert.ok(problems('pnpm-lock.yaml', pnpm.replace('    resolution: {integrity: sha512-bbb}\n', '')).length > 0)
+    // CRLF-safe: a Windows checkout gives the fixture CRLF line breaks.
+    const removed = pnpm.replace(/ {4}resolution: \{integrity: sha512-bbb\}\r?\n/, '')
+    assert.notEqual(removed, pnpm)
+    assert.ok(problems('pnpm-lock.yaml', removed).length > 0)
   })
 
   it('should report a yarn.lock whose entries are all indented', () => {
