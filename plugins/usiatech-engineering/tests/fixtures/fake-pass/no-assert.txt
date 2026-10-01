@@ -1,0 +1,6 @@
+import { it } from 'node:test'
+import { add } from '../src/add.mjs'
+
+it('should add', () => {
+  add(1, 2)
+})

@@ -129,6 +129,38 @@ Path checks ignore case on Windows and macOS (`.ENV` is treated as `.env`), and 
 
 The guard fails open on internal errors, so a bug can't lock a session. Each failure is logged as `"decision": "error"` in `governance-log.jsonl` and printed to stderr, and the reviewer reports these entries. `ask` depends on Claude Code's permission prompt: in a fully auto-approved session, rely on `deny` rules and the reviewer.
 
+## Design records
+Every change traces to a requirement. These are the records behind the plugin, with paths from the marketplace root:
+
+| Record | Status | What it decides |
+|---|---|---|
+| [Roadmap](../../docs/roadmap.md) | Living | Steps 1–6 with item IDs (A1–A12, B1–B28) that plans cite; the agreed order for the next work is 4.2 → 4.3 → step 5 (B12 first) |
+| [Spec: security and supply chain](../../docs/specs/2026-09-28-security-supply-chain.md) | Approved; shipped v0.8.0 | B9 `sc-*` dependency checks and B10 `wf-*` workflow checks (R1–R19, AC1–AC16) |
+| [ADR 0001: guard network lookups](../../docs/adr/0001-guard-network-lookups.md) | Accepted | The guard calls `registry.npmjs.org`; lookups fail open (logged) in the guard and fail closed in CI |
+| [Spec: fake-pass checks and mutation testing](../../docs/specs/2026-09-30-fake-pass-and-mutation-test.md) | Approved; target v0.9.0 | A6 `fp-*` test-content checks in `verify` and CI (R1–R11), B26 `mutation-test` skill and runner (R12–R17) |
+| [ADR 0002: fake-pass checks fail the gate](../../docs/adr/0002-fake-pass-checks-fail-the-gate.md) | Accepted | The CI gate fails on heuristic test-content findings; the allowlist is the way through |
+
+Decisions recorded in the step 4.2 spec (D1–D12), made while clarifying on 2026-09-30. Nothing here has shipped yet.
+- **Where it runs (D1):** both local `verify` and the CI gate, from one shared rule module. CI loads the base-branch copy.
+- **Scope (D2):** every changed JS/TS test file is scanned in full. Unchanged files are never scanned.
+- **Tiers (D3, D5):**
+  - Fail: `.only`, skipped/pending tests, empty test bodies, tests with no recognised assertion, unreadable test files.
+  - Warning: `TODO`/`FIXME`/`XXX`/"not implemented".
+  - `governance.allowlist` (rule, path glob, reason) suppresses a finding but still reports it.
+- **Frameworks (D4, D6, D7):**
+  - JS/TS only: node:test, Jest, Vitest, Mocha, Playwright.
+  - Recognised assertions: `assert`, `t.assert`, `expect(`, `.should`, `t.plan(`.
+  - Pattern based with comments and strings stripped. No parser, no dependencies.
+- **Rule IDs (D8):** `fp-only`, `fp-skip`, `fp-empty-test`, `fp-no-assert`, `fp-placeholder`, `fp-unreadable`.
+- **Mutation testing (D9–D11):**
+  - Claude picks the fix points and writes a list of exact find → replace edits.
+  - A zero-dependency runner in the plugin checks a baseline first, then reports each mutation as CAUGHT, SURVIVED, NOT-FOUND, TIMEOUT or ERROR, and restores every file byte for byte.
+  - It runs on demand, and survivors are reported as missing tests, never blocking.
+  - `release` suggests it when rule, check, policy or guard files change.
+- **Approval label (D12):** the `governance-approved` label overrides a fake-pass failure in CI, as it does for B9/B10. The finding is still reported.
+
+Approved plans are archived in `.claude/plans/archive/` with their final status, acceptance-criteria evidence and deviations.
+
 ## Development
 Tests use Node's built-in runner and have no dependencies. From the marketplace root run `npm test`. They cover the shared rules, the guard (as a function and as a hook subprocess), and each CI script against temporary git repos and a local GitHub API stub. `.github/workflows/test.yml` runs them on Ubuntu and Windows with Node 20 and 22.
 
@@ -145,8 +177,8 @@ Node ≥ 20 on the machine running Claude Code (used by the hook). Git.
 Semver. Record changes below.
 
 | Version | Change |
-| 0.8.1 | Step 4.1 hardening (#13 CI kit, #16). `pr-governance.yml`: `claude-code-action` pinned to a commit and gitleaks to a digest; the AI review runs with `--setting-sources user` (no PR `.claude` hooks, plugins or `.mcp.json`), has no Bash tool (diff and log pre-written as text to `.pr-diff.patch` / `.pr-log.txt`), keeps no checkout token and cannot read `/proc`, runner folders, home credential folders or `.git/`. New `templates/ruleset-governance.json` (required `governance-gate` from GitHub Actions, Code Owner review, admin bypass per PR for solo owners); `setup-engineering` applies it after approval once no placeholder is left. `sc-stale` warns when the registry gives no readable release date. |
 |---|---|
+| 0.8.1 | Step 4.1 hardening (#13 CI kit, #16). `pr-governance.yml`: `claude-code-action` pinned to a commit and gitleaks to a digest; the AI review runs with `--setting-sources user` (no PR `.claude` hooks, plugins or `.mcp.json`), has no Bash tool (diff and log pre-written as text to `.pr-diff.patch` / `.pr-log.txt`), keeps no checkout token and cannot read `/proc`, runner folders, home credential folders or `.git/`. New `templates/ruleset-governance.json` (required `governance-gate` from GitHub Actions, Code Owner review, admin bypass per PR for solo owners); `setup-engineering` applies it after approval once no placeholder is left. `sc-stale` warns when the registry gives no readable release date. |
 | 0.8.0 | Step 4: security and supply chain. **Workflow checks (B10):** the guard and `governance-checks` run shared `wf-*` rules on `.github/workflows/*.yml` changes (privileged triggers running PR code, untrusted input in scripts and AI prompts, unpinned actions, widened permissions, fail-closed parsing); new read-only `workflow-reviewer`. **Dependency checks (B9):** `sc-*` rules on `package.json`, `package-lock.json`, `pnpm-lock.yaml` and `yarn.lock` changes (typosquats, npm advisories, install scripts, deprecated, stale and unknown packages, non-registry specifiers, lockfile drift, widened ranges, lockfile entries downloaded from elsewhere), with registry lookups that fail open (logged) in the guard and fail closed in CI ([ADR 0001](../../docs/adr/0001-guard-network-lookups.md)); new read-only `supply-chain-reviewer`. High-risk findings make the guard ask and fail CI unless labelled; `governance.allowlist` suppresses one finding by rule plus path glob or package name. `release` stage 2 runs `workflow-reviewer` and `supply-chain-reviewer` when their files change; `governance-reviewer` counts `wf-*` and `sc-*` findings and lookup fail-opens. The guard now sends added or changed package names and versions to `registry.npmjs.org` on dependency edits. **Upgrading repos:** re-copy `templates/github/scripts/` into `.github/scripts/` (new `workflow-rules.mjs`, `supply-chain-rules.mjs`, `supply-chain-lookups.mjs`); the `governance-checks` job needs outbound access to `registry.npmjs.org`. Optionally add `allowlist` entries to `.claude/engineering.json`. |
 | 0.7.1 | Step 3 review fixes. `approve-plan` checks for an unfinished plan before routing, accepts a spec as a reference only once it's approved, keeps the requirement-reference rule when the user overrides the route, and has narrower triggers. `verify` stamps each evidence line with a UTC time, rewrites all of them on every run, and writes them in one edit. `governance-reviewer` flags evidence older than the latest change. `to-tickets` checks GitHub access before asking to confirm and finds labels by exact name. **Upgrading repos:** nothing required. Evidence written by 0.7.0 has no stamp, so the reviewer asks for `verify` to be re-run. |
 | 0.7.0 | New `clarify`, `to-spec` and `to-tickets` skills; `approve-plan` routes work small (plan directly) or large (clarify → spec → tickets first), records measurable acceptance criteria, a task list and the route, and runs a governance pre-flight before approval; new `templates/spec.md`; `verify` reports each acceptance criterion as shown or not shown with evidence from the session (a warning, not a failure); `governance-reviewer` flags criteria without evidence and, in pre-flight, checks the plan against the spec and tickets. **Upgrading repos:** nothing required. Existing plans without acceptance criteria keep working. No CI changes; repos don't need to re-copy scripts. Specs go to `docs/specs/`, created on first use. |

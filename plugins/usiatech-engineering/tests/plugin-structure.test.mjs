@@ -287,7 +287,7 @@ describe('plugin structure: step-4 workflow checks (B10)', () => {
   it('should document an allowlist entry shape that parseAllowlist accepts', async () => {
     const { parseAllowlist } = await import('../templates/github/scripts/governance-rules.mjs')
     const sample = [{ rule: 'wf-unpinned-action', path: '.github/workflows/pr-governance.yml', reason: 'major tag kept on purpose' }]
-    assert.deepEqual(parseAllowlist(sample), { entries: [{ rule: 'wf-unpinned-action', path: '.github/workflows/pr-governance.yml' }], problems: [] })
+    assert.deepEqual(parseAllowlist(sample), { entries: [{ rule: 'wf-unpinned-action', path: '.github/workflows/pr-governance.yml', reason: 'major tag kept on purpose' }], problems: [] })
     assert.match(read('README.md'), /"rule": "wf-unpinned-action", "path": "\.github\/workflows\/pr-governance\.yml"/)
   })
 })

@@ -1,0 +1,8 @@
+import { describe, it } from 'node:test'
+import assert from 'node:assert/strict'
+
+describe('math', () => {
+  it.only('should add', () => {
+    assert.equal(1 + 1, 2)
+  })
+})
