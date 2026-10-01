@@ -162,7 +162,18 @@ describe('plugin structure: step-3 verify and reviewer', () => {
     assert.match(text, /\| AC \| Criterion \| Evidence \| Status \|/)
     assert.match(text, /only if `\.claude\/plans\/active\.md` has an `## Acceptance criteria` section/)
     assert.match(text, /Gate: PASS \(N of M criteria not shown\)/)
-    assert.match(text, /decided by the commands only/)
+    assert.match(text, /decided by the commands and the fake-pass check only/)
+  })
+
+  it('should make verify run the fake-pass check after the commands pass and fail the gate on a fail finding (AC8)', () => {
+    const text = body(read('skills', 'verify', 'SKILL.md'))
+    const step = text.match(/^\d+\. \*\*Check test content \(fp-\*\)\*\*[\s\S]*?(?=^\d+\. \*\*)/m)?.[0]
+    assert.ok(step, 'verify has no "Check test content (fp-*)" step')
+    assert.match(step, /only after the commands pass/)
+    assert.match(step, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/templates\/github\/scripts\/fake-pass-check\.mjs"/)
+    assert.match(step, /\*\*Gate: FAIL\*\*/)
+    assert.match(step, /list every finding/i)
+    assert.ok(text.indexOf('Check test content (fp-*)') < text.indexOf('Check acceptance criteria'), 'fp step comes before the acceptance criteria')
   })
 
   it('should make governance-reviewer check acceptance criteria and spec consistency', () => {
@@ -207,13 +218,8 @@ describe('plugin structure: step-3 deferred minors', () => {
   const approve = () => body(read('skills', 'approve-plan', 'SKILL.md'))
   const verify = () => body(read('skills', 'verify', 'SKILL.md'))
   const reviewer = () => body(read('agents', 'governance-reviewer.md'))
-  const assertBefore = (text, first, second) => {
-    const a = text.indexOf(first)
-    const b = text.indexOf(second)
-    assert.ok(a !== -1, `missing: ${first}`)
-    assert.ok(b !== -1, `missing: ${second}`)
-    assert.ok(a < b, `"${first}" comes before "${second}"`)
-  }
+  // Positions of first and second in text; each test asserts the order itself so the fp-no-assert check sees it.
+  const positions = (text, first, second) => [text.indexOf(first), text.indexOf(second)]
 
   it('should keep the requirement-reference rule when the user overrides the route (M1)', () => {
     assert.match(approve(), /an override changes the route, not the rule that every plan needs a requirement reference/i)
@@ -235,12 +241,14 @@ describe('plugin structure: step-3 deferred minors', () => {
   })
 
   it('should check for an unfinished plan before routing (M6)', () => {
-    assertBefore(approve(), 'already exists and is unfinished', '## Route')
+    const [check, route] = positions(approve(), 'already exists and is unfinished', '## Route')
+    assert.ok(check !== -1 && route !== -1 && check < route, `unfinished-plan check at ${check}, route at ${route}`)
   })
 
   it('should check GitHub access before confirming and look labels up by exact name (M7)', () => {
     const text = body(read('skills', 'to-tickets', 'SKILL.md'))
-    assertBefore(text, 'gh auth status', 'ask the user once to confirm before filing')
+    const [auth, confirm] = positions(text, 'gh auth status', 'ask the user once to confirm before filing')
+    assert.ok(auth !== -1 && confirm !== -1 && auth < confirm, `gh auth status at ${auth}, confirm at ${confirm}`)
     assert.match(text, /gh label list --search "spec:<slug>" --json name/)
     assert.doesNotMatch(text, /\(`gh label list`\)/)
   })
@@ -434,6 +442,29 @@ describe('plugin structure: shipped CI kit hardening (#13)', () => {
     const { job } = await aiReview()
     const diff = job.steps.map((s) => s.run ?? '').join('\n').split('\n').find((l) => l.includes('> .pr-diff.patch'))
     assert.match(diff, /git diff --text --no-ext-diff /)
+  })
+})
+
+describe('plugin structure: step-4.2 fake-pass docs (#21, R18)', () => {
+  const readme = () => read('README.md')
+
+  it('should document every fp-* rule with its tier in a README rule table', async () => {
+    const { checkFakePasses } = await import('../templates/github/scripts/fake-pass-rules.mjs')
+    const tiers = { 'fp-only': 'high', 'fp-skip': 'high', 'fp-empty-test': 'high', 'fp-no-assert': 'high', 'fp-unreadable': 'high', 'fp-placeholder': 'warning' }
+    for (const [rule, tier] of Object.entries(tiers)) assert.match(readme(), new RegExp(`^\\| \`${rule}\` \\| ${tier} \\| `, 'm'), rule)
+    // The table's tiers are the module's: a focused test is high, a placeholder a warning.
+    assert.equal(checkFakePasses({ file: 'a.test.mjs', content: "it.only('x', () => { assert.ok(1) })\n" })[0].tier, tiers['fp-only'])
+    assert.equal(checkFakePasses({ file: 'a.mjs', content: '// TODO\n' })[0].tier, tiers['fp-placeholder'])
+  })
+
+  it('should document an fp allowlist entry that parseAllowlist accepts, the limits and the upgrade step', async () => {
+    const { parseAllowlist } = await import('../templates/github/scripts/governance-rules.mjs')
+    const sample = [{ rule: 'fp-no-assert', path: 'tests/helpers-assert.test.mjs', reason: 'assertions live in a helper' }]
+    assert.deepEqual(parseAllowlist(sample).problems, [])
+    assert.match(readme(), /"rule": "fp-no-assert", "path": "tests\/helpers-assert\.test\.mjs"/)
+    assert.match(readme(), /`fake-pass-check\.mjs`/)
+    assert.match(readme(), /pattern based/i)
+    assert.match(readme(), /re-copy `templates\/github\/scripts\/`[^\n]*fake-pass/)
   })
 })
 
