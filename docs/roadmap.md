@@ -15,7 +15,7 @@ Plan references use these IDs (e.g. "Improvement roadmap step 3: B1, B2").
 | 3 | Front of the process: clarify → spec → tickets → plan → approve | B1, B2, B3, A10 | Shipped v0.7.0 (PR #6) |
 | 4 | Security and supply chain | B9, B10 | Shipped v0.8.0 (B10 #10, B9 #11) |
 | 4.1 | Hardening follow-ups | #13 CI kit items, #16 staleness | Shipped v0.8.1 |
-| 4.2 | Test honesty: fake-pass checks and mutation testing | A6, B26 | Spec approved ([spec](specs/2026-09-30-fake-pass-and-mutation-test.md), [ADR 0002](adr/0002-fake-pass-checks-fail-the-gate.md) accepted); target v0.9.0 |
+| 4.2 | Test honesty: fake-pass checks and mutation testing | A6, B26 | Shipped v0.9.0 (A6 #20/#21, B26 #22; [spec](specs/2026-09-30-fake-pass-and-mutation-test.md), [ADR 0002](adr/0002-fake-pass-checks-fail-the-gate.md)) |
 | 4.3 | Guard enforcement gaps | remaining #13 items | Queued after 4.2 |
 | 5 | Delivery and operations | B11–B19 | Not started; B12 (handoff) first, after 4.3 |
 | 6 | Plugin health | B20–B25 | Not started |
@@ -33,7 +33,7 @@ Not yet assigned to a step: A7 (deferred from step 2), B6, B27 and B28.
 | A3 | A malformed `engineering.json` silently fell back to defaults; surface it | Done (step 1) |
 | A4 | Template `baseBranch` didn't match the team's branch standard; pick one or detect it | Done (step 1) |
 | A5 | README version table missing rows and out of order | Done (step 1) |
-| A6 | `verify` rejects fake passes (`.skip`/`.only`, placeholder TODOs, empty tests) and reports which plan acceptance criteria were shown to pass | Step 4.2. AC reporting shipped with A10; fake-pass checks specced in [2026-09-30 spec](specs/2026-09-30-fake-pass-and-mutation-test.md) (R1–R11) |
+| A6 | `verify` rejects fake passes (`.skip`/`.only`, placeholder TODOs, empty tests) and reports which plan acceptance criteria were shown to pass | Done (step 4.2, #20/#21). AC reporting shipped with A10; fake-pass checks per [2026-09-30 spec](specs/2026-09-30-fake-pass-and-mutation-test.md) (R1–R11) |
 | A7 | Excuse tables (common reasons to skip a step, with rebuttals) in `verify`, `release` and `approve-plan` | Deferred |
 | A8 | Confidence scoring (0–100, drop under ~80) for reviewer findings | Done (step 2) |
 | A9 | Two-stage review in `release`: "matches the plan" then "is the code good" | Done (step 2) |
@@ -89,6 +89,6 @@ Found in a 2026-09-30 comparison with the installed engineering plugins. None is
 
 | # | Feature | Inspired by |
 |---|---|---|
-| B26 | `mutation-test` skill: break each fix point on purpose and confirm a test fails, with a report per mutation (the B9/B10 fix sets did this by hand). Step 4.2; specced in [2026-09-30 spec](specs/2026-09-30-fake-pass-and-mutation-test.md) (R12–R17) | trailofbits `mutation-testing` |
+| B26 | `mutation-test` skill: break each fix point on purpose and confirm a test fails, with a report per mutation (the B9/B10 fix sets did this by hand). Done (step 4.2, #22) per [2026-09-30 spec](specs/2026-09-30-fake-pass-and-mutation-test.md) (R12–R17) | trailofbits `mutation-testing` |
 | B27 | Finding verification: before a low-confidence reviewer finding is fixed or deferred, try to reproduce it and mark it confirmed or false positive | trailofbits `fp-check`, `variant-analysis` |
 | B28 | `test-coverage-reviewer` agent: checks that the tests in a diff cover the new behaviour and edge cases, not just that they pass | Anthropic pr-review-toolkit `pr-test-analyzer` |
