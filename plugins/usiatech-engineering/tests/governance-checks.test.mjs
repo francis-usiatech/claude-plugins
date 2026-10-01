@@ -380,7 +380,7 @@ describe('governance-checks: dependency content with stub lookups (R1–R6, R13;
     const repo = makeRepo({ headFiles: { 'package.json': manifest({ expresss: '^4.0.0' }) } })
     const r = await check({ repo, config })
     assert.equal(r.exitCode, 0, r.report)
-    assert.match(r.report, /\[sc-typosquat, high, suppressed\]/)
+    assert.match(r.report, /\[sc-typosquat, high, suppressed: internal fork\]/)
   })
 
   it('should refuse to run without lookups, so a caller cannot skip them by accident', async () => {

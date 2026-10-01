@@ -1,0 +1,14 @@
+import { describe, it } from 'node:test'
+import assert from 'node:assert/strict'
+
+// A note that mentions skip and only in a comment.
+describe('math', () => {
+  it('should add', () => {
+    const label = 'skip this .only in a string'
+    assert.equal(1 + 1, 2, label)
+  })
+
+  it('should await a matcher', async () => {
+    await expect(Promise.resolve(1)).resolves.toBe(1)
+  })
+})

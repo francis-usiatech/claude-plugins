@@ -68,6 +68,8 @@ export { checkWorkflow, isWorkflowPath, TIER } from './workflow-rules.mjs'
 // Content rules for npm manifests and lockfiles (B9), in the same finding shape; network lookups live in
 // supply-chain-lookups.mjs.
 export { checkDependencies, dependencyKind } from './supply-chain-rules.mjs'
+// Content rules for changed JS/TS test files (A6): focused, skipped, empty and assertion-free tests, placeholders.
+export { checkFakePasses, isTestFile } from './fake-pass-rules.mjs'
 
 /**
  * Validates engineering.json → governance.allowlist. Each entry needs a rule ID plus a path glob or a package name,
@@ -90,22 +92,27 @@ export const parseAllowlist = (list) => {
       problems.push(`"governance.allowlist[${i}]" has a path made of only wildcards ("${e.path}"); name the files it covers`)
       return
     }
-    entries.push({ rule: e.rule, ...(str('path') && { path: e.path }), ...(str('package') && { package: e.package }) })
+    entries.push({ rule: e.rule, ...(str('path') && { path: e.path }), ...(str('package') && { package: e.package }), ...(str('reason') && { reason: e.reason }) })
   })
   return { entries, problems }
 }
 
-// Marks each finding suppressed (true/false). Suppressed findings are still reported and logged, but never block.
-export const applyAllowlist = (findings, entries, ignoreCase = false) => findings.map((f) => ({
-  ...f,
-  suppressed: entries.some((e) => e.rule === f.rule
+// Marks each finding suppressed (true/false), copying the matching entry's reason. Suppressed findings are still
+// reported and logged, but never block.
+export const applyAllowlist = (findings, entries, ignoreCase = false) => findings.map((f) => {
+  const match = entries.find((e) => e.rule === f.rule
     && (!e.path || globToRegExp(e.path, ignoreCase).test(f.file))
-    && (!e.package || e.package === f.package)),
-}))
+    && (!e.package || e.package === f.package))
+  return { ...f, suppressed: !!match, ...(typeof match?.reason === 'string' && match.reason && { reason: match.reason }) }
+})
 
 export const blockingFindings = (findings) => findings.filter((f) => f.tier === 'high' && !f.suppressed)
 
-export const formatFinding = (f) => `[${f.rule}, ${f.tier}${f.suppressed ? ', suppressed' : ''}] ${f.file}:${f.line} ${f.detail}`
+// Detail and reason text can come from changed files, so each finding stays on one line (no newlines or control
+// characters that could start a workflow command in CI logs) and is capped in length.
+const oneLine = (s, max) => String(s).replace(/[\u0000-\u001f\u007f]+/g, ' ').slice(0, max)
+
+export const formatFinding = (f) => `[${f.rule}, ${f.tier}${f.suppressed ? `, suppressed${f.reason ? `: ${oneLine(f.reason, 200)}` : ''}` : ''}] ${f.file}:${f.line} ${oneLine(f.detail, 300)}`
 
 // Secrets in edited content: [reason, regex source]. Provider formats are near-certain and denied (case-sensitive);
 // generic credential assignments are fuzzier and ask (case-insensitive).

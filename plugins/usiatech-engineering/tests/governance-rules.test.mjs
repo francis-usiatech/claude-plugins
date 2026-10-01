@@ -186,8 +186,35 @@ describe('allowlist (R15)', () => {
     assert.equal(formatFinding({ ...finding, suppressed: true }), '[wf-unpinned-action, warning, suppressed] .github/workflows/ci.yml:7 x')
   })
 
+  it('should keep the entry reason on a suppressed finding and show it when formatted', () => {
+    const fp = { rule: 'fp-no-assert', tier: 'high', file: 'tests/a.test.mjs', line: 3, detail: 'no assertion' }
+    const { entries } = parseAllowlist([{ rule: 'fp-no-assert', path: 'tests/a.test.mjs', reason: 'asserts through checkRow()' }])
+    const [f] = applyAllowlist([fp], entries)
+    assert.equal(f.suppressed, true)
+    assert.equal(f.reason, 'asserts through checkRow()')
+    assert.deepEqual(blockingFindings([f]), [])
+    assert.equal(formatFinding(f), '[fp-no-assert, high, suppressed: asserts through checkRow()] tests/a.test.mjs:3 no assertion')
+  })
+
+  it('should leave an unmatched finding without a reason', () => {
+    const { entries } = parseAllowlist([{ rule: 'fp-skip', path: 'tests/a.test.mjs', reason: 'r' }])
+    const [f] = applyAllowlist([finding], entries)
+    assert.equal(f.suppressed, false)
+    assert.equal(Object.hasOwn(f, 'reason'), false)
+  })
+
   it('should re-export the workflow rules so guard and CI share one module', () => {
     assert.equal(typeof checkWorkflow, 'function')
     assert.ok(isWorkflowPath('.github/workflows/ci.yml'))
+  })
+})
+
+describe('formatFinding output safety (fix set 1, E)', () => {
+  it('should keep a finding on one line and cap long detail and reason text', () => {
+    const f = { rule: 'fp-placeholder', tier: 'warning', file: 'a.js', line: 1, detail: 'a\r\n::error::x\u0007' + 'y'.repeat(500), suppressed: true, reason: 'r\n::warning::z' }
+    const out = formatFinding(f)
+    assert.equal(/[\r\n\u0000-\u001f]/.test(out), false, out)
+    assert.ok(out.length < 600, String(out.length))
+    assert.match(out, /suppressed: r ::warning::z\]/)
   })
 })
