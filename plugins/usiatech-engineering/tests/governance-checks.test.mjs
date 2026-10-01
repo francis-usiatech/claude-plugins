@@ -2,7 +2,7 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
-import { makeRepo, makeGovTree, runNode, writeFiles, cleanupTempDirs } from './helpers.mjs'
+import { makeRepo, makeGovTree, runNode, writeFiles, git, cleanupTempDirs } from './helpers.mjs'
 import { runGovernanceChecks } from '../templates/github/scripts/governance-checks.mjs'
 
 after(cleanupTempDirs)
@@ -276,6 +276,66 @@ describe('governance-checks: workflow content (R12, R15; AC8, AC10, AC12)', () =
     })
     const r = await runChecks({ repo, config: noAsk })
     assert.match(r.stdout, /wf-permissions-widened/)
+  })
+})
+
+describe('governance-checks: test content (R10; AC9, D12)', () => {
+  const focused = "import { it } from 'node:test'\nimport assert from 'node:assert/strict'\n\nit.only('should add', () => {\n  assert.equal(1 + 1, 2)\n})\n"
+  const TEST = 'tests/math.test.mjs'
+
+  it('should fail on a high fake-pass finding and name the file, line and rule', async () => {
+    const repo = makeRepo({ headFiles: { [TEST]: focused } })
+    const r = await runChecks({ repo })
+    assert.equal(r.code, 1, r.stdout)
+    assert.match(r.stdout, /Test changes have 1 high-risk finding\(s\): \[fp-only, high\] tests\/math\.test\.mjs:4 /)
+  })
+
+  it('should pass a change whose only fake-pass findings are warnings, and list them', async () => {
+    const repo = makeRepo({ headFiles: { 'src/math.mjs': '// TODO: handle overflow\nexport const add = (a, b) => a + b\n' } })
+    const r = await runChecks({ repo })
+    assert.equal(r.code, 0, r.stdout)
+    assert.match(r.summary, /⚠️ \[fp-placeholder, warning\] src\/math\.mjs:1 /)
+  })
+
+  it('should turn a fake-pass failure into a pass with the approval label and still report it', async () => {
+    const repo = makeRepo({ headFiles: { [TEST]: focused } })
+    const r = await runChecks({ repo, labels: ['governance-approved'] })
+    assert.equal(r.code, 0, r.stdout)
+    assert.match(r.stdout, /\[fp-only, high\].*Accepted via label "governance-approved"/)
+  })
+
+  it('should load the fake-pass rules from the base-branch copy, not the PR checkout', async () => {
+    // The PR rewrites its own copy of the rule module to find nothing.
+    const repo = makeRepo({ headFiles: { [TEST]: focused, '.github/scripts/fake-pass-rules.mjs': 'export const checkFakePasses = () => []\n' } })
+    const r = await runChecks({ repo, config: { governance: { askPaths: [] } } })
+    assert.equal(r.code, 1, r.stdout)
+    assert.match(r.stdout, /\[fp-only, high\] tests\/math\.test\.mjs:4 /)
+  })
+
+  it('should report a test file git cannot read as fp-unreadable, which the label can accept', async () => {
+    // A gitlink named like a test file: `git show HEAD:<path>` fails on it.
+    const repo = makeRepo()
+    git(repo, 'update-index', '--add', '--cacheinfo', `160000,${'1'.repeat(40)},${TEST}`)
+    git(repo, 'commit', '-q', '-m', 'gitlink')
+    const r = await runChecks({ repo })
+    assert.equal(r.code, 1, r.stdout)
+    assert.match(r.stdout, /\[fp-unreadable, high\] tests\/math\.test\.mjs:1 changed test file could not be read, so it was not checked \(git: (?:fatal|error)/)
+    assert.equal((await runChecks({ repo, labels: ['governance-approved'] })).code, 0)
+  })
+
+  it('should check a test file over 1 MiB of multibyte text the same way as locally, not as unreadable', async () => {
+    const big = `${focused}// ${'é'.repeat(600_000)}\n`
+    const repo = makeRepo({ headFiles: { [TEST]: big } })
+    const r = await runChecks({ repo })
+    assert.doesNotMatch(r.stdout, /fp-unreadable/)
+    assert.match(r.stdout, /\[fp-only, high\] tests\/math\.test\.mjs:4 /)
+  })
+
+  it('should keep control characters in a file name out of the report, so it cannot start a workflow command', async () => {
+    const { formatFinding } = await import('../templates/github/scripts/governance-rules.mjs')
+    const line = formatFinding({ rule: 'fp-only', tier: 'high', file: 'a\n::error file=x::spoof\nb.test.js', line: 1, detail: 'd' })
+    assert.doesNotMatch(line, /[\u0000-\u001f\u007f]/)
+    assert.doesNotMatch(line, /^::/m)
   })
 })
 

@@ -18,20 +18,24 @@ description: Runs the repository's verification gate (typecheck, tests, build an
    - Stop any dev server or watcher this session started.
    - Remove stray `nul` files (`find . -name nul -type f -delete 2>/dev/null`).
    - Leave no background processes running.
-6. **Check acceptance criteria**, only if `.claude/plans/active.md` has an `## Acceptance criteria` section, and only after the commands pass:
+6. **Check test content (fp-*)**, only after the commands pass:
+   - Run `node "${CLAUDE_PLUGIN_ROOT}/templates/github/scripts/fake-pass-check.mjs"` from the repo root. It checks the changed files from step 2 for fake passes (`.only`, skipped, empty or assertion-free tests, placeholders) and applies `governance.allowlist` from `.claude/engineering.json`.
+   - Exit 1 means an unsuppressed high finding, and the result is **Gate: FAIL**. Exit 2 means the check couldn't run (for example, an invalid config), which is also **Gate: FAIL**. Don't edit tests to make it pass; report and propose a fix.
+   - List every finding the script prints in the report, including warnings and suppressed ones.
+7. **Check acceptance criteria**, only if `.claude/plans/active.md` has an `## Acceptance criteria` section, and only after the commands pass:
    - For each AC, find evidence produced in this session: a named passing test, command output, or a result you observed. Earlier sessions, memory and "should work" don't count.
    - Mark it `shown` with that evidence, or `not shown`.
    - Rewrite every evidence line under its AC in the plan, even ones an earlier run filled, as `- Evidence: <evidence> (shown, <UTC timestamp>)` or `(not shown, <UTC timestamp>)`, e.g. `2026-09-28T17:50Z`. The stamp lets `governance-reviewer` spot evidence older than the latest change.
    - Tick (`- [x]`) each task whose ACs are all `shown`.
    - Collect everything first, then write all evidence lines and ticks in one edit. The guard asks before each edit to the plan, so one edit means one prompt.
-7. **Report:**
+8. **Report:**
 
 | Check | Command | Result | Notes |
 |---|---|---|---|
 
-   If step 6 ran, add:
+   Add the fake-pass check as a row, with its findings in Notes. If step 7 ran, add:
 
 | AC | Criterion | Evidence | Status |
 |---|---|---|---|
 
-   End with **Gate: PASS** or **Gate: FAIL**, decided by the commands only. If any criterion is `not shown`, end with `Gate: PASS (N of M criteria not shown)` and list them. Never state that work is done unless the gate passed in this session.
+   End with **Gate: PASS** or **Gate: FAIL**, decided by the commands and the fake-pass check only. If any criterion is `not shown`, end with `Gate: PASS (N of M criteria not shown)` and list them. Never state that work is done unless the gate passed in this session.

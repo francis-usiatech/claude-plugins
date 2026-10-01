@@ -69,7 +69,7 @@ export { checkWorkflow, isWorkflowPath, TIER } from './workflow-rules.mjs'
 // supply-chain-lookups.mjs.
 export { checkDependencies, dependencyKind } from './supply-chain-rules.mjs'
 // Content rules for changed JS/TS test files (A6): focused, skipped, empty and assertion-free tests, placeholders.
-export { checkFakePasses, isTestFile } from './fake-pass-rules.mjs'
+export { checkFakePasses, isTestFile, isJsTsFile } from './fake-pass-rules.mjs'
 
 /**
  * Validates engineering.json → governance.allowlist. Each entry needs a rule ID plus a path glob or a package name,
@@ -108,11 +108,11 @@ export const applyAllowlist = (findings, entries, ignoreCase = false) => finding
 
 export const blockingFindings = (findings) => findings.filter((f) => f.tier === 'high' && !f.suppressed)
 
-// Detail and reason text can come from changed files, so each finding stays on one line (no newlines or control
+// File names, detail and reason text can come from the PR, so each finding stays on one line (no newlines or control
 // characters that could start a workflow command in CI logs) and is capped in length.
 const oneLine = (s, max) => String(s).replace(/[\u0000-\u001f\u007f]+/g, ' ').slice(0, max)
 
-export const formatFinding = (f) => `[${f.rule}, ${f.tier}${f.suppressed ? `, suppressed${f.reason ? `: ${oneLine(f.reason, 200)}` : ''}` : ''}] ${f.file}:${f.line} ${oneLine(f.detail, 300)}`
+export const formatFinding = (f) => `[${f.rule}, ${f.tier}${f.suppressed ? `, suppressed${f.reason ? `: ${oneLine(f.reason, 200)}` : ''}` : ''}] ${oneLine(f.file, 300)}:${f.line} ${oneLine(f.detail, 300)}`
 
 // Secrets in edited content: [reason, regex source]. Provider formats are near-certain and denied (case-sensitive);
 // generic credential assignments are fuzzier and ask (case-insensitive).

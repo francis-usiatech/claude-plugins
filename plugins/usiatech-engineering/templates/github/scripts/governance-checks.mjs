@@ -9,7 +9,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   matchAny, isSecretEnvFile, isPlainObject, isStringArray, DEFAULT_ASK_PATHS,
-  checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, parseAllowlist, applyAllowlist, blockingFindings, formatFinding,
+  checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, checkFakePasses, isJsTsFile,
+  parseAllowlist, applyAllowlist, blockingFindings, formatFinding,
 } from './governance-rules.mjs'
 import { createLookups, lookupTargets, runLookups, CI_TIMEOUT_MS, CI_DEADLINE_MS } from './supply-chain-lookups.mjs'
 
@@ -143,7 +144,9 @@ export const runGovernanceChecks = async ({ env, lookups, govRoot = SCRIPT_GOV_R
   // base-branch version. Unsuppressed high-risk findings fail unless labelled; the rest are reported.
   const allow = parseAllowlist(gov.allowlist)
   allow.problems.forEach((p) => configError(`${p}.`))
-  const show = (ref, p) => execFileSync('git', ['show', `${ref}:${p}`], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  // The buffer fits the largest file the rules read (1,000,000 characters of up to 4 UTF-8 bytes), so the size rule
+  // decides what is unreadable, not node's 1 MiB default.
+  const show = (ref, p) => execFileSync('git', ['show', `${ref}:${p}`], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 8 * 1024 * 1024 })
   // Each added, changed or renamed file of one kind, with its base-branch version (null when added).
   const readChanged = (isKind, what) => {
     const files = []
@@ -181,6 +184,26 @@ export const runGovernanceChecks = async ({ env, lookups, govRoot = SCRIPT_GOV_R
   const online = await runLookups({ targets: lookupTargets(depFiles), lookups, deadlineMs: lookupDeadlineMs })
   for (const f of online.failures) errors.push(`Dependency lookup unavailable: ${f.lookup} (${f.reason}). The advisory and registry checks did not run; re-run the job when the npm registry is reachable.`)
   reportFindings('Dependency', [...offline, ...online.findings])
+
+  // 6. Test content (R10, D2): the fp-* rules on each added, changed or renamed JS/TS file, read in full. A file git
+  // can't read goes to the rules as null, so it is a tiered fp-unreadable finding, as in the local check (R11).
+  const fakePassFindings = []
+  for (const [status, p1, p2] of changes) {
+    const file = p2 || p1
+    if (status === 'D' || !isJsTsFile(file)) continue
+    let content = null
+    let readError = ''
+    try {
+      content = show('HEAD', file)
+    } catch (e) {
+      // A test file becomes fp-unreadable with git's reason; other JS/TS files only get fp-placeholder, which needs text.
+      // git's own reason is on stderr; e.message starts with node's "Command failed: …" line.
+      readError = String(e.stderr || '').trim().split('\n')[0] || e.code || e.message.split('\n')[0]
+    }
+    fakePassFindings.push(...checkFakePasses({ file, content })
+      .map((f) => (readError && f.rule === 'fp-unreadable' ? { ...f, detail: `${f.detail} (git: ${readError})` } : f)))
+  }
+  reportFindings('Test', fakePassFindings)
 
   // Report
   const lines = ['## Governance checks', '', `Files changed: ${changes.length}`, '']

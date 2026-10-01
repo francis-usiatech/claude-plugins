@@ -1,0 +1,7 @@
+import { it } from 'node:test'
+import assert from 'node:assert/strict'
+
+// The template literal below never closes, so the checks can't tell code from text and fail closed.
+it('should add', () => {
+  assert.equal(`1 + 1, 2)
+})
