@@ -468,6 +468,51 @@ describe('plugin structure: step-4.2 fake-pass docs (#21, R18)', () => {
   })
 })
 
+describe('plugin structure: step-4.2 mutation-test (#22, AC14, R18)', () => {
+  const skill = () => read('skills', 'mutation-test', 'SKILL.md')
+
+  it('should describe mutation-test with its triggers and the runner it ships', () => {
+    const fm = frontmatter(skill())
+    assert.match(fm.description, /mutation/i)
+    assert.match(fm.description, /"mutation test"|"mutate"/)
+    assert.match(body(skill()), /node "\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/mutation-test\/mutation-runner\.mjs" --list /)
+  })
+
+  it('should document the mutation list format and every status the runner reports', () => {
+    for (const key of ['label', 'file', 'find', 'replace', 'command', 'timeoutMs']) assert.match(skill(), new RegExp(`"${key}"`), key)
+    for (const status of ['CAUGHT', 'SURVIVED', 'NOT-FOUND', 'TIMEOUT', 'ERROR']) assert.match(skill(), new RegExp(`\`${status}\``), status)
+    assert.match(skill(), /baseline failed/i)
+  })
+
+  it('should have the user confirm the list commands before the run and say how to recover from a killed run', () => {
+    assert.match(skill(), /shell with the user's privileges/i)
+    assert.match(skill(), /show the user[^\n]*distinct `"command"`[^\n]*confirm/i)
+    assert.match(skill(), /git checkout -- <file>/)
+  })
+
+  it('should report each survivor as a missing test, ask the user and never block', () => {
+    assert.match(skill(), /`SURVIVED`[^\n]*missing test/)
+    assert.match(skill(), /ask the user whether to add/i)
+    assert.match(skill(), /never block/i)
+  })
+
+  it('should have release stage 2 suggest mutation-test for guard, rule, check and policy paths, not gate on it', () => {
+    const release = read('skills', 'release', 'SKILL.md')
+    const line = release.split('\n').find((l) => l.includes('`mutation-test`'))
+    assert.ok(line, 'release must mention `mutation-test`')
+    for (const p of ['*rules*.mjs', '*checks*.mjs', '*policy*.mjs', '*guard*.mjs', 'governance.askPaths']) assert.ok(line.includes(p), p)
+    assert.match(line, /suggest/i)
+    assert.match(line, /not a gate/i)
+  })
+
+  it('should document the runner report and exit codes in the README', () => {
+    const readme = read('README.md')
+    assert.match(readme, /`mutation-runner\.mjs`/)
+    assert.match(readme, /`CAUGHT`[^\n]*`SURVIVED`[^\n]*`NOT-FOUND`[^\n]*`TIMEOUT`[^\n]*`ERROR`/)
+    assert.match(readme, /exit[^\n]*0[^\n]*1[^\n]*baseline[^\n]*2[^\n]*invalid[^\n]*3[^\n]*restore failed/i)
+  })
+})
+
 describe('plugin structure: release metadata', () => {
   it('should keep plugin, marketplace and both README versions in step', () => {
     const version = JSON.parse(read('.claude-plugin', 'plugin.json')).version
