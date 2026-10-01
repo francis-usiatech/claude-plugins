@@ -12,6 +12,11 @@ const check = (content, file = 'tests/math.test.mjs', status = 'modified') => ch
 const rules = (findings) => findings.map((f) => `${f.rule}:${f.tier}`).sort()
 // Wraps one test call in a file that is otherwise clean.
 const inFile = (body) => `import { it, describe, test } from 'node:test'\nimport assert from 'node:assert/strict'\n\n${body}\n`
+// Placeholder markers built from pieces, so this file's own test data doesn't trip fp-placeholder (#26).
+const todoMarker = 'TO' + 'DO'
+const fixmeMarker = 'FIX' + 'ME'
+const xxxMarker = 'X' + 'XX'
+const notImplementedMarker = 'not ' + 'implemented'
 
 describe('isTestFile / isJsTsFile', () => {
   it('should treat *.test.*, *.spec.*, __tests__/, test/ and tests/ JS/TS files as test files', () => {
@@ -48,7 +53,7 @@ describe('checkFakePasses: file scope (AC1)', () => {
   it('should skip deleted files and non-JS/TS files', () => {
     assert.deepEqual(check(fixture('focused'), 'tests/a.test.mjs', 'deleted'), [])
     assert.deepEqual(check(fixture('focused'), 'tests/a.py'), [])
-    assert.deepEqual(check('TODO: write docs', 'docs/readme.md'), [])
+    assert.deepEqual(check(`${todoMarker}: write docs`, 'docs/readme.md'), [])
   })
 
   it('should report file, 1-based line and a detail on each finding', () => {
@@ -140,7 +145,7 @@ describe('checkFakePasses: tests without an assertion (AC4)', () => {
 })
 
 describe('checkFakePasses: placeholders (AC5)', () => {
-  for (const line of ['// TODO: later', '// FIXME broken', '/* XXX hack */', "throw new Error('not implemented')"]) {
+  for (const line of [`// ${todoMarker}: later`, `// ${fixmeMarker} broken`, `/* ${xxxMarker} hack */`, `throw new Error('${notImplementedMarker}')`]) {
     it(`should warn once for ${line}`, () => {
       assert.deepEqual(rules(check(`export const f = () => {\n  ${line}\n  return 1\n}\n`, 'src/f.mjs')), ['fp-placeholder:warning'])
     })
