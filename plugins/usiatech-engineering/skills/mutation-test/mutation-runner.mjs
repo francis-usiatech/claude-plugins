@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 
 export const DEFAULT_TIMEOUT_MS = 120000
 const STDERR_TAIL = 2000
+const KILL_GRACE_MS = 2000
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP']
 
 export class ListError extends Error {}
@@ -42,9 +43,11 @@ const checkFile = (file, root, where) => {
   const segments = file.split(/[\\/]/)
   const resolved = path.resolve(root, file)
   if (segments.includes('..') || resolved === path.resolve(root)) throw new ListError(`${where}: "file" must stay inside the repo root: ${file}`)
-  if (segments.some((s) => s.toLowerCase() === '.git')) throw new ListError(`${where}: "file" must not be inside .git: ${file}`)
+  const inGit = (parts) => parts.some((s) => s.toLowerCase() === '.git')
+  if (inGit(segments)) throw new ListError(`${where}: "file" must not be inside .git: ${file}`)
   const rel = path.relative(realpathSync.native(root), realPathOf(resolved, where))
   if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) throw new ListError(`${where}: "file" must stay inside the repo root (it links outside): ${file}`)
+  if (inGit(rel.split(path.sep))) throw new ListError(`${where}: "file" must not be inside .git (it links there): ${file}`)
   return resolved
 }
 
@@ -69,15 +72,17 @@ export const validateList = (list, root) => {
 }
 
 // Kills the shell and everything it started; killing only the shell would leave the test process running.
+// Returns null once the tree is gone, or the reason it could not be killed.
 const killTree = (child) => {
   try {
     if (process.platform === 'win32') execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'pipe' })
     else process.kill(-child.pid, 'SIGKILL')
   } catch (e) {
-    // Already gone: ESRCH on POSIX, taskkill exit 128 on Windows. Anything else is reported.
-    if (e.code === 'ESRCH' || e.status === 128) return
-    console.error(`mutation-runner: could not kill process tree ${child.pid}: ${e.message}`)
+    // Already gone: ESRCH on POSIX, taskkill exit 128 on Windows. Anything else is a failure.
+    if (e.code === 'ESRCH' || e.status === 128) return null
+    return e.message
   }
+  return null
 }
 
 /**
@@ -93,23 +98,34 @@ export const outcomeOf = ({ code, signal, ended, aborted }) => {
 
 /**
  * Runs a shell command in root. Resolves { outcome: 'pass' | 'fail' | 'timeout' | 'aborted' | 'error', code, stderr }.
+ * `kill` stops the process tree on a timeout or abort (tests inject a failing one).
  */
-export const runCommand = (command, { root, timeoutMs, signal }) => new Promise((resolve) => {
+export const runCommand = (command, { root, timeoutMs, signal, kill = killTree }) => new Promise((resolve) => {
   if (signal?.aborted) return resolve({ outcome: 'aborted' })
   let stderr = ''
   let ended = null
+  let grace = null
   const child = spawn(command, { cwd: root, shell: true, detached: process.platform !== 'win32', stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true })
   child.stderr.on('data', (d) => { stderr = (stderr + d).slice(-STDERR_TAIL) })
   const stop = (why) => {
     if (ended || child.exitCode !== null || child.signalCode !== null) return
     ended = why
-    killTree(child)
+    const failure = kill(child)
+    if (!failure) return
+    // taskkill also fails when part of the tree has already exited, so give the command a moment to close.
+    // If it doesn't, stop waiting and let go of it so it can't hold this process open.
+    grace = setTimeout(() => {
+      child.stderr.destroy()
+      child.unref()
+      finish({ outcome: 'error', stderr: `could not stop the command after ${why} (process ${child.pid} may still be running): ${failure}` })
+    }, KILL_GRACE_MS)
   }
   const timer = setTimeout(() => stop('timeout'), timeoutMs)
   const onAbort = () => stop('aborted')
   signal?.addEventListener('abort', onAbort, { once: true })
   const finish = (result) => {
     clearTimeout(timer)
+    clearTimeout(grace)
     signal?.removeEventListener('abort', onAbort)
     resolve(result)
   }
