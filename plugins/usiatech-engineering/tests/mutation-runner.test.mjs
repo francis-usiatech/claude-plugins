@@ -1,8 +1,8 @@
 import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { chmodSync, existsSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { makeRepo, git, tempDir, cleanupTempDirs, PLUGIN_ROOT } from './helpers.mjs'
@@ -69,6 +69,19 @@ const runRunner = (cwd, listFile) => new Promise((resolve) => {
     resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout, stderr, ms: Date.now() - started })
   })
 })
+
+const HANG = `${NODE} -e "setTimeout(() => {}, 60000)"`
+
+// Kills a command's process tree; a tree that is already (partly) gone is only logged, so cleanup never
+// replaces a test's own failure.
+const killForReal = (child) => {
+  try {
+    if (process.platform === 'win32') execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'pipe' })
+    else process.kill(-child.pid, 'SIGKILL')
+  } catch (e) {
+    console.error(`test cleanup: could not kill process tree ${child.pid}: ${e.message}`)
+  }
+}
 
 const mutation = (over) => ({ label: 'm', file: 'guard-lf.mjs', find: "  if (n < 0) return 'negative'\n", replace: '', command: CMD, ...over })
 
@@ -227,6 +240,49 @@ describe('mutation-runner hardening (stage-2 fix set)', () => {
     assert.equal(r.code, 2, r.stdout + r.stderr)
     assert.match(r.stderr, /mutation list[^\n]*inside the repo/i)
     assert.equal(readFileSync(path.join(outside, 'x.mjs'), 'utf8'), 'export const x = 1\n')
+  })
+
+  it('should reject a path that reaches into .git through a symlink or junction', async () => {
+    const repo = fixtureRepo()
+    mkdirSync(path.join(repo, 'sub', '.git'), { recursive: true })
+    writeFileSync(path.join(repo, 'sub', '.git', 'HEAD'), 'ref: refs/heads/main\n')
+    symlinkSync(path.join(repo, '.git'), path.join(repo, 'gitlink'), 'junction')
+    symlinkSync(path.join(repo, 'sub', '.git'), path.join(repo, 'sublink'), 'junction')
+    const config = readFileSync(path.join(repo, '.git', 'config'))
+    for (const file of ['gitlink/config', 'sublink/HEAD']) {
+      const r = await runRunner(repo, writeList({ mutations: [mutation({ file, find: 'no-such-text', replace: 'x' })] }))
+      assert.equal(r.code, 2, `${file}: ${r.stdout}${r.stderr}`)
+      assert.match(r.stderr, /mutation list[^\n]*inside \.git/i, file)
+    }
+    assert.ok(readFileSync(path.join(repo, '.git', 'config')).equals(config), '.git/config changed')
+  })
+
+  it('should resolve as error, not hang, when the process tree cannot be killed', { timeout: 15000 }, async () => {
+    const { runCommand } = await importRunner()
+    let leaked = null
+    const failingKill = (child) => {
+      leaked = child
+      return 'Access is denied.'
+    }
+    try {
+      const r = await runCommand(HANG, { root: tempDir('usiatech-kill-'), timeoutMs: 200, kill: failingKill })
+      assert.equal(r.outcome, 'error')
+      assert.match(r.stderr, /could not stop[^\n]*Access is denied/)
+    } finally {
+      // The injected kill left the command running; stop it for real so the test process can exit.
+      if (leaked) killForReal(leaked)
+    }
+  })
+
+  it('should keep the timeout outcome when the kill reports a failure but the command still ends', { timeout: 15000 }, async () => {
+    const { runCommand } = await importRunner()
+    // Like taskkill when part of the tree has already exited: the tree is gone, but the kill reports an error.
+    const partialKill = (child) => {
+      killForReal(child)
+      return 'There is no running instance of the task.'
+    }
+    const r = await runCommand(HANG, { root: tempDir('usiatech-kill-'), timeoutMs: 200, kill: partialKill })
+    assert.equal(r.outcome, 'timeout')
   })
 
   it('should keep handling repeat interrupts, so a second Ctrl+C or a closed terminal cannot skip the restore', async () => {
