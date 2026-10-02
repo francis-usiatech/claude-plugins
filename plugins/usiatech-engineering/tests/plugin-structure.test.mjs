@@ -454,7 +454,8 @@ describe('plugin structure: step-4.2 fake-pass docs (#21, R18)', () => {
     for (const [rule, tier] of Object.entries(tiers)) assert.match(readme(), new RegExp(`^\\| \`${rule}\` \\| ${tier} \\| `, 'm'), rule)
     // The table's tiers are the module's: a focused test is high, a placeholder a warning.
     assert.equal(checkFakePasses({ file: 'a.test.mjs', content: "it.only('x', () => { assert.ok(1) })\n" })[0].tier, tiers['fp-only'])
-    assert.equal(checkFakePasses({ file: 'a.mjs', content: '// TODO\n' })[0].tier, tiers['fp-placeholder'])
+    // The marker is built from pieces so this file doesn't trip fp-placeholder itself (#26).
+    assert.equal(checkFakePasses({ file: 'a.mjs', content: `// ${'TO' + 'DO'}\n` })[0].tier, tiers['fp-placeholder'])
   })
 
   it('should document an fp allowlist entry that parseAllowlist accepts, the limits and the upgrade step', async () => {

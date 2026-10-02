@@ -377,26 +377,25 @@ describe('parseDependencies: strict lockfile layout (A)', () => {
   const berry = fixture('yarn-berry.after.lock')
   const classic = fixture('yarn-classic.after.lock')
   const problems = (file, content) => parseDependencies({ file, content }).problems
-  const rejects = (file, content, label) => assert.ok(problems(file, content).length > 0, label)
 
   it('should report a pnpm packages key spelled any other way', () => {
-    rejects('pnpm-lock.yaml', pnpm.replace(/^packages:/m, '"packages":'), 'double-quoted')
-    rejects('pnpm-lock.yaml', pnpm.replace(/^packages:/m, "'packages':"), 'single-quoted')
-    rejects('pnpm-lock.yaml', pnpm.replace(/^packages:/m, 'packages :'), 'space before colon')
-    rejects('pnpm-lock.yaml', `${pnpm}\npackages: {}\n`, 'repeated')
-    rejects('pnpm-lock.yaml', `${pnpm}\n? packages\n: {}\n`, 'explicit key')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(/^packages:/m, '"packages":')).length > 0, 'double-quoted')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(/^packages:/m, "'packages':")).length > 0, 'single-quoted')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(/^packages:/m, 'packages :')).length > 0, 'space before colon')
+    assert.ok(problems('pnpm-lock.yaml', `${pnpm}\npackages: {}\n`).length > 0, 'repeated')
+    assert.ok(problems('pnpm-lock.yaml', `${pnpm}\n? packages\n: {}\n`).length > 0, 'explicit key')
   })
 
   it('should report a pnpm resolution that is not a one-line flow map of plain fields', () => {
     const r = '    resolution: {integrity: sha512-bbb}'
-    rejects('pnpm-lock.yaml', pnpm.replace(r, '    resolution:\n        integrity: sha512-bbb\n        tarball: https://evil.example/d.tgz'), 'block')
-    rejects('pnpm-lock.yaml', pnpm.replace(r, "    resolution: {integrity: sha512-bbb, 'tarball': https://evil.example/d.tgz}"), 'quoted tarball key')
-    rejects('pnpm-lock.yaml', pnpm.replace(r, '    resolution: {integrity: sha512-bbb,\n      tarball: https://evil.example/d.tgz}'), 'multi-line flow map')
-    rejects('pnpm-lock.yaml', pnpm.replace(r, "    'resolution': {integrity: sha512-bbb}"), 'quoted field key')
-    rejects('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    resolution: {tarball: https://evil.example/d.tgz}`), 'repeated field')
-    rejects('pnpm-lock.yaml', pnpm.replace(r, '     resolution: {integrity: sha512-bbb}'), '5-space field')
-    rejects('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    'dev': false`), 'quoted field after a resolution')
-    rejects('pnpm-lock.yaml', pnpm.replace(r, `${r}\n      tarball: https://evil.example/d.tgz`), 'deeper line under a one-line field')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(r, '    resolution:\n        integrity: sha512-bbb\n        tarball: https://evil.example/d.tgz')).length > 0, 'block')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(r, "    resolution: {integrity: sha512-bbb, 'tarball': https://evil.example/d.tgz}")).length > 0, 'quoted tarball key')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(r, '    resolution: {integrity: sha512-bbb,\n      tarball: https://evil.example/d.tgz}')).length > 0, 'multi-line flow map')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(r, "    'resolution': {integrity: sha512-bbb}")).length > 0, 'quoted field key')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    resolution: {tarball: https://evil.example/d.tgz}`)).length > 0, 'repeated field')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(r, '     resolution: {integrity: sha512-bbb}')).length > 0, '5-space field')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    'dev': false`)).length > 0, 'quoted field after a resolution')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(r, `${r}\n      tarball: https://evil.example/d.tgz`)).length > 0, 'deeper line under a one-line field')
   })
 
   it('should read pnpm block fields such as peerDependencies', () => {
@@ -405,17 +404,17 @@ describe('parseDependencies: strict lockfile layout (A)', () => {
   })
 
   it('should report yarn fields with quoted keys, odd indentation or repeats', () => {
-    rejects('yarn.lock', classic.replace('  resolved "https://registry.yarnpkg.com/debug', '  "resolved" "https://registry.yarnpkg.com/debug'), 'quoted classic key')
-    rejects('yarn.lock', berry.replace('  resolution: "express@npm:4.19.2"', '  "resolution": "express@npm:4.19.2"'), 'quoted berry key')
-    rejects('yarn.lock', classic.replace('  version "2.6.9"', '   version "2.6.9"'), '3-space field')
-    rejects('yarn.lock', classic.replace('  version "2.6.9"', '  version "2.6.9"\n    resolved "https://evil.example/d.tgz"'), 'nested under a scalar field')
-    rejects('yarn.lock', classic.replace('  version "2.6.9"', '  version "2.6.9"\n  resolved "https://evil.example/d.tgz"'), 'repeated field')
-    rejects('yarn.lock', classic.replace('debug@2.6.9:', 'debug@2.6.9'), 'entry line without a colon')
+    assert.ok(problems('yarn.lock', classic.replace('  resolved "https://registry.yarnpkg.com/debug', '  "resolved" "https://registry.yarnpkg.com/debug')).length > 0, 'quoted classic key')
+    assert.ok(problems('yarn.lock', berry.replace('  resolution: "express@npm:4.19.2"', '  "resolution": "express@npm:4.19.2"')).length > 0, 'quoted berry key')
+    assert.ok(problems('yarn.lock', classic.replace('  version "2.6.9"', '   version "2.6.9"')).length > 0, '3-space field')
+    assert.ok(problems('yarn.lock', classic.replace('  version "2.6.9"', '  version "2.6.9"\n    resolved "https://evil.example/d.tgz"')).length > 0, 'nested under a scalar field')
+    assert.ok(problems('yarn.lock', classic.replace('  version "2.6.9"', '  version "2.6.9"\n  resolved "https://evil.example/d.tgz"')).length > 0, 'repeated field')
+    assert.ok(problems('yarn.lock', classic.replace('debug@2.6.9:', 'debug@2.6.9')).length > 0, 'entry line without a colon')
   })
 
   it('should split lines on a lone CR as YAML and yarn do, so entries hidden behind one are still checked (E)', () => {
     const section = pnpm.replace('        version: 4.19.2', '        version: 4.19.2\rpackages:\r  evil@6.6.6:\r    resolution: {integrity: sha512-x, tarball: https://evil.example/e.tgz}')
-    rejects('pnpm-lock.yaml', section, 'a packages section hidden in an importers line')
+    assert.ok(problems('pnpm-lock.yaml', section).length > 0, 'a packages section hidden in an importers line')
     const inPackage = pnpm.replace('    resolution: {integrity: sha512-ccc}', '    resolution: {integrity: sha512-ccc}\n    dependencies:\n      debug: 2.6.9\r  evil@6.6.6:\r    resolution: {integrity: sha512-x, tarball: https://evil.example/e.tgz}')
     assert.deepEqual(rules(checkDependencies({ file: 'pnpm-lock.yaml', content: inPackage, base: pnpm, manifestChanged: true })), ['sc-resolved:high'])
     const yarn = classic.replace('    debug "2.6.9"', '    debug "2.6.9"\revil@^6:\r  version "6.6.6"\r  resolved "https://evil.example/e.tgz"')
@@ -424,14 +423,14 @@ describe('parseDependencies: strict lockfile layout (A)', () => {
 
   it('should report the other Unicode line breaks (NEL, LS, PS) in a lockfile (E)', () => {
     for (const ch of ['\u0085', '\u2028', '\u2029']) {
-      rejects('pnpm-lock.yaml', pnpm.replace('        version: 4.19.2', `        version: 4.19.2${ch}x`), `pnpm ${ch.charCodeAt(0)}`)
-      rejects('yarn.lock', classic.replace('  version "2.6.9"', `  version "2.6.9"${ch}x`), `yarn ${ch.charCodeAt(0)}`)
+      assert.ok(problems('pnpm-lock.yaml', pnpm.replace('        version: 4.19.2', `        version: 4.19.2${ch}x`)).length > 0, `pnpm ${ch.charCodeAt(0)}`)
+      assert.ok(problems('yarn.lock', classic.replace('  version "2.6.9"', `  version "2.6.9"${ch}x`)).length > 0, `yarn ${ch.charCodeAt(0)}`)
     }
   })
 
   it('should read a yarn berry resolution locator: another name is an alias, another version a problem (F)', () => {
     const entry = (resolution, version = '1.3.0') => `${berry}\n"left-pad@npm:^1.3.0":\n  version: ${version}\n  resolution: "${resolution}"\n  languageName: node\n  linkType: hard\n`
-    rejects('yarn.lock', entry('left-pad@npm:6.6.6'), 'version disagrees with the locator')
+    assert.ok(problems('yarn.lock', entry('left-pad@npm:6.6.6')).length > 0, 'version disagrees with the locator')
     const swapped = parseDependencies({ file: 'yarn.lock', content: entry('evil-pkg@npm:6.6.6', '6.6.6') })
     assert.deepEqual(swapped.problems, [])
     assert.ok(swapped.entries.some((e) => e.name === 'evil-pkg' && e.version === '6.6.6' && e.installName === 'left-pad'))
@@ -457,8 +456,8 @@ describe('parseDependencies: strict lockfile layout (A)', () => {
 
   it('should report pnpm name: or version: fields that disagree with the key (H)', () => {
     const r = '    resolution: {integrity: sha512-bbb}'
-    rejects('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    name: evil-pkg`), 'name')
-    rejects('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    version: 6.6.6`), 'version')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    name: evil-pkg`)).length > 0, 'name')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    version: 6.6.6`)).length > 0, 'version')
     assert.deepEqual(problems('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    name: debug\n    version: 2.6.9`)), [])
   })
 
@@ -472,7 +471,7 @@ describe('parseDependencies: strict lockfile layout (A)', () => {
     const r6 = parseDependencies({ file: 'pnpm-lock.yaml', content: v6 })
     assert.deepEqual(r6.problems, [])
     assert.ok(r6.entries.some((e) => e.name === 'b' && e.version === '1.0.0'))
-    rejects('pnpm-lock.yaml', v6.replace('    name: b\n', ''), 'a hosted-git key without a name field')
+    assert.ok(problems('pnpm-lock.yaml', v6.replace('    name: b\n', '')).length > 0, 'a hosted-git key without a name field')
   })
 
   it('should read yarn block fields such as dependencies and peerDependenciesMeta', () => {
@@ -487,29 +486,28 @@ describe('parseDependencies: allowlisted lockfile fields and versions (fix set 3
   const berry = fixture('yarn-berry.after.lock')
   const classic = fixture('yarn-classic.after.lock')
   const problems = (file, content) => parseDependencies({ file, content }).problems
-  const rejects = (file, content, label) => assert.ok(problems(file, content).length > 0, label)
   const pnpmEntry = (body) => pnpm.replace('snapshots:', `${body}\n\nsnapshots:`)
   const berryEntry = (descriptor, fields) => `${berry}\n"${descriptor}":\n${fields}\n  languageName: node\n  linkType: hard\n`
 
   it('should report a pnpm URL or git key with no tarball, repo or directory source', () => {
-    rejects('pnpm-lock.yaml', pnpmEntry('  lodash@https://example.com/x.tgz:\n    resolution: {integrity: sha512-x}\n    version: 4.17.20'), 'URL key, integrity only')
-    rejects('pnpm-lock.yaml', pnpmEntry('  lodash@4.17.20/x:\n    resolution: {integrity: sha512-x}\n    version: 4.17.20'), 'slash key, integrity only')
+    assert.ok(problems('pnpm-lock.yaml', pnpmEntry('  lodash@https://example.com/x.tgz:\n    resolution: {integrity: sha512-x}\n    version: 4.17.20')).length > 0, 'URL key, integrity only')
+    assert.ok(problems('pnpm-lock.yaml', pnpmEntry('  lodash@4.17.20/x:\n    resolution: {integrity: sha512-x}\n    version: 4.17.20')).length > 0, 'slash key, integrity only')
     const tarball = pnpmEntry('  lodash@https://example.com/x.tgz:\n    resolution: {integrity: sha512-x, tarball: https://example.com/x.tgz}\n    version: 4.17.20')
     assert.deepEqual(rules(checkDependencies({ file: 'pnpm-lock.yaml', content: tarball, base: pnpm, manifestChanged: true })), ['sc-resolved:high'])
   })
 
   it('should report pnpm name, version or resolution values placed on the next line', () => {
     const r = '    resolution: {integrity: sha512-bbb}'
-    rejects('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    version:\n      6.6.6`), 'version')
-    rejects('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    name:\n      evil-pkg`), 'name')
-    rejects('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    version: >-\n      6.6.6`), 'block scalar version')
-    rejects('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    tarball:\n      https://evil.example/d.tgz`), 'unknown field opening a block')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    version:\n      6.6.6`)).length > 0, 'version')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    name:\n      evil-pkg`)).length > 0, 'name')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    version: >-\n      6.6.6`)).length > 0, 'block scalar version')
+    assert.ok(problems('pnpm-lock.yaml', pnpm.replace(r, `${r}\n    tarball:\n      https://evil.example/d.tgz`)).length > 0, 'unknown field opening a block')
   })
 
   it('should report pnpm registry versions that are not strict semver', () => {
-    rejects('pnpm-lock.yaml', "lockfileVersion: '6.0'\n\npackages:\n\n  /lodash@4.17.20_x:\n    resolution: {integrity: sha512-x}\n", 'v6 key with an underscore suffix')
-    rejects('pnpm-lock.yaml', pnpmEntry('  lodash@4.17:\n    resolution: {integrity: sha512-x}'), 'partial key version')
-    rejects('pnpm-lock.yaml', pnpmEntry('  gh@git+https://github.com/a/b.git#abc:\n    resolution: {commit: abc, repo: https://github.com/a/b.git, type: git}\n    version: 1.0.0_x'), 'version field')
+    assert.ok(problems('pnpm-lock.yaml', "lockfileVersion: '6.0'\n\npackages:\n\n  /lodash@4.17.20_x:\n    resolution: {integrity: sha512-x}\n").length > 0, 'v6 key with an underscore suffix')
+    assert.ok(problems('pnpm-lock.yaml', pnpmEntry('  lodash@4.17:\n    resolution: {integrity: sha512-x}')).length > 0, 'partial key version')
+    assert.ok(problems('pnpm-lock.yaml', pnpmEntry('  gh@git+https://github.com/a/b.git#abc:\n    resolution: {commit: abc, repo: https://github.com/a/b.git, type: git}\n    version: 1.0.0_x')).length > 0, 'version field')
   })
 
   it('should report a pnpm directory resolution as a file: source, and an unknown resolution type as a problem', () => {
@@ -523,26 +521,26 @@ describe('parseDependencies: allowlisted lockfile fields and versions (fix set 3
   })
 
   it('should report yarn fields that open a block unless they are known block fields', () => {
-    rejects('yarn.lock', berry.replace('  resolution: "express@npm:4.19.2"', '  resolution:\n    "express@npm:4.17.0"'), 'berry resolution on the next line')
-    rejects('yarn.lock', berry.replace('  resolution: "express@npm:4.19.2"', '  resolution: >-\n    express@npm:4.17.0'), 'berry resolution block scalar')
-    rejects('yarn.lock', classic.replace('  version "2.6.9"', '  version "2.6.9"\n  checksum:\n    abc'), 'unknown block field')
+    assert.ok(problems('yarn.lock', berry.replace('  resolution: "express@npm:4.19.2"', '  resolution:\n    "express@npm:4.17.0"')).length > 0, 'berry resolution on the next line')
+    assert.ok(problems('yarn.lock', berry.replace('  resolution: "express@npm:4.19.2"', '  resolution: >-\n    express@npm:4.17.0')).length > 0, 'berry resolution block scalar')
+    assert.ok(problems('yarn.lock', classic.replace('  version "2.6.9"', '  version "2.6.9"\n  checksum:\n    abc')).length > 0, 'unknown block field')
   })
 
   it('should report a yarn berry entry with no resolution', () => {
-    rejects('yarn.lock', berryEntry('lodash@npm:^4', '  version: 4.17.21\n  checksum: 10c0/abc'), 'no resolution')
+    assert.ok(problems('yarn.lock', berryEntry('lodash@npm:^4', '  version: 4.17.21\n  checksum: 10c0/abc')).length > 0, 'no resolution')
     assert.deepEqual(problems('yarn.lock', classic), [], 'classic entries need no resolution')
   })
 
   it('should report yarn npm: locator versions that are not strict semver (::__archiveUrl)', () => {
     const encoded = '4.17.21::__archiveUrl=https%3A%2F%2Fevil.example%2Fl.tgz'
-    rejects('yarn.lock', berryEntry('lodash@npm:^4', `  version: ${encoded}\n  resolution: "lodash@npm:${encoded}"`), 'encoded archiveUrl')
+    assert.ok(problems('yarn.lock', berryEntry('lodash@npm:^4', `  version: ${encoded}\n  resolution: "lodash@npm:${encoded}"`)).length > 0, 'encoded archiveUrl')
     const plain = '4.17.21::__archiveUrl=https://evil.example/l.tgz'
-    rejects('yarn.lock', berryEntry('lodash@npm:^4', `  version: "${plain}"\n  resolution: "lodash@npm:${plain}"`), 'plain archiveUrl')
+    assert.ok(problems('yarn.lock', berryEntry('lodash@npm:^4', `  version: "${plain}"\n  resolution: "lodash@npm:${plain}"`)).length > 0, 'plain archiveUrl')
   })
 
   it('should unwrap yarn patch: locators and compare their version with version:', () => {
     const patch = (inner, version) => berryEntry('lodash@patch:lodash@npm%3A^4#~/.yarn/patches/l.patch', `  version: ${version}\n  resolution: "lodash@patch:lodash@npm%3A${inner}#~/.yarn/patches/l.patch::version=${inner}&hash=abc"`)
-    rejects('yarn.lock', patch('4.17.20', '4.17.21'), 'patched version disagrees')
+    assert.ok(problems('yarn.lock', patch('4.17.20', '4.17.21')).length > 0, 'patched version disagrees')
     const same = parseDependencies({ file: 'yarn.lock', content: patch('4.17.21', '4.17.21') })
     assert.deepEqual(same.problems, [])
     assert.ok(same.entries.some((e) => e.name === 'lodash' && e.version === '4.17.21'))
@@ -565,7 +563,6 @@ describe('parseDependencies: descriptor order, pnpm v5 local keys and escapes (f
   const berry = fixture('yarn-berry.after.lock')
   const classic = fixture('yarn-classic.after.lock')
   const problems = (file, content) => parseDependencies({ file, content }).problems
-  const rejects = (file, content, label) => assert.ok(problems(file, content).length > 0, label)
   const checkLock = (file, content, base) => rules(checkDependencies({ file, content, base, manifestChanged: true }))
 
   it('should check a yarn entry whose first descriptor is a workspace, link or portal descriptor', () => {
@@ -591,7 +588,7 @@ describe('parseDependencies: descriptor order, pnpm v5 local keys and escapes (f
     assert.ok(parsed.entries.some((e) => e.name === 'foo' && e.version === '1.0.0' && e.resolved === 'file:packages/foo'))
     const tgz = v5.trimEnd() + '\n\n  file:../foo-1.0.0.tgz:\n    resolution: {integrity: sha512-x, tarball: file:../foo-1.0.0.tgz}\n    name: foo\n    version: 1.0.0\n    dev: false\n'
     assert.deepEqual(problems('pnpm-lock.yaml', tgz), [])
-    rejects('pnpm-lock.yaml', tgz.replace('    name: foo\n', ''), 'a local key without a name field')
+    assert.ok(problems('pnpm-lock.yaml', tgz.replace('    name: foo\n', '')).length > 0, 'a local key without a name field')
     const v6 = fixture('pnpm-lock-v6.after.yaml').trimEnd() + '\n\n  file:packages/@scope/foo:\n    resolution: {directory: packages/@scope/foo, type: directory}\n    name: \'@scope/foo\'\n    version: 1.0.0\n    dev: false\n'
     assert.deepEqual(problems('pnpm-lock.yaml', v6), [], 'v6 scoped file key')
   })
@@ -607,9 +604,9 @@ describe('parseDependencies: descriptor order, pnpm v5 local keys and escapes (f
     assert.ok(escaped(pnpm.replace(r, '    resolution: {integrity: sha512-bbb, tarball: "https://registry.npmjs.org/debug/-/debug-2.6.9.tgz\\x"}')), 'pnpm resolution')
     assert.ok(escaped(pnpm.replace(r, `${r}\n    version: "2.6.\\x39"`)), 'pnpm version')
     assert.ok(escaped(pnpm.replace(r, `${r}\n    name: "deb\\x75g"`)), 'pnpm name')
-    rejects('yarn.lock', classic.replace('  version "2.6.9"', '  version "2.6.\\x39"'), 'classic version')
-    rejects('yarn.lock', berry.replace('  resolution: "express@npm:4.19.2"', '  resolution: "express@npm:4.19.\\x32"'), 'berry resolution')
-    rejects('yarn.lock', `${classic}\n"evil\\x40pkg@^1":\n  version "1.0.0"\n`, 'classic descriptor')
+    assert.ok(problems('yarn.lock', classic.replace('  version "2.6.9"', '  version "2.6.\\x39"')).length > 0, 'classic version')
+    assert.ok(problems('yarn.lock', berry.replace('  resolution: "express@npm:4.19.2"', '  resolution: "express@npm:4.19.\\x32"')).length > 0, 'berry resolution')
+    assert.ok(problems('yarn.lock', `${classic}\n"evil\\x40pkg@^1":\n  version "1.0.0"\n`).length > 0, 'classic descriptor')
   })
 })
 
@@ -618,14 +615,13 @@ describe('parseDependencies: per-format yarn fields and the pnpm lockfileVersion
   const berry = fixture('yarn-berry.after.lock')
   const classic = fixture('yarn-classic.after.lock')
   const problems = (file, content) => parseDependencies({ file, content }).problems
-  const rejects = (file, content, label) => assert.ok(problems(file, content).length > 0, label)
   const berryEntry = (fields) => `${berry}\n"lodash@npm:^4.17.0":\n  version: 4.17.21\n  resolution: "lodash@https://evil.example/x.tgz"\n${fields}  languageName: node\n  linkType: hard\n`
 
   it('should report yarn berry fields that only yarn classic writes (A)', () => {
-    rejects('yarn.lock', berryEntry('  resolved: "workspace:x"\n'), 'resolved naming a workspace')
-    rejects('yarn.lock', berryEntry('  resolved: "https://registry.yarnpkg.com/lodash/-/lodash-4.17.21.tgz"\n'), 'resolved naming the registry')
-    rejects('yarn.lock', berryEntry('  integrity: sha512-x\n'), 'integrity')
-    rejects('yarn.lock', berry.replace('  cacheKey: 10c0', '  cacheKey: 10c0\n  resolved: x'), 'unknown __metadata field')
+    assert.ok(problems('yarn.lock', berryEntry('  resolved: "workspace:x"\n')).length > 0, 'resolved naming a workspace')
+    assert.ok(problems('yarn.lock', berryEntry('  resolved: "https://registry.yarnpkg.com/lodash/-/lodash-4.17.21.tgz"\n')).length > 0, 'resolved naming the registry')
+    assert.ok(problems('yarn.lock', berryEntry('  integrity: sha512-x\n')).length > 0, 'integrity')
+    assert.ok(problems('yarn.lock', berry.replace('  cacheKey: 10c0', '  cacheKey: 10c0\n  resolved: x')).length > 0, 'unknown __metadata field')
   })
 
   it('should read every field yarn berry writes (A)', () => {
@@ -635,9 +631,9 @@ describe('parseDependencies: per-format yarn fields and the pnpm lockfileVersion
 
   it('should report yarn classic fields that only yarn berry writes (B)', () => {
     const entry = (fields) => `${classic}\nlodash@^4.17.0:\n  version "4.17.21"\n  resolved "https://evil.example/x.tgz"\n${fields}`
-    rejects('yarn.lock', entry('  resolution "lodash@https://registry.yarnpkg.com/lodash/-/lodash-4.17.21.tgz"\n'), 'resolution')
-    rejects('yarn.lock', entry('  checksum "abc"\n'), 'checksum')
-    rejects('yarn.lock', entry('  languageName "node"\n'), 'languageName')
+    assert.ok(problems('yarn.lock', entry('  resolution "lodash@https://registry.yarnpkg.com/lodash/-/lodash-4.17.21.tgz"\n')).length > 0, 'resolution')
+    assert.ok(problems('yarn.lock', entry('  checksum "abc"\n')).length > 0, 'checksum')
+    assert.ok(problems('yarn.lock', entry('  languageName "node"\n')).length > 0, 'languageName')
   })
 
   it('should read every field yarn classic writes (B)', () => {
@@ -646,8 +642,8 @@ describe('parseDependencies: per-format yarn fields and the pnpm lockfileVersion
   })
 
   it('should read only an exact __metadata key as the berry header (fix set 6)', () => {
-    rejects('yarn.lock', `${classic}\n"__metadata", "lodash@^4":\n  version "4.17.20"\n`, 'classic, __metadata first')
-    rejects('yarn.lock', `${berry}\n"__metadata, lodash@npm:^4":\n  version: 4.17.20\n  resolution: "lodash@npm:4.17.20"\n`, 'berry, __metadata first')
+    assert.ok(problems('yarn.lock', `${classic}\n"__metadata", "lodash@^4":\n  version "4.17.20"\n`).length > 0, 'classic, __metadata first')
+    assert.ok(problems('yarn.lock', `${berry}\n"__metadata, lodash@npm:^4":\n  version: 4.17.20\n  resolution: "lodash@npm:4.17.20"\n`).length > 0, 'berry, __metadata first')
     assert.deepEqual(problems('yarn.lock', berry), [])
   })
 
@@ -659,12 +655,12 @@ describe('parseDependencies: per-format yarn fields and the pnpm lockfileVersion
     assert.deepEqual(parsed.problems, [])
     assert.ok(parsed.entries.some((e) => e.name === 'evil-pkg' && e.installName === 'my-lib'))
     assert.deepEqual(rules(checkDependencies({ file: 'yarn.lock', content: renamed, base: classic, manifestChanged: true })), ['sc-alias:warning'])
-    rejects('yarn.lock', `${classic}\n"my-lodash@npm:lodash@^4":\n  name evil-pkg\n  version "4.17.21"\n`, 'name disagrees with the npm: alias')
-    rejects('yarn.lock', `${classic}\nmy-lib@^1.0.0:\n  name "evil\\x2dpkg"\n  version "1.0.0"\n`, 'escaped name')
+    assert.ok(problems('yarn.lock', `${classic}\n"my-lodash@npm:lodash@^4":\n  name evil-pkg\n  version "4.17.21"\n`).length > 0, 'name disagrees with the npm: alias')
+    assert.ok(problems('yarn.lock', `${classic}\nmy-lib@^1.0.0:\n  name "evil\\x2dpkg"\n  version "1.0.0"\n`).length > 0, 'escaped name')
   })
 
   it('should report a pnpm lockfileVersion that is not a number (C)', () => {
-    for (const bad of ["'abc'", "''", '-1', '9.0.0', "'9.0' x"]) rejects('pnpm-lock.yaml', pnpm.replace("lockfileVersion: '9.0'", `lockfileVersion: ${bad}`), bad)
+    for (const bad of ["'abc'", "''", '-1', '9.0.0', "'9.0' x"]) assert.ok(problems('pnpm-lock.yaml', pnpm.replace("lockfileVersion: '9.0'", `lockfileVersion: ${bad}`)).length > 0, bad)
     assert.deepEqual(problems('pnpm-lock.yaml', pnpm.replace("lockfileVersion: '9.0'", 'lockfileVersion: "9.0"')), [])
     assert.deepEqual(problems('pnpm-lock.yaml', fixture('pnpm-lock-v5.after.yaml')), [])
   })
@@ -674,7 +670,6 @@ describe('parseDependencies: every yarn descriptor and package-lock shapes (fix 
   const berry = fixture('yarn-berry.after.lock')
   const classic = fixture('yarn-classic.after.lock')
   const problems = (file, content) => parseDependencies({ file, content }).problems
-  const rejects = (file, content, label) => assert.ok(problems(file, content).length > 0, label)
   const checkLock = (file, content, base) => rules(checkDependencies({ file, content, base, manifestChanged: true }))
   const berryEntry = (key, name, version) => `${berry}\n"${key}":\n  version: ${version}\n  resolution: "${name}@npm:${version}"\n  languageName: node\n  linkType: hard\n`
   const classicEntry = (key, name, version) => `${classic}\n${key}:\n  version "${version}"\n  resolved "https://registry.yarnpkg.com/${name}/-/${name}-${version}.tgz#abc"\n`
@@ -699,13 +694,13 @@ describe('parseDependencies: every yarn descriptor and package-lock shapes (fix 
   })
 
   it('should report __metadata or an unreadable descriptor anywhere in the key (A)', () => {
-    rejects('yarn.lock', classicEntry('lodash@^4.17.0, __metadata', 'lodash', '4.17.21'), 'classic, __metadata later')
-    rejects('yarn.lock', classicEntry('lodash@^4.17.0, "__metadata"', 'lodash', '4.17.21'), 'classic, quoted __metadata later')
-    rejects('yarn.lock', berryEntry('lodash@npm:^4.17.0, __metadata', 'lodash', '4.17.21'), 'berry, __metadata later')
-    rejects('yarn.lock', classicEntry('lodash@^4.17.0, nonsense', 'lodash', '4.17.21'), 'unreadable later descriptor')
-    rejects('yarn.lock', classicEntry('lodash@^4.17.0, ', 'lodash', '4.17.21'), 'empty later descriptor')
-    rejects('yarn.lock', classicEntry(`"'lodahs@^4'"`, 'lodash', '4.17.21'), 'classic, quote left in the name')
-    rejects('yarn.lock', berryEntry('"lodahs@npm:^4"', 'lodash', '4.17.21'),'berry, quote left in the name')
+    assert.ok(problems('yarn.lock', classicEntry('lodash@^4.17.0, __metadata', 'lodash', '4.17.21')).length > 0, 'classic, __metadata later')
+    assert.ok(problems('yarn.lock', classicEntry('lodash@^4.17.0, "__metadata"', 'lodash', '4.17.21')).length > 0, 'classic, quoted __metadata later')
+    assert.ok(problems('yarn.lock', berryEntry('lodash@npm:^4.17.0, __metadata', 'lodash', '4.17.21')).length > 0, 'berry, __metadata later')
+    assert.ok(problems('yarn.lock', classicEntry('lodash@^4.17.0, nonsense', 'lodash', '4.17.21')).length > 0, 'unreadable later descriptor')
+    assert.ok(problems('yarn.lock', classicEntry('lodash@^4.17.0, ', 'lodash', '4.17.21')).length > 0, 'empty later descriptor')
+    assert.ok(problems('yarn.lock', classicEntry(`"'lodahs@^4'"`, 'lodash', '4.17.21')).length > 0, 'classic, quote left in the name')
+    assert.ok(problems('yarn.lock', berryEntry('"lodahs@npm:^4"', 'lodash', '4.17.21')).length > 0, 'berry, quote left in the name')
   })
 
   it('should count each package once in the drift warning, whatever its install names', () => {
@@ -715,10 +710,10 @@ describe('parseDependencies: every yarn descriptor and package-lock shapes (fix 
   })
 
   it('should report a package-lock whose packages or dependencies is not an object (C)', () => {
-    rejects('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: null, dependencies: {} }), 'packages null')
-    rejects('package-lock.json', JSON.stringify({ lockfileVersion: 2, packages: [], dependencies: {} }), 'packages an array')
-    rejects('package-lock.json', JSON.stringify({ lockfileVersion: 1, dependencies: [] }), 'dependencies an array')
-    rejects('package-lock.json', JSON.stringify({ lockfileVersion: 2, packages: {}, dependencies: 'x' }), 'dependencies a string beside packages')
+    assert.ok(problems('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: null, dependencies: {} })).length > 0, 'packages null')
+    assert.ok(problems('package-lock.json', JSON.stringify({ lockfileVersion: 2, packages: [], dependencies: {} })).length > 0, 'packages an array')
+    assert.ok(problems('package-lock.json', JSON.stringify({ lockfileVersion: 1, dependencies: [] })).length > 0, 'dependencies an array')
+    assert.ok(problems('package-lock.json', JSON.stringify({ lockfileVersion: 2, packages: {}, dependencies: 'x' })).length > 0, 'dependencies a string beside packages')
     assert.deepEqual(problems('package-lock.json', fixture('package-lock.after.json')), [])
   })
 })
