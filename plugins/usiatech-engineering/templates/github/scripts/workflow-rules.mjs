@@ -17,7 +17,9 @@ const PRIVILEGED_TRIGGERS = ['pull_request_target', 'workflow_run']
 const FIRST_PARTY_OWNERS = ['actions', 'github']
 
 // Event fields an outside contributor controls (GitHub's "untrusted input" list).
-const ANY_INDEX = String.raw`(?:\[[^\]]*\]|\.\*)`
+// An index holds no "[" of its own, so a "[" that is never closed is given up at the next "[" instead of scanned to
+// the end of the expression from every "[" (quadratic).
+const ANY_INDEX = String.raw`(?:\[[^\][]*\]|\.\*)`
 const UNTRUSTED_EXPR = new RegExp(String.raw`\bgithub\.(?:head_ref\b|event\.(?:` + [
   String.raw`issue\.(?:title|body)`,
   String.raw`pull_request\.(?:title|body|head\.(?:ref|label|repo\.default_branch))`,
@@ -34,7 +36,34 @@ const WHOLE_EVENT_EXPR = /\bgithub(?:\.event(?:\.(?:pull_request(?:\.head(?:\.re
 
 // Refs and repositories that point at PR-controlled code (R7).
 const PR_REF_EXPR = /\bgithub\.(?:head_ref\b|event\.(?:pull_request\.(?:head\.(?:sha|ref|repo\.\w+)|merge_commit_sha)|workflow_run\.head_(?:sha|branch|repository)|number\b))|refs\/pull\//i
-const PR_CHECKOUT_RUN = /\bgh\s+pr\s+checkout\b|\bgit\s+(?:fetch|checkout|switch)\b[^\n]*(?:(?:refs\/|[\s:])pull\/|\$\{\{[^}]*\bgithub\.(?:head_ref|event\.pull_request\.head|event\.workflow_run\.head_|event\.(?:pull_request\.)?number\b))/i
+// A run script checks out PR code with "gh pr checkout", or with a git fetch/checkout/switch followed, starting on the
+// same line, by a pull ref or a PR head expression.
+const GH_PR_CHECKOUT = /\bgh\s+pr\s+checkout\b/i
+const GIT_CHECKOUT_CMD = /\bgit\s+(?:fetch|checkout|switch)\b/gi
+const PULL_REF_AT = /(?:refs\/|[\s:])pull\//iy
+const PR_HEAD_EXPR_AT = /\$\{\{[^}]*\bgithub\.(?:head_ref|event\.pull_request\.head|event\.workflow_run\.head_|event\.(?:pull_request\.)?number\b)/iy
+const matchesAt = (re, s, at) => { re.lastIndex = at; return re.test(s) }
+// One regex with "[^\n]*" between the command and the ref would rescan the rest of the line from every command, and
+// "[^}]*" from every "${{" (quadratic). Instead each start position is tried once: a command whose line was already
+// searched from an earlier command adds nothing, and a "${{" with no "}" since the last "${{" that failed fails too.
+const runChecksOutPr = (run) => {
+  if (GH_PR_CHECKOUT.test(run)) return true
+  let searchedTo = -1, exprFailsUntil = -1
+  for (const cmd of run.matchAll(GIT_CHECKOUT_CMD)) {
+    const from = cmd.index + cmd[0].length
+    if (from <= searchedTo) continue
+    const lineEnd = run.indexOf('\n', from)
+    searchedTo = lineEnd === -1 ? run.length : lineEnd
+    for (let at = from; at <= searchedTo; at++) {
+      if (matchesAt(PULL_REF_AT, run, at)) return true
+      if (at < exprFailsUntil || !run.startsWith('${{', at)) continue
+      if (matchesAt(PR_HEAD_EXPR_AT, run, at)) return true
+      const brace = run.indexOf('}', at)
+      exprFailsUntil = brace === -1 ? run.length : brace
+    }
+  }
+  return false
+}
 const SECRET_REF = /\bsecrets\.[A-Za-z_]/
 const SHA_PIN = /^[0-9a-f]{40}$/i
 
@@ -62,6 +91,18 @@ const setKey = (node, key, value) => Object.defineProperty(node, key, { value, e
 const UNSUPPORTED = /^[&*!]|^\?(\s|$)/
 const unsupportedIn = (raw) => (UNSUPPORTED.test(raw.trim()) ? `"${raw.trim().split(/\s/)[0]}" (anchors, aliases, tags and explicit keys are not supported)` : null)
 
+// A quote only opens a quoted scalar where a value starts: at the start of the line, after "[", "{", "," or ":", or
+// after "- " block sequence entries that start the line. Inside a plain word or scalar (it's, a"b, echo "x) it is
+// just a character, and so it is after "- " inside [ ] / { } (inFlow), where YAML has no sequence entries. Comment
+// stripping and flow splitting both use this one rule.
+const opensQuote = (s, i, inFlow) => {
+  const skipSpaces = (k) => { while (k >= 0 && /\s/.test(s[k])) k--; return k }
+  let k = skipSpaces(i - 1)
+  if (k < 0 || '[{,:'.includes(s[k])) return true
+  for (let end = i; !inFlow && s[k] === '-' && k < end - 1; k = skipSpaces(k - 1)) end = k
+  return k < 0 && !inFlow
+}
+
 const stripComment = (s) => {
   let quote = null
   for (let i = 0; i < s.length; i++) {
@@ -70,17 +111,10 @@ const stripComment = (s) => {
       if (c === '\\' && quote === '"') i++
       else if (c === "'" && quote === "'" && s[i + 1] === "'") i++
       else if (c === quote) quote = null
-    } else if ((c === '"' || c === "'") && (i === 0 || /[\s:[{,-]/.test(s[i - 1]))) quote = c
+    } else if ((c === '"' || c === "'") && opensQuote(s, i, false)) quote = c
     else if (c === '#' && (i === 0 || /\s/.test(s[i - 1]))) return s.slice(0, i)
   }
   return s
-}
-
-// A quote only opens a quoted scalar at the start of a value; inside a plain word (it's, a"b) it is just a character.
-const opensQuote = (s, i) => {
-  let k = i - 1
-  while (k >= 0 && /\s/.test(s[k])) k--
-  return k < 0 || '[{,:'.includes(s[k])
 }
 
 const splitFlow = (inner, problem) => {
@@ -94,7 +128,7 @@ const splitFlow = (inner, problem) => {
       else if (c === quote) quote = null
       continue
     }
-    if ((c === '"' || c === "'") && opensQuote(inner, i)) quote = c
+    if ((c === '"' || c === "'") && opensQuote(inner, i, true)) quote = c
     else if (c === '[' || c === '{') depth++
     else if (c === ']' || c === '}') depth--
     else if (c === ',' && depth === 0) { parts.push(inner.slice(start, i)); start = i + 1 }
@@ -104,7 +138,10 @@ const splitFlow = (inner, problem) => {
   return parts.map((p) => p.trim()).filter((p) => p !== '')
 }
 
-const KEY_RE = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s"'[{#-][^:]*?|-[^\s:][^:]*?)\s*:(?:\s+(.*))?$/
+// A plain key ends on a non-space, and a value starts on one, so the spaces around ":" are matched once instead of
+// split every way between the key, the spaces and the value (quadratic on a long run of spaces with no ":", or before
+// a value that "." can't reach the end of, such as one cut by U+2028).
+const KEY_RE = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s"'[{#-](?:[^:]*[^\s:])?|-[^\s:](?:[^:]*[^\s:])?)\s*:(?:\s+((?:\S.*)?))?$/
 
 // problem(reason) is called for anything in the value the subset can't represent.
 const DOUBLE_QUOTED = /^"(?:[^"\\]|\\.)*"$/
@@ -130,7 +167,9 @@ const scalar = (raw, problem) => {
   if (s.startsWith('{') && s.endsWith('}')) {
     const obj = {}
     for (const part of splitFlow(s.slice(1, -1), problem)) {
-      const m = part.match(/^([^:]+?)\s*:\s*(.*)$/)
+      // The key ends on a non-space and the value starts on one, as in KEY_RE, so the spaces around ":" are not split
+      // every way (quadratic).
+      const m = part.match(/^([^:]*[^\s:])\s*:\s*((?:\S.*)?)$/)
       if (m) setKey(obj, scalar(m[1], problem), scalar(m[2], problem))
       else problem(`flow mapping entry "${part}" is not a key: value pair`)
     }
@@ -287,11 +326,45 @@ const strings = (v, out = []) => {
 }
 // Expressions are case-insensitive and accept obj['key'] and spaces around dots; rewrite them to one lowercase
 // dotted form so the patterns above see github.event.issue.title however it was written.
-const EXPR = /\$\{\{([\s\S]*?)\}\}/g
-const normalizeExpr = (e) => e.toLowerCase().replace(/\s*\[\s*(['"])([^'"]*)\1\s*\]/g, '.$2').replace(/\s*\.\s*/g, '.').trim()
-const normalizeExprs = (s) => s.replace(EXPR, (_, e) => `\${{ ${normalizeExpr(e)} }}`)
-const expressions = (s) => [...s.matchAll(EXPR)].map((m) => normalizeExpr(m[1]))
-const untrustedIn = (s) => expressions(s).map((e) => e.match(UNTRUSTED_EXPR)?.[0] ?? e.match(WHOLE_EVENT_EXPR)?.[0]).filter(Boolean)
+// Each ${{ … }} runs to the first "}}" after it. Found with indexOf rather than a lazy regex, which rescans to the end
+// of the text from every "${{" that is never closed (quadratic).
+const exprSpans = (s) => {
+  const spans = []
+  let open = s.indexOf('${{')
+  while (open !== -1) {
+    const close = s.indexOf('}}', open + 3)
+    if (close === -1) break
+    spans.push({ start: open, end: close + 2, inner: s.slice(open + 3, close) })
+    open = s.indexOf('${{', close + 2)
+  }
+  return spans
+}
+// Spaces are only taken from the start of a run ((?<!\s)), so a long run that no "[" or "." follows is scanned once
+// rather than from every space in it (quadratic). Dropping the spaces next to a "." is what replacing \s*\.\s* did.
+const normalizeExpr = (e) => e.toLowerCase()
+  .replace(/(?<!\s)\s*\[\s*(['"])([^'"]*)\1\s*\]/g, '.$2')
+  .replace(/(?<!\s)\s+(?=\.)|(?<=\.)\s+/g, '')
+  .trim()
+const normalizeExprs = (s) => {
+  let out = '', last = 0
+  for (const { start, end, inner } of exprSpans(s)) {
+    out += s.slice(last, start) + `\${{ ${normalizeExpr(inner)} }}`
+    last = end
+  }
+  return out + s.slice(last)
+}
+const expressions = (s) => exprSpans(s).map(({ inner }) => normalizeExpr(inner))
+// ANY_INDEX can't read an index with "[" or "]" inside it (commits[fromJSON('[0]')[0]]), so an indexed list of untrusted
+// objects followed anywhere later by one of their untrusted fields counts as untrusted (fail closed).
+const UNTRUSTED_LIST_INDEX = /\bgithub\.event\.(?:commits|pages|workflow_run\.pull_requests)\[/i
+const UNTRUSTED_ITEM_FIELD = /\.(?:message|author\.(?:email|name)|page_name|head\.ref)\b/i
+const unreadableIndex = (e) => {
+  const list = UNTRUSTED_LIST_INDEX.exec(e)
+  return list !== null && UNTRUSTED_ITEM_FIELD.test(e.slice(list.index + list[0].length)) ? `${list[0]}…` : undefined
+}
+const untrustedIn = (s) => expressions(s)
+  .map((e) => e.match(UNTRUSTED_EXPR)?.[0] ?? e.match(WHOLE_EVENT_EXPR)?.[0] ?? unreadableIndex(e))
+  .filter(Boolean)
 
 const triggersOf = (doc) => {
   const on = doc.on
@@ -326,7 +399,7 @@ const checksOutPrCode = (step) => {
   if (typeof step.uses === 'string' && actionName(step.uses) === 'actions/checkout' && isObj(step.with)) {
     return ['ref', 'repository'].some((k) => typeof step.with[k] === 'string' && PR_REF_EXPR.test(normalizeExprs(step.with[k])))
   }
-  return typeof step.run === 'string' && PR_CHECKOUT_RUN.test(normalizeExprs(step.run))
+  return typeof step.run === 'string' && runChecksOutPr(normalizeExprs(step.run))
 }
 
 const privilegedRules = (doc, file, findings) => {
