@@ -2,7 +2,8 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { Worker } from 'node:worker_threads'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   parseYamlSubset, parseWorkflowYaml, lineOf, checkWorkflow, isWorkflowPath, TIER, AI_ACTIONS,
 } from '../templates/github/scripts/workflow-rules.mjs'
@@ -319,6 +320,21 @@ describe('checkWorkflow: untrusted input (R8; AC7)', () => {
     }
   })
 
+  it('should flag an untrusted field behind an index it cannot read (fail closed)', () => {
+    for (const expr of [
+      "github.event.commits[0 && '['].message",
+      "github.event.commits[fromJSON('[0]')[0]].message",
+      'github.event.commits[a[0]].author.name',
+      'github.event.pages[x[0]].page_name',
+      'github.event.workflow_run.pull_requests[a[0]].head.ref',
+    ]) {
+      const content = `on: issues\njobs:\n  a:\n    steps:\n      - run: echo \${{ ${expr} }}\n`
+      assert.deepEqual(rules(checkWorkflow({ file: '.github/workflows/x.yml', content })), ['wf-untrusted-input:high'], expr)
+    }
+    const safe = "on: issues\njobs:\n  a:\n    steps:\n      - run: echo ${{ github.event.commits[fromJSON('[0]')[0]].id }}\n"
+    assert.deepEqual(checkWorkflow({ file: '.github/workflows/x.yml', content: safe }), [])
+  })
+
   it('should flag a whole event object passed into a run step, script or AI input', () => {
     for (const expr of [
       'toJSON(github.event)', 'toJSON(github.event.pull_request)', 'github.event.issue', 'toJSON(github)', "toJSON(github['event'])",
@@ -395,5 +411,153 @@ describe('checkWorkflow: pinning and permissions (R10; AC8)', () => {
 describe('checkWorkflow: tiers', () => {
   it('should only use the two documented tiers', () => {
     assert.deepEqual(Object.values(TIER).sort(), ['high', 'warning'])
+  })
+})
+
+// One table of "does a quote open here?" answers. Comment stripping and flow splitting must both follow it. `before` is
+// the text in front of the quote on its line (for flow splitting, in front of it inside the [ ]). A quote only opens a
+// quoted scalar at the start of a value; inside a plain word it is just a character. `item` rows are block-sequence
+// items, which have no flow form. A row that opens a quote must also parse with no problems.
+const QUOTE_TABLE = [
+  { where: 'at the start of a line', before: '', opens: true },
+  { where: 'after a colon', before: 'a: ', opens: true },
+  { where: 'after a comma', before: 'a, ', opens: true },
+  { where: 'after [', before: '[', opens: true },
+  { where: 'after {', before: '{', opens: true },
+  { where: 'after "- " in a block sequence', before: '- ', opens: true, item: true },
+  // YAML has no sequence entries inside [ ] / { }; "[- " is a syntax error there, not the start of a quoted scalar.
+  { where: 'after "- " inside a flow collection', before: '[- ', opens: false },
+  { where: 'inside a plain word', before: 'it', opens: false },
+  { where: 'after a space inside a plain scalar', before: 'a ', opens: false },
+  { where: 'after a dash inside a plain word', before: 'a-', opens: false },
+  // Not quote logic: a "#" after a space starts a comment before any quote after it is looked at.
+  { where: 'after a "#" comment (the comment takes precedence)', before: 'a # ', opens: false },
+]
+const CLOSERS = { '[': ']', '{': '}' }
+// What closes the collections `before` opens; a { } entry also needs a value to be a key: value pair.
+const closing = (before) => (before.includes('{') ? ': 1' : '') + (CLOSERS[before[0]] ?? '')
+// { opens, problems }; problems are only kept when the quote opened, since only those rows must parse cleanly.
+const parsed = (text, marker) => {
+  const { doc, problems } = parseWorkflowYaml(text)
+  const opens = JSON.stringify(doc).includes(marker)
+  return { opens, problems: opens ? problems : [] }
+}
+// Comment stripping: a quote that opens hides the "#" inside it, so "# y" survives in the parsed value.
+const stripOpens = ({ before, item }, q) => {
+  const text = item ? `k:\n  - ${q}x # y${q}\n` : before === '' ? `${q}x # y${q}: 1\n` : `k: ${before}${q}x # y${q}${closing(before)}\n`
+  return parsed(text, '# y')
+}
+// Flow splitting: a quote that opens hides the "," inside it, so "x, y" stays in one piece.
+const flowOpens = ({ before }, q) => parsed(`k: [${before}${q}x, y${q}${closing(before)}]\n`, 'x, y')
+const expectedFor = (row) => ({ opens: row.opens, problems: [] })
+
+describe('quote opening: comment stripping and flow splitting', () => {
+  for (const q of ['"', "'"]) {
+    for (const row of QUOTE_TABLE) {
+      const verb = row.opens ? 'open' : 'not open'
+      it(`should ${verb} a ${q} quote ${row.where} when stripping comments`, () => {
+        assert.deepEqual(stripOpens(row, q), expectedFor(row))
+      })
+      if (!row.item) {
+        it(`should ${verb} a ${q} quote ${row.where} when splitting a flow collection`, () => {
+          assert.deepEqual(flowOpens(row, q), expectedFor(row))
+        })
+      }
+    }
+  }
+
+  it('should give comment stripping and flow splitting the same answer on every row, for both quotes', () => {
+    const disagree = ['"', "'"].flatMap((q) => QUOTE_TABLE
+      .filter((row) => !row.item && stripOpens(row, q).opens !== flowOpens(row, q).opens)
+      .map((row) => `${q} ${row.where}`))
+    assert.deepEqual(disagree, [])
+  })
+})
+
+// Regexes with nested or lazy repetition backtrack badly on input that almost matches. Each 1 MB input below makes
+// one pattern try every start position and scan to the end: KEY_RE and the flow mapping entry (spaces and no colon,
+// or spaces before a value cut by U+2028), exprSpans ("${{" never closed), UNTRUSTED_EXPR ("[" never closed),
+// runChecksOutPr ("${{" never closed after "git fetch", or "git fetch" repeated, under pull_request_target so the
+// checkout rule runs) and normalizeExpr (spaces with no "." or "[" after them). They run in a worker so that a
+// pattern that is still quadratic fails after TIMING_CAP_MS instead of hanging the suite. Each test also checks the
+// findings, so a parser that gives up early can't pass by being fast.
+const MEGABYTE = 1024 * 1024
+const TIME_LIMIT_MS = 1000
+const TIMING_CAP_MS = 3000
+const RULES_URL = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'templates', 'github', 'scripts', 'workflow-rules.mjs')).href
+const WORKER_SOURCE = `
+const { workerData, parentPort } = require('node:worker_threads')
+import(workerData.rulesUrl).then(({ checkWorkflow }) => {
+  const start = performance.now()
+  const findings = checkWorkflow({ file: '.github/workflows/x.yml', content: workerData.content })
+  parentPort.postMessage({ ms: performance.now() - start, rules: findings.map((f) => f.rule + ':' + f.tier).sort() })
+})
+`
+// { ms, rules } from checkWorkflow on content, or null when it has not finished after TIMING_CAP_MS.
+const timeCheckWorkflow = (content) => new Promise((resolve, reject) => {
+  const worker = new Worker(WORKER_SOURCE, { eval: true, workerData: { rulesUrl: RULES_URL, content } })
+  let settled = false
+  const settle = (fn, value) => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    worker.terminate()
+    fn(value)
+  }
+  const timer = setTimeout(() => settle(resolve, null), TIMING_CAP_MS)
+  worker.once('message', (result) => settle(resolve, result))
+  worker.once('error', (e) => settle(reject, e))
+  worker.once('exit', (code) => settle(reject, new Error(`worker exited ${code} without a result`)))
+})
+const stepRun = (command, trigger = 'push') => `on: ${trigger}\njobs:\n  a:\n    steps:\n      - run: ${command}\n`
+// Why checkWorkflow on content is too slow or gives other findings than expectedRules, or null when it finishes
+// within TIME_LIMIT_MS with those findings. Each test asserts on it directly, so the fake-pass check sees the
+// assertion in the test.
+const slowCheckReason = async (content, expectedRules) => {
+  const kb = content.length >> 10
+  if (content.length < MEGABYTE) return `the input is ${kb} KB, not at least 1 MB`
+  const result = await timeCheckWorkflow(content)
+  if (result === null) return `checkWorkflow had not finished after ${TIMING_CAP_MS} ms on ${kb} KB`
+  if (result.ms >= TIME_LIMIT_MS) return `checkWorkflow took ${Math.round(result.ms)} ms on ${kb} KB, limit ${TIME_LIMIT_MS} ms`
+  const got = JSON.stringify(result.rules), want = JSON.stringify([...expectedRules].sort())
+  return got === want ? null : `checkWorkflow gave ${got}, expected ${want}`
+}
+const UNPARSED = ['wf-unparsed:high']
+
+describe('checkWorkflow: worst-case input size', () => {
+  it('should check a 1 MB key line of spaces with no colon in under 1 s (KEY_RE)', async () => {
+    assert.equal(await slowCheckReason(`on: push\nk${' '.repeat(MEGABYTE)}x\n`, UNPARSED), null)
+  })
+
+  it('should check a 1 MB key line of spaces before a value cut by U+2028 in under 1 s (KEY_RE)', async () => {
+    assert.equal(await slowCheckReason(`on: push\na:${' '.repeat(MEGABYTE)}x\u2028y\n`, UNPARSED), null)
+  })
+
+  it('should check 1 MB of unclosed "${{" in under 1 s (exprSpans)', async () => {
+    assert.equal(await slowCheckReason(stepRun('${{ '.repeat(MEGABYTE / 4)), []), null)
+  })
+
+  it('should check 1 MB of unclosed "[" after a context name in under 1 s (UNTRUSTED_EXPR)', async () => {
+    assert.equal(await slowCheckReason(stepRun(`\${{ ${'github.event.commits['.repeat(MEGABYTE / 21)} }}`), []), null)
+  })
+
+  it('should check 1 MB of unclosed "${{" after "git fetch" in under 1 s (runChecksOutPr)', async () => {
+    assert.equal(await slowCheckReason(stepRun(`git fetch ${'${{ '.repeat(MEGABYTE / 4)}`, 'pull_request_target'), []), null)
+  })
+
+  it('should check 1 MB of "git fetch" repeated on one line in under 1 s (runChecksOutPr)', async () => {
+    assert.equal(await slowCheckReason(stepRun('git fetch '.repeat(MEGABYTE / 10 + 1), 'pull_request_target'), []), null)
+  })
+
+  it('should check a 1 MB flow mapping entry of spaces with no colon in under 1 s (flow mapping entry)', async () => {
+    assert.equal(await slowCheckReason(`on: push\nk: {k${' '.repeat(MEGABYTE)}x}\n`, UNPARSED), null)
+  })
+
+  it('should check a 1 MB flow mapping entry of spaces before a value cut by U+2028 in under 1 s (flow mapping entry)', async () => {
+    assert.equal(await slowCheckReason(`on: push\nk:\n  - {run:${' '.repeat(MEGABYTE)}x\u2028y}\n`, UNPARSED), null)
+  })
+
+  it('should check a 1 MB expression of spaces between two names in under 1 s (normalizeExpr)', async () => {
+    assert.equal(await slowCheckReason(stepRun(`\${{ a${' '.repeat(MEGABYTE)}b }}`), []), null)
   })
 })
