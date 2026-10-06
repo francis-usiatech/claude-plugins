@@ -1,0 +1,34 @@
+name: YAML escapes
+on: push
+permissions:
+  contents: read
+env:
+  ESC_NUL: "a\0b"
+  ESC_BELL: "a\ab"
+  ESC_BACKSPACE: "a\bb"
+  ESC_TAB_LETTER: "a\tb"
+  ESC_TAB_LITERAL: "a\	b"
+  ESC_NEWLINE: "a\nb"
+  ESC_VTAB: "a\vb"
+  ESC_FORMFEED: "a\fb"
+  ESC_RETURN: "a\rb"
+  ESC_ESCAPE: "a\eb"
+  ESC_SPACE: "a\ b"
+  ESC_QUOTE: "a\"b"
+  ESC_SLASH: "a\/b"
+  ESC_BACKSLASH: "a\\b"
+  ESC_NEXT_LINE: "a\Nb"
+  ESC_NBSP: "a\_b"
+  ESC_LINE_SEP: "a\Lb"
+  ESC_PARA_SEP: "a\Pb"
+  ESC_HEX: "a\x41b"
+  ESC_UNICODE: "a\u0041b"
+  ESC_WIDE: "a\U0001F600b"
+  ESC_MIXED: "a\x41é"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+      - name: "Escapes in a step name\tand a quote \"here\""
+        run: echo done
