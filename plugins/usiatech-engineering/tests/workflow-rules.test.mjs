@@ -12,6 +12,7 @@ const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtur
 const fixture = (name) => readFileSync(path.join(FIXTURES, name), 'utf8')
 const check = (name, opts = {}) => checkWorkflow({ file: `.github/workflows/${name}`, content: fixture(name), ...opts })
 const rules = (findings) => findings.map((f) => `${f.rule}:${f.tier}`).sort()
+const checkContent = (content) => checkWorkflow({ file: '.github/workflows/x.yml', content })
 const unparsed = (content) => checkWorkflow({ file: '.github/workflows/x.yml', content }).filter((f) => f.rule === 'wf-unparsed')
 // A "no findings" result only means something if the parser actually read the jobs and their steps.
 const assertParsed = (name) => {
@@ -335,8 +336,9 @@ describe('checkWorkflow: untrusted input (R8; AC7)', () => {
       const content = `on: issues\njobs:\n  a:\n    steps:\n      - run: echo \${{ ${expr} }}\n`
       assert.deepEqual(rules(checkWorkflow({ file: '.github/workflows/x.yml', content })), ['wf-untrusted-input:high'], expr)
     }
-    const safe = "on: issues\njobs:\n  a:\n    steps:\n      - run: echo ${{ github.event.commits[fromJSON('[0]')[0]].id }}\n"
-    assert.deepEqual(checkWorkflow({ file: '.github/workflows/x.yml', content: safe }), [])
+    // A computed index is flagged whatever field follows (ESP-4 wide rule), so even ".id" counts.
+    const computedId = "on: issues\njobs:\n  a:\n    steps:\n      - run: echo ${{ github.event.commits[fromJSON('[0]')[0]].id }}\n"
+    assert.deepEqual(rules(checkWorkflow({ file: '.github/workflows/x.yml', content: computedId })), ['wf-untrusted-input:high'])
   })
 
   it('should flag a whole event object passed into a run step, script or AI input', () => {
@@ -542,8 +544,8 @@ describe('checkWorkflow: worst-case input size', () => {
     assert.equal(await slowCheckReason(stepRun('${{ '.repeat(MEGABYTE / 4)), []), null)
   })
 
-  it('should check 1 MB of unclosed "[" after a context name in under 1 s (UNTRUSTED_EXPR)', async () => {
-    assert.equal(await slowCheckReason(stepRun(`\${{ ${'github.event.commits['.repeat(MEGABYTE / 21)} }}`), []), null)
+  it('should flag 1 MB of unclosed "[" after a context name in under 1 s (UNTRUSTED_EXPR)', async () => {
+    assert.equal(await slowCheckReason(stepRun(`\${{ ${'github.event.commits['.repeat(MEGABYTE / 21)} }}`), ['wf-untrusted-input:high']), null)
   })
 
   it('should check 1 MB of unclosed "${{" after "git fetch" in under 1 s (runChecksOutPr)', async () => {
@@ -732,5 +734,196 @@ jobs:
           echo a${NEL}b
 `
     assert.equal(unparsed(content).length > 0, true)
+  })
+})
+
+describe('checkWorkflow: reusable workflow call with secrets: inherit (ESP-4, R1; AC1)', () => {
+  const callJob = '  call:\n    uses: ./.github/workflows/x.yml\n    secrets: inherit\n'
+  const secretsFindings = (findings) => findings.filter((f) => f.rule === 'wf-privileged-secrets')
+
+  it('should parse the prt-reusable-secrets fixture with the job uses and secrets', () => {
+    const { doc, problems } = parseWorkflowYaml(fixture('prt-reusable-secrets.yml'))
+    assert.deepEqual(problems, [])
+    assert.equal(doc.jobs?.call?.uses, './.github/workflows/x.yml')
+    assert.equal(doc.jobs?.call?.secrets, 'inherit')
+  })
+
+  it('should give exactly one wf-privileged-secrets:high for the prt-reusable-secrets fixture', () => {
+    assert.deepEqual(rules(check('prt-reusable-secrets.yml')), ['wf-privileged-secrets:high'])
+  })
+
+  it('should report the wf-privileged-secrets finding at the job line', () => {
+    const f = secretsFindings(check('prt-reusable-secrets.yml'))
+    assert.equal(f.length, 1)
+    assert.equal(f[0].line, 4)
+    assert.equal(f[0].file, '.github/workflows/prt-reusable-secrets.yml')
+  })
+
+  it('should give wf-privileged-secrets:high for the same job under workflow_run', () => {
+    const content = `on:\n  workflow_run:\n    workflows: [CI]\njobs:\n${callJob}`
+    assert.deepEqual(rules(checkContent(content)), ['wf-privileged-secrets:high'])
+  })
+
+  it('should give no finding for the same job under pull_request', () => {
+    assert.deepEqual(checkContent(`on: pull_request\njobs:\n${callJob}`), [])
+  })
+
+  it('should give wf-privileged-secrets for a non-string uses with secrets: inherit (fail closed)', () => {
+    const content = 'on: pull_request_target\njobs:\n  call:\n    uses: [./.github/workflows/x.yml]\n    secrets: inherit\n'
+    const f = secretsFindings(checkContent(content))
+    assert.equal(f.length, 1, rules(checkContent(content)).join(' '))
+    assert.match(f[0].detail, /calls a reusable workflow with secrets: inherit/)
+  })
+
+  it('should tell how to fix the reusable-call finding', () => {
+    const [f] = secretsFindings(check('prt-reusable-secrets.yml'))
+    assert.match(f.detail, /Pass only the secrets the called workflow needs/)
+  })
+
+  it('should give exactly one wf-privileged-secrets for a job with uses that checks out PR code and has secrets: inherit', () => {
+    const content = 'on: pull_request_target\njobs:\n  a:\n    uses: ./.github/workflows/x.yml\n    secrets: inherit\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n'
+    assert.equal(secretsFindings(checkContent(content)).length, 1, rules(checkContent(content)).join(' '))
+  })
+})
+
+describe('checkWorkflow: git clone and pull of the PR head (ESP-4, R2; AC2)', () => {
+  const GIT_STEPS = [
+    'git clone --branch ${{ github.head_ref }} https://github.com/o/r',
+    'git clone ${{ github.event.pull_request.head.repo.clone_url }}',
+    'git pull origin ${{ github.head_ref }}',
+    'git fetch origin ${{ github.event.pull_request.head.sha }} && git checkout FETCH_HEAD',
+    'gh pr checkout ${{ github.event.number }}',
+  ]
+  const checkoutFindings = (findings) => findings.filter((f) => f.rule === 'wf-privileged-checkout')
+
+  it('should give one wf-privileged-checkout:high per job in the prt-git-clone fixture', () => {
+    assertParsed('prt-git-clone.yml')
+    const f = checkoutFindings(check('prt-git-clone.yml'))
+    assert.equal(f.length, 5, rules(check('prt-git-clone.yml')).join(' '))
+    assert.ok(f.every((x) => x.tier === 'high'))
+    assert.equal(new Set(f.map((x) => x.line)).size, 5)
+  })
+
+  for (const command of GIT_STEPS) {
+    it(`should give wf-privileged-checkout for "${command}" under pull_request_target`, () => {
+      const found = rules(checkContent(stepRun(command, 'pull_request_target')))
+      assert.ok(found.includes('wf-privileged-checkout:high'), found.join(' '))
+    })
+
+    it(`should not give wf-privileged-checkout for "${command}" under pull_request`, () => {
+      assert.deepEqual(checkoutFindings(checkContent(stepRun(command, 'pull_request'))), [])
+    })
+  }
+
+  for (const trigger of ['pull_request_target', 'pull_request']) {
+    it(`should still give wf-untrusted-input for github.head_ref in a git clone run under ${trigger}`, () => {
+      const found = rules(checkContent(stepRun(GIT_STEPS[0], trigger)))
+      assert.ok(found.includes('wf-untrusted-input:high'), found.join(' '))
+    })
+  }
+
+  const OPTION_STEPS = [
+    'git -C repo clone ${{ github.event.pull_request.head.repo.clone_url }}',
+    'git -c protocol.version=2 fetch origin ${{ github.event.pull_request.head.sha }}',
+    'git --git-dir=.git -C "my repo" pull origin ${{ github.head_ref }}',
+    "git -C 'a b' --no-pager checkout refs/pull/1/head",
+    'git -c http.extraheader="AUTHORIZATION: basic $T" fetch origin pull/1/head:pr',
+    "git -c user.name='a b' fetch origin ${{ github.event.pull_request.head.sha }}",
+    'git -C "$(dirname "$x")" fetch origin pull/1/head',
+  ]
+  for (const command of OPTION_STEPS) {
+    it(`should give wf-privileged-checkout when global options come before the subcommand: "${command}"`, () => {
+      const found = rules(checkContent(stepRun(command, 'pull_request_target')))
+      assert.ok(found.includes('wf-privileged-checkout:high'), found.join(' '))
+    })
+  }
+
+  it('should check 1 MB of "git -c k=v" repeated on one line in under 1 s (GIT_CHECKOUT_CMD)', async () => {
+    assert.equal(await slowCheckReason(stepRun('git -c k=v '.repeat(MEGABYTE / 11 + 1), 'pull_request_target'), []), null)
+  })
+
+  it('should check 1 MB of "git -c k=a\\"" with unclosed quotes in under 1 s (GIT_CHECKOUT_CMD)', async () => {
+    assert.equal(await slowCheckReason(stepRun('git -c k=a" '.repeat(MEGABYTE / 12 + 1), 'pull_request_target'), []), null)
+  })
+
+  it('should give no wf-privileged-checkout for git clone of a fixed URL under pull_request_target', () => {
+    assert.deepEqual(checkoutFindings(checkContent(stepRun('git clone https://github.com/o/r', 'pull_request_target'))), [])
+  })
+
+  it('should check 1 MB of "git clone" and "git pull" repeated on one line in under 1 s (runChecksOutPr)', async () => {
+    assert.equal(await slowCheckReason(stepRun('git clone git pull '.repeat(MEGABYTE / 19 + 1), 'pull_request_target'), []), null)
+  })
+})
+
+describe('checkWorkflow: computed and quoted-numeric index into event fields (ESP-4, R3; AC3)', () => {
+  const UNTRUSTED = [
+    "github.event[format('{0}', 'pull_request')].title",
+    "github['event']['pull_request']['body']",
+    'github.event[inputs.key]',
+    'github[matrix.ctx].pull_request.title',
+    "github.event.commits['0'].message",
+  ]
+  const WIDE = ['github.event.commits[inputs.i].id', 'github.event.pull_request.labels[matrix.i].name']
+  const runWith = (expr) => stepRun(`echo \${{ ${expr} }}`)
+
+  for (const expr of UNTRUSTED) {
+    it(`should give wf-untrusted-input for ${expr} in a run step`, () => {
+      assert.deepEqual(rules(checkContent(runWith(expr))), ['wf-untrusted-input:high'])
+    })
+  }
+
+  for (const expr of WIDE) {
+    it(`should give wf-untrusted-input for the non-literal index in ${expr} (wide rule)`, () => {
+      assert.deepEqual(rules(checkContent(runWith(expr))), ['wf-untrusted-input:high'])
+    })
+  }
+
+  it('should give no wf-untrusted-input for a computed index used only in a step if', () => {
+    const content = "on: push\njobs:\n  a:\n    steps:\n      - if: github.event[format('{0}','pull_request')].title == 'x'\n        run: echo hi\n"
+    assert.deepEqual(parseWorkflowYaml(content).problems, [])
+    assert.deepEqual(rules(checkContent(content)), [])
+  })
+
+  for (const expr of ["format('{0}', 'github[bot]')", "hashfiles('github[0-9]/x')", "contains(github.actor, 'github[')"]) {
+    it(`should give no wf-untrusted-input for github[ inside a string literal: ${expr}`, () => {
+      assert.deepEqual(rules(checkContent(runWith(expr))), [])
+    })
+  }
+
+  it('should give wf-untrusted-input for a computed index between two literals that hold "[" and "]"', () => {
+    assert.deepEqual(rules(checkContent(runWith("format('{0}', 'x[', github[inputs.k], ']')"))), ['wf-untrusted-input:high'])
+  })
+
+  it('should give no wf-untrusted-input for a quoted-key or spaced literal path', () => {
+    assert.deepEqual(rules(checkContent(runWith("github['sha'] && github . event . commits[0] . id"))), [])
+  })
+
+  it('should still give wf-untrusted-input for a computed index after an unclosed quote (fail closed)', () => {
+    assert.deepEqual(rules(checkContent(runWith("format('x) && github.event[inputs.k]"))), ['wf-untrusted-input:high'])
+  })
+
+  it('should give no wf-untrusted-input for a literal numeric index to a safe field', () => {
+    assert.deepEqual(rules(checkContent(runWith('github.event.commits[0].id'))), [])
+  })
+
+  it('should still give wf-untrusted-input for a literal numeric index to commits message', () => {
+    assert.deepEqual(rules(checkContent(runWith('github.event.commits[0].message'))), ['wf-untrusted-input:high'])
+  })
+
+  it('should give wf-untrusted-input for each run step in the computed-index fixture', () => {
+    assertParsed('computed-index.yml')
+    assert.deepEqual(rules(check('computed-index.yml')), ['wf-untrusted-input:high', 'wf-untrusted-input:high', 'wf-untrusted-input:high'])
+  })
+
+  it('should flag 1 MB of unclosed "github.event[" in under 1 s (computed index)', async () => {
+    assert.equal(await slowCheckReason(stepRun(`\${{ ${'github.event['.repeat(MEGABYTE / 13 + 1)} }}`), ['wf-untrusted-input:high']), null)
+  })
+
+  it(`should flag 1 MB of unclosed "github['" in under 1 s (computed index)`, async () => {
+    assert.equal(await slowCheckReason(stepRun(`\${{ ${"github['".repeat(MEGABYTE / 8 + 1)} }}`), ['wf-untrusted-input:high']), null)
+  })
+
+  it('should check a 1 MB "github.event.a.a.a" chain in under 1 s (computed index)', async () => {
+    assert.equal(await slowCheckReason(stepRun(`\${{ github.event${'.a'.repeat(MEGABYTE / 2)} }}`), []), null)
   })
 })

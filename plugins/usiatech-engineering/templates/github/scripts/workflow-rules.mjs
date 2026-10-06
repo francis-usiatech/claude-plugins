@@ -18,8 +18,9 @@ const FIRST_PARTY_OWNERS = ['actions', 'github']
 
 // Event fields an outside contributor controls (GitHub's "untrusted input" list).
 // An index holds no "[" of its own, so a "[" that is never closed is given up at the next "[" instead of scanned to
-// the end of the expression from every "[" (quadratic).
-const ANY_INDEX = String.raw`(?:\[[^\][]*\]|\.\*)`
+// the end of the expression from every "[" (quadratic). ".0" is the form normalizeExpr gives ['0']; "\d+" must be
+// followed by ".", so it gives back at most its own digits.
+const ANY_INDEX = String.raw`(?:\[[^\][]*\]|\.\*|\.\d+)`
 const UNTRUSTED_EXPR = new RegExp(String.raw`\bgithub\.(?:head_ref\b|event\.(?:` + [
   String.raw`issue\.(?:title|body)`,
   String.raw`pull_request\.(?:title|body|head\.(?:ref|label|repo\.default_branch))`,
@@ -36,10 +37,14 @@ const WHOLE_EVENT_EXPR = /\bgithub(?:\.event(?:\.(?:pull_request(?:\.head(?:\.re
 
 // Refs and repositories that point at PR-controlled code (R7).
 const PR_REF_EXPR = /\bgithub\.(?:head_ref\b|event\.(?:pull_request\.(?:head\.(?:sha|ref|repo\.\w+)|merge_commit_sha)|workflow_run\.head_(?:sha|branch|repository)|number\b))|refs\/pull\//i
-// A run script checks out PR code with "gh pr checkout", or with a git fetch/checkout/switch followed, starting on the
-// same line, by a pull ref or a PR head expression.
+// A run script checks out PR code with "gh pr checkout", or with a git fetch/checkout/switch/clone/pull followed,
+// starting on the same line, by a pull ref or a PR head expression.
+// Up to 8 global options may come before the subcommand (git -C dir fetch, git -c k="a b" pull). An option value is a
+// run of quoted and unquoted chunks whose first character picks the branch, so each value is read only one way, and the
+// bound keeps a long run of options from being rescanned from every "git" in it (quadratic). A line continuation or a
+// 9th option still hides the subcommand.
 const GH_PR_CHECKOUT = /\bgh\s+pr\s+checkout\b/i
-const GIT_CHECKOUT_CMD = /\bgit\s+(?:fetch|checkout|switch)\b/gi
+const GIT_CHECKOUT_CMD = /\bgit(?:\s+-[\w-]+(?:=(?:"[^"\n]*"|'[^'\n]*'|[^\s"'])*|\s+(?!-)(?:"[^"\n]*"|'[^'\n]*'|[^\s"'])+)?){0,8}?\s+(?:fetch|checkout|switch|clone|pull)\b/gi
 const PULL_REF_AT = /(?:refs\/|[\s:])pull\//iy
 const PR_HEAD_EXPR_AT = /\$\{\{[^}]*\bgithub\.(?:head_ref|event\.pull_request\.head|event\.workflow_run\.head_|event\.(?:pull_request\.)?number\b)/iy
 const matchesAt = (re, s, at) => { re.lastIndex = at; return re.test(s) }
@@ -385,7 +390,6 @@ const normalizeExprs = (s) => {
   }
   return out + s.slice(last)
 }
-const expressions = (s) => exprSpans(s).map(({ inner }) => normalizeExpr(inner))
 // ANY_INDEX can't read an index with "[" or "]" inside it (commits[fromJSON('[0]')[0]]), so an indexed list of untrusted
 // objects followed anywhere later by one of their untrusted fields counts as untrusted (fail closed).
 const UNTRUSTED_LIST_INDEX = /\bgithub\.event\.(?:commits|pages|workflow_run\.pull_requests)\[/i
@@ -394,8 +398,27 @@ const unreadableIndex = (e) => {
   const list = UNTRUSTED_LIST_INDEX.exec(e)
   return list !== null && UNTRUSTED_ITEM_FIELD.test(e.slice(list.index + list[0].length)) ? `${list[0]}…` : undefined
 }
-const untrustedIn = (s) => expressions(s)
-  .map((e) => e.match(UNTRUSTED_EXPR)?.[0] ?? e.match(WHOLE_EVENT_EXPR)?.[0] ?? unreadableIndex(e))
+// A non-literal index (github.event[inputs.key], github[matrix.ctx]) can pick any field, so anywhere on a github path
+// it counts as untrusted (fail closed). The text is read as it was written (lowercased only), one token at a time: a
+// closed '…' literal is skipped whole, so 'github[bot]' is text, not a path; an unclosed quote matches nothing and is
+// stepped over (fail closed). It isn't read after normalizeExpr, whose ['key'] rewrite can join two literals around a
+// path ('x[', github[k], ']') and hide it. The path takes only literal segments (.name, .*, [0], [*], ['key']) and
+// can't fail once "github" has matched, so matchAll resumes after each path instead of rescanning it, and the "["
+// check reads only the spaces after it.
+const LITERAL_OR_GITHUB_PATH = /'[^']*'|(?<![\w.-])github\b(?:\s*\.\s*(?:[\w-]+|\*)|\s*\[\s*(?:\d+|\*|'[^']*'|"[^"]*")\s*\])*/g
+const OPEN_INDEX_AT = /\s*\[/y
+const computedIndex = (inner) => {
+  const e = inner.toLowerCase()
+  for (const token of e.matchAll(LITERAL_OR_GITHUB_PATH)) {
+    if (token[0][0] !== "'" && matchesAt(OPEN_INDEX_AT, e, token.index + token[0].length)) return `${token[0]}[…]`
+  }
+  return undefined
+}
+const untrustedIn = (s) => exprSpans(s)
+  .map(({ inner }) => {
+    const e = normalizeExpr(inner)
+    return e.match(UNTRUSTED_EXPR)?.[0] ?? e.match(WHOLE_EVENT_EXPR)?.[0] ?? unreadableIndex(e) ?? computedIndex(inner)
+  })
   .filter(Boolean)
 
 const triggersOf = (doc) => {
@@ -446,7 +469,18 @@ const privilegedRules = (doc, file, findings) => {
   for (const [id, job] of jobsOf(doc)) {
     const steps = stepsOf(job)
     const idx = steps.findIndex(checksOutPrCode)
-    if (idx === -1) continue
+    if (idx === -1) {
+      // A reusable workflow call can't be read from here, so with inherited secrets it is assumed to run PR code.
+      // Any non-null "uses" counts, so a malformed one fails closed.
+      if (job.uses != null && job.secrets === 'inherit') {
+        const called = typeof job.uses === 'string' ? job.uses : 'a reusable workflow'
+        findings.push({
+          rule: 'wf-privileged-secrets', tier: TIER.HIGH, file, line: lineOf(doc.jobs, id),
+          detail: `Job "${id}" calls ${called} with secrets: inherit under ${trigger}. The called workflow can't be checked here, so its secrets are assumed reachable by PR-controlled code. Pass only the secrets the called workflow needs, or call it from a pull_request workflow.`,
+        })
+      }
+      continue
+    }
     findings.push({
       rule: 'wf-privileged-checkout', tier: TIER.HIGH, file, line: lineOf(job.steps, job.steps.indexOf(steps[idx])),
       detail: `Job "${id}" runs on ${trigger} (base-repo token and secrets) and checks out PR-controlled code. Run untrusted code under pull_request instead, or split build and privileged steps.`,
