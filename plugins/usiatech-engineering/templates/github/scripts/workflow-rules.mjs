@@ -119,14 +119,22 @@ const stripComment = (s) => {
 
 const splitFlow = (inner, problem) => {
   const parts = []
-  let depth = 0, quote = null, start = 0
+  let depth = 0, quote = null, start = 0, closedAt = -1
   for (let i = 0; i < inner.length; i++) {
     const c = inner[i]
     if (quote) {
       if (quote === '"' && c === '\\') i++
       else if (quote === "'" && c === "'" && inner[i + 1] === "'") i++
-      else if (c === quote) quote = null
+      else if (c === quote) { quote = null; closedAt = i }
       continue
+    }
+    // A quote right after a ":" that follows a plain word (name:'x) is part of a plain scalar in YAML 1.2 but a value
+    // in YAML 1.1, so the entry boundaries are unclear. Only a quoted key ("a":"b") may be followed directly by one.
+    // The space skip stops at the last closing quote, so each run of spaces is walked at most once.
+    if ((c === '"' || c === "'") && inner[i - 1] === ':') {
+      let keyEnd = i - 2
+      while (keyEnd > closedAt && /\s/.test(inner[keyEnd])) keyEnd--
+      if (keyEnd !== closedAt) problem(`a quote directly after "${inner.slice(Math.max(start, i - 20), i)}" in a [ ] / { } collection is ambiguous`)
     }
     if ((c === '"' || c === "'") && opensQuote(inner, i, true)) quote = c
     else if (c === '[' || c === '{') depth++
@@ -146,24 +154,41 @@ const KEY_RE = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s"'[{#-](?:[^:]*[^\s:])?|-
 // problem(reason) is called for anything in the value the subset can't represent.
 const DOUBLE_QUOTED = /^"(?:[^"\\]|\\.)*"$/
 const SINGLE_QUOTED = /^'(?:[^']|'')*'$/
-// The escapes decoded here. GitHub decodes the rest too (\x24 and $ are "$"), so they are reported, not guessed.
-const ESCAPES = { n: '\n', t: '\t', '"': '"', '\\': '\\', '/': '/' }
+// Every YAML 1.2.2 escape (section 5.7), so a value is checked as GitHub reads it ("\x24{{" is "${{"). Anything else,
+// including a lone surrogate or a code point past U+10FFFF, is reported rather than guessed.
+const ESCAPES = {
+  0: '\0', a: '\x07', b: '\b', t: '\t', '\t': '\t', n: '\n', v: '\v', f: '\f', r: '\r', e: '\x1B', ' ': ' ', '"': '"',
+  '/': '/', '\\': '\\', N: '\x85', _: '\xA0', L: '\u2028', P: '\u2029',
+}
+// One left-to-right pass: a hex escape with the wrong digit count falls through to the single-character branch.
+const ESCAPE_RE = /\\(?:x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|[^])/g
+const decodeEscape = (m, problem) => {
+  if (m.length > 2) {
+    const code = parseInt(m.slice(2), 16)
+    if (code <= 0x10FFFF && (code < 0xD800 || code > 0xDFFF)) return String.fromCodePoint(code)
+  } else if (Object.hasOwn(ESCAPES, m[1])) return ESCAPES[m[1]]
+  problem(`escape "${m}" in a double-quoted string is not valid YAML`)
+  return m
+}
 
 const scalar = (raw, problem) => {
   const s = raw.trim()
   if (/^["']/.test(s) && !(s.startsWith('"') ? DOUBLE_QUOTED : SINGLE_QUOTED).test(s)) problem(`quoted string ${s.slice(0, 20)}… is not closed on its line`)
   if (/^[[{]/.test(s) && !s.endsWith(s[0] === '[' ? ']' : '}')) problem(`[ ] / { } collection ${s.slice(0, 20)}… is not closed on its line`)
   if (s.startsWith('"') && s.endsWith('"') && s.length >= 2) {
-    return s.slice(1, -1).replace(/\\(.)/g, (m, c) => {
-      if (Object.hasOwn(ESCAPES, c)) return ESCAPES[c]
-      problem(`escape "\\${c}" in a double-quoted string is not supported`)
-      return m
-    })
+    return s.slice(1, -1).replace(ESCAPE_RE, (m) => decodeEscape(m, problem))
   }
   if (s.startsWith("'") && s.endsWith("'") && s.length >= 2) return s.slice(1, -1).replace(/''/g, "'")
   const unsupported = unsupportedIn(s)
   if (unsupported) problem(unsupported)
-  if (s.startsWith('[') && s.endsWith(']')) return splitFlow(s.slice(1, -1), problem).map((p) => scalar(p, problem))
+  if (s.startsWith('[') && s.endsWith(']')) {
+    // A plain entry with ": " or a trailing ":" is a one-pair mapping in YAML ([a: b] is [{a: b}]), not a string.
+    // Quoted entries followed by ":" already fail as unclosed quoted strings.
+    return splitFlow(s.slice(1, -1), problem).map((p) => {
+      if (!/^["'[{]/.test(p) && /:(?:\s|$)/.test(p)) problem(`flow sequence entry "${p.slice(0, 20)}" is a key: value pair`)
+      return scalar(p, problem)
+    })
+  }
   if (s.startsWith('{') && s.endsWith('}')) {
     const obj = {}
     for (const part of splitFlow(s.slice(1, -1), problem)) {
@@ -186,6 +211,9 @@ export const parseWorkflowYaml = (text) => {
   const raw = String(text ?? '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n')
   const problems = []
   const problemAt = (i) => (reason) => problems.push({ line: i + 1, reason })
+  // YAML 1.1 reads NEL, LS and PS as line breaks and YAML 1.2 doesn't, so the lines around one are unclear. Their escapes
+  // ("\N", "\L", "\P") are fine; only the raw characters are reported.
+  const breakAt = raw.findIndex((line) => /[\x85\u2028\u2029]/.test(line))
   // Structural lines only; block scalars read raw lines directly.
   const indentOf = (s) => s.length - s.trimStart().length
   const isBlank = (i) => { const t = raw[i].trim(); return t === '' || t.startsWith('#') }
@@ -305,6 +333,10 @@ export const parseWorkflowYaml = (text) => {
     const rest = nextContent(end)
     if (rest < raw.length) problemAt(rest)('content from here on was not parsed (unexpected indentation or structure)')
     if (doc != null && (typeof doc !== 'object' || Array.isArray(doc))) problemAt(first)('the document is not a mapping')
+    // Once per file, unless that line is already reported for something else.
+    if (breakAt !== -1 && !problems.some((p) => p.line === breakAt + 1)) {
+      problemAt(breakAt)('a raw NEL, LS or PS character (U+0085, U+2028, U+2029) is read as a line break by some YAML parsers')
+    }
     return { doc: doc && typeof doc === 'object' && !Array.isArray(doc) ? doc : {}, problems }
   } catch (e) {
     // Deeply nested or pathological input: report it rather than crash the guard or CI.
@@ -382,8 +414,14 @@ const jobsOf = (doc) => (isObj(doc.jobs) ? Object.entries(doc.jobs).filter(([, j
 // Places where the rules expect a mapping or a list but the file has something else; jobsOf/stepsOf would skip them.
 const shapeProblems = (doc) => {
   const out = []
+  // triggersOf reads only the names in an "on" list, so a { } entry there would be skipped.
+  if (Array.isArray(doc.on)) {
+    doc.on.forEach((t, n) => {
+      if (typeof t !== 'string') out.push({ line: lineOf(doc.on, n) || lineOf(doc, 'on'), reason: `entry ${n + 1} of "on" is not an event name` })
+    })
+  }
   if (doc.jobs === undefined) return out
-  if (!isObj(doc.jobs)) return [{ line: lineOf(doc, 'jobs'), reason: '"jobs" is not a mapping' }]
+  if (!isObj(doc.jobs)) return [...out, { line: lineOf(doc, 'jobs'), reason: '"jobs" is not a mapping' }]
   for (const [id, job] of Object.entries(doc.jobs)) {
     if (!isObj(job)) { out.push({ line: lineOf(doc.jobs, id), reason: `job "${id}" is not a mapping` }); continue }
     if (job.steps === undefined) continue

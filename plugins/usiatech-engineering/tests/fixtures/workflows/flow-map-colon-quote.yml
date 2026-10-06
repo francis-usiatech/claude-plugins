@@ -1,0 +1,11 @@
+name: Flow map colon quote
+on:
+  pull_request_target:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - {name:'x, run: echo ${{ github.event.pull_request.title }}'}
