@@ -15,6 +15,8 @@ const FIXTURES = path.join(PLUGIN_ROOT, 'tests', 'fixtures', 'workflows')
 const DEP_FIXTURES = path.join(PLUGIN_ROOT, 'tests', 'fixtures', 'deps')
 // Fixtures that need a previous version of the file to compare against.
 const BASES = { 'perms-widened.yml': 'perms-base.yml' }
+// Fixtures the parser fails closed on (wf-unparsed): skipped by the full-parse check only, still compared guard vs CI.
+const EXPECTED_UNPARSED = ['flow-seq-pair.yml', 'flow-map-colon-quote.yml']
 const config = { governance: { askPaths: [] } }
 const env = { PR_BODY: '## Requirement references\n- FR-01\n', PR_LABELS: '[]', BASE_REF: 'develop', HEAD_REF: 'feature/x' }
 const read = (name) => readFileSync(path.join(FIXTURES, name), 'utf8')
@@ -63,11 +65,23 @@ describe('workflow rules: guard and CI parity (AC14)', () => {
   }
 
   it('should parse every fixture fully, so an empty result on both sides is not a shared parse failure', () => {
-    for (const name of fixtures) {
+    for (const name of fixtures.filter((f) => !EXPECTED_UNPARSED.includes(f))) {
       const { doc, problems } = parseWorkflowYaml(read(name))
       assert.deepEqual(problems, [], name)
       const jobs = Object.values(doc.jobs ?? {})
       assert.ok(jobs.length > 0 && jobs.every((j) => Array.isArray(j.steps) && j.steps.length > 0), `${name}: jobs or steps not parsed`)
+    }
+  })
+
+  it('should list only fixtures that exist as expected-unparsed, so the list cannot go stale silently', () => {
+    for (const name of EXPECTED_UNPARSED) assert.ok(fixtures.includes(name), `${name} is not a fixture`)
+  })
+
+  it('should report the expected-unparsed fixtures as wf-unparsed in both guard and CI', async () => {
+    for (const name of EXPECTED_UNPARSED) {
+      const file = `.github/workflows/${name}`
+      assert.match(await guardTiers(file, read(name), null), /wf-unparsed:high/, `guard: ${name}`)
+      assert.match(await ciTiers(file, read(name), null), /wf-unparsed:high/, `CI: ${name}`)
     }
   })
 

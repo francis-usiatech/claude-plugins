@@ -12,6 +12,7 @@ const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtur
 const fixture = (name) => readFileSync(path.join(FIXTURES, name), 'utf8')
 const check = (name, opts = {}) => checkWorkflow({ file: `.github/workflows/${name}`, content: fixture(name), ...opts })
 const rules = (findings) => findings.map((f) => `${f.rule}:${f.tier}`).sort()
+const unparsed = (content) => checkWorkflow({ file: '.github/workflows/x.yml', content }).filter((f) => f.rule === 'wf-unparsed')
 // A "no findings" result only means something if the parser actually read the jobs and their steps.
 const assertParsed = (name) => {
   const { doc, problems } = parseWorkflowYaml(fixture(name))
@@ -84,7 +85,6 @@ describe('parseYamlSubset', () => {
 
 describe('checkWorkflow: fails closed on YAML it cannot read', () => {
   const INJECT = 'echo "${{ github.event.issue.title }}"'
-  const unparsed = (content) => checkWorkflow({ file: '.github/workflows/x.yml', content }).filter((f) => f.rule === 'wf-unparsed')
   const cases = [
     ['an anchor', `on: issues\njobs:\n  a:\n    steps: &s\n      - run: ${INJECT}\n`, 4],
     ['an alias', `on: issues\nx: &cmd ${INJECT}\njobs:\n  a:\n    steps:\n      - run: *cmd\n`, 2],
@@ -122,16 +122,20 @@ describe('checkWorkflow: fails closed on YAML it cannot read', () => {
     assert.deepEqual(rules(checkWorkflow({ file: '.github/workflows/x.yml', content })), ['wf-untrusted-input:high'])
   })
 
-  it('should report escapes GitHub would decode into something the rules cannot see (G1)', () => {
+  it('should decode escapes and check what they spell (G1)', () => {
     const body = '{{ github.event.issue.body }}'
-    for (const content of [
-      String.raw`on: issues` + `\njobs:\n  a:\n    steps:\n      - run: "echo ` + String.raw`\x24` + body + `"\n`,
-      `on: issues\njobs:\n  a:\n    steps:\n      - run: "echo ` + String.raw`\u0024` + body + `"\n`,
-      `on: issues\njobs:\n  a:\n    steps:\n      - run: "echo ` + String.raw`\U00000024` + body + `"\n`,
-      `on: issues\njobs:\n  a:\n    steps:\n      - "r` + String.raw`\x75` + `n": echo \$${body}\n`,
-      `on: "pull_request_` + String.raw`\x74` + `arget"\njobs:\n  a:\n    steps:\n      - run: echo ok\n`,
-    ]) {
-      assert.ok(unparsed(content).length >= 1, content)
+    const cases = [
+      [String.raw`on: issues` + `\njobs:\n  a:\n    steps:\n      - run: "echo ` + String.raw`\x24` + body + `"\n`, 'wf-untrusted-input:high'],
+      [`on: issues\njobs:\n  a:\n    steps:\n      - run: "echo ` + String.raw`\u0024` + body + `"\n`, 'wf-untrusted-input:high'],
+      [`on: issues\njobs:\n  a:\n    steps:\n      - run: "echo ` + String.raw`\U00000024` + body + `"\n`, 'wf-untrusted-input:high'],
+      [`on: issues\njobs:\n  a:\n    steps:\n      - "r` + String.raw`\x75` + `n": echo \$${body}\n`, 'wf-untrusted-input:high'],
+      // Nothing privileged happens in this one, so it only has to parse; the next case shows the trigger is really seen.
+      [`on: "pull_request_` + String.raw`\x74` + `arget"\njobs:\n  a:\n    steps:\n      - run: echo ok\n`],
+      [`on: "pull_request_` + String.raw`\x74` + `arget"\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: \${{ github.event.pull_request.head.sha }}\n`, 'wf-privileged-checkout:high'],
+    ]
+    for (const [content, ...expected] of cases) {
+      assert.deepEqual(unparsed(content), [], content)
+      assert.deepEqual(rules(checkWorkflow({ file: '.github/workflows/x.yml', content })), expected, content)
     }
   })
 
@@ -420,7 +424,8 @@ describe('checkWorkflow: tiers', () => {
 // items, which have no flow form. A row that opens a quote must also parse with no problems.
 const QUOTE_TABLE = [
   { where: 'at the start of a line', before: '', opens: true },
-  { where: 'after a colon', before: 'a: ', opens: true },
+  // A flow mapping, not a sequence: "[a: x]" is an implicit pair in a sequence, which is reported as wf-unparsed.
+  { where: 'after a colon', before: 'a: ', opens: true, flow: '{' },
   { where: 'after a comma', before: 'a, ', opens: true },
   { where: 'after [', before: '[', opens: true },
   { where: 'after {', before: '{', opens: true },
@@ -448,7 +453,7 @@ const stripOpens = ({ before, item }, q) => {
   return parsed(text, '# y')
 }
 // Flow splitting: a quote that opens hides the "," inside it, so "x, y" stays in one piece.
-const flowOpens = ({ before }, q) => parsed(`k: [${before}${q}x, y${q}${closing(before)}]\n`, 'x, y')
+const flowOpens = ({ before, flow = '[' }, q) => parsed(`k: ${flow}${before}${q}x, y${q}${closing(before)}${CLOSERS[flow]}\n`, 'x, y')
 const expectedFor = (row) => ({ opens: row.opens, problems: [] })
 
 describe('quote opening: comment stripping and flow splitting', () => {
@@ -559,5 +564,173 @@ describe('checkWorkflow: worst-case input size', () => {
 
   it('should check a 1 MB expression of spaces between two names in under 1 s (normalizeExpr)', async () => {
     assert.equal(await slowCheckReason(stepRun(`\${{ a${' '.repeat(MEGABYTE)}b }}`), []), null)
+  })
+})
+
+describe('parseWorkflowYaml: YAML 1.2 double-quoted escapes (#44)', () => {
+  const BS = String.fromCharCode(92)
+  const TAB = String.fromCharCode(9)
+  const workflowWith = (source) => `on: push\nenv:\n  V: "${source}"\njobs:\n  a:\n    steps:\n      - run: echo ok\n`
+
+  // [escape source, expected decoded value], per YAML 1.2.2 section 5.7.
+  const VALID = [
+    [`${BS}0`, '\u0000'], [`${BS}a`, '\u0007'], [`${BS}b`, '\u0008'], [`${BS}t`, '\u0009'], [`${BS}${TAB}`, '\u0009'],
+    [`${BS}n`, '\u000A'], [`${BS}v`, '\u000B'], [`${BS}f`, '\u000C'], [`${BS}r`, '\u000D'], [`${BS}e`, '\u001B'],
+    [`${BS} `, ' '], [`${BS}"`, '"'], [`${BS}/`, '/'], [`${BS}${BS}`, BS], [`${BS}N`, '\u0085'], [`${BS}_`, '\u00A0'],
+    [`${BS}L`, '\u2028'], [`${BS}P`, '\u2029'], [`${BS}x41`, 'A'], [`${BS}u0041`, 'A'], [`${BS}U0001F600`, '\u{1F600}'],
+    [`a${BS}x41${BS}u00e9`, 'aA\u00e9'],
+  ]
+
+  it('should decode every YAML 1.2 escape to its spec value', () => {
+    for (const [source, expected] of VALID) {
+      const { doc, problems } = parseWorkflowYaml(workflowWith(source))
+      assert.deepEqual(problems, [], `escape ${JSON.stringify(source)} reported problems`)
+      assert.equal(doc.env?.V, expected, `escape ${JSON.stringify(source)}`)
+    }
+  })
+
+  it('should read the yaml-escapes fixture without any wf-unparsed finding', () => {
+    assert.deepEqual(parseWorkflowYaml(fixture('yaml-escapes.yml')).problems, [])
+    assert.deepEqual(check('yaml-escapes.yml').filter((f) => f.rule === 'wf-unparsed'), [])
+  })
+
+  it('should report invalid escapes as unparsed', () => {
+    const invalid = [`${BS}q`, `${BS}x4G`, `${BS}u004`, `${BS}uD800`, `${BS}U00110000`]
+    for (const source of invalid) {
+      const content = workflowWith(source)
+      assert.notDeepEqual(parseWorkflowYaml(content).problems, [], `escape ${JSON.stringify(source)} gave no problems`)
+      assert.equal(unparsed(content).length > 0, true, `escape ${JSON.stringify(source)} gave no wf-unparsed`)
+    }
+  })
+
+  it('should report wf-untrusted-input for an expression whose "$" is written as a hex escape', () => {
+    const content = `on: pull_request_target\njobs:\n  a:\n    steps:\n      - run: "echo ${BS}x24{{ github.event.pull_request.title }}"\n`
+    const found = checkWorkflow({ file: '.github/workflows/x.yml', content })
+    assert.equal(found.some((f) => f.rule === 'wf-untrusted-input'), true, rules(found).join(' '))
+  })
+})
+
+describe('checkWorkflow: flow forms that hide a key (#44, R5)', () => {
+  const checkoutSteps = '    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n'
+  const withOn = (on) => `on: ${on}\njobs:\n  a:\n    runs-on: ubuntu-latest\n${checkoutSteps}`
+  const withStep = (step) => `on: pull_request_target\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - ${step}\n`
+
+  it('should report wf-unparsed for a key: value pair inside a flow sequence under on', () => {
+    assert.equal(unparsed(withOn('[ pull_request_target: null ]')).length > 0, true)
+  })
+
+  it('should report wf-unparsed for the flow-seq-pair fixture', () => {
+    assert.equal(unparsed(fixture('flow-seq-pair.yml')).length > 0, true)
+  })
+
+  it('should still parse a plain flow sequence of trigger names and check it', () => {
+    const content = withOn('[push, pull_request_target]')
+    assert.deepEqual(parseWorkflowYaml(content).problems, [])
+    assert.equal(checkWorkflow({ file: '.github/workflows/x.yml', content }).some((f) => f.rule === 'wf-privileged-checkout'), true)
+  })
+
+  it('should report wf-unparsed for a flow mapping key whose colon is directly followed by a quote', () => {
+    assert.equal(unparsed(withStep("{name:'x, run: echo ${{ github.event.pull_request.title }}'}")).length > 0, true)
+  })
+
+  it('should report wf-unparsed for the flow-map-colon-quote fixture', () => {
+    assert.equal(unparsed(fixture('flow-map-colon-quote.yml')).length > 0, true)
+  })
+
+  it('should still parse a JSON-style flow mapping step', () => {
+    assert.deepEqual(parseWorkflowYaml(withStep('{"name":"x","run":"echo hi"}')).problems, [])
+  })
+
+  it('should still parse a flow mapping step with a space after the colon', () => {
+    assert.deepEqual(parseWorkflowYaml(withStep("{name: 'x', run: 'echo hi'}")).problems, [])
+  })
+})
+
+describe('checkWorkflow: flow mapping in a sequence and raw line-break characters (#44, AC6)', () => {
+  const NEL = '\u0085'
+  const LS = '\u2028'
+  const PS = '\u2029'
+  const jobs = 'jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n'
+  const withOn = (on) => `on: ${on}\n${jobs}`
+
+  it('should report wf-unparsed for a flow mapping entry inside a flow sequence under on', () => {
+    assert.equal(unparsed(withOn('[push, {pull_request_target: null}]')).length > 0, true)
+  })
+
+  it('should not report wf-unparsed for the same flow sequence without the mapping entry', () => {
+    assert.deepEqual(unparsed(withOn('[push, pull_request_target]')), [])
+  })
+
+  it('should report wf-unparsed for a raw NEL between a key and its value in a flow sequence', () => {
+    assert.equal(unparsed(withOn(`[ pull_request_target:${NEL}null ]`)).length > 0, true)
+  })
+
+  it('should report wf-unparsed for a raw NEL used as a line break between two lines', () => {
+    assert.equal(unparsed(`on: push${NEL}${jobs}`).length > 0, true)
+  })
+
+  it('should not report wf-unparsed for the same two lines separated by a newline', () => {
+    assert.deepEqual(unparsed(`on: push\n${jobs}`), [])
+  })
+
+  it('should report wf-unparsed for a raw LS used as a line break between two lines', () => {
+    assert.equal(unparsed(`on: push${LS}${jobs}`).length > 0, true)
+  })
+
+  it('should report wf-unparsed for a raw PS used as a line break between two lines', () => {
+    assert.equal(unparsed(`on: push${PS}${jobs}`).length > 0, true)
+  })
+
+  it('should report wf-unparsed for a raw NEL inside a comment', () => {
+    assert.equal(unparsed(`# note${NEL}more
+${withOn('push')}`).length > 0, true)
+  })
+
+  it('should report wf-unparsed for a raw LS inside a comment', () => {
+    assert.equal(unparsed(`# note${LS}more
+${withOn('push')}`).length > 0, true)
+  })
+
+  it('should report wf-unparsed for a raw PS inside a comment', () => {
+    assert.equal(unparsed(`# note${PS}more
+${withOn('push')}`).length > 0, true)
+  })
+
+  it('should report wf-unparsed for a raw LS inside a plain scalar value', () => {
+    assert.equal(unparsed(`name: a${LS}b
+${withOn('push')}`).length > 0, true)
+  })
+
+  it('should report wf-unparsed for a raw PS inside a plain scalar value', () => {
+    assert.equal(unparsed(`name: a${PS}b
+${withOn('push')}`).length > 0, true)
+  })
+
+  it('should not report wf-unparsed for the same comment and value without the line-break characters', () => {
+    assert.deepEqual(unparsed(`# note more
+name: a b
+${withOn('push')}`), [])
+  })
+
+  it('should report wf-unparsed for a raw NEL inside a double-quoted value', () => {
+    assert.equal(unparsed(`name: "a${NEL}b"
+${withOn('push')}`).length > 0, true)
+  })
+
+  it('should report wf-unparsed for a raw NEL inside a plain value', () => {
+    assert.equal(unparsed(`name: a${NEL}b
+${withOn('push')}`).length > 0, true)
+  })
+
+  it('should report wf-unparsed for a raw NEL inside a run block scalar line', () => {
+    const content = `on: push
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo a${NEL}b
+`
+    assert.equal(unparsed(content).length > 0, true)
   })
 })
