@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   globToRegExp, matchAny, isSecretEnvFile, findSecret, DENY_COMMANDS, ASK_COMMANDS,
-  DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, parseAllowlist, applyAllowlist, blockingFindings, formatFinding,
+  DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, parseAllowlist, applyAllowlist, allowlistWarnings, blockingFindings, formatFinding,
   checkWorkflow, isWorkflowPath,
 } from '../templates/github/scripts/governance-rules.mjs'
 
@@ -129,6 +129,67 @@ describe('findSecret', () => {
   })
 })
 
+describe('allowlist: workflow entries need one literal path (R8; AC8)', () => {
+  const WF = '.github/workflows/ci.yml'
+  const ignored = [
+    { rule: 'wf-unpinned-action', path: '.github/workflows/*' },
+    { rule: 'wf-unpinned-action', path: '**/*.yml' },
+    { rule: 'wf-unparsed', path: WF },
+  ]
+  const findingFor = (rule) => ({ rule, tier: rule === 'wf-unparsed' ? 'high' : 'warning', file: WF, line: 3, detail: 'x' })
+
+  it('should not suppress a workflow finding through a glob path or a wf-unparsed entry', () => {
+    for (const e of ignored) {
+      const { entries } = parseAllowlist([e])
+      assert.equal(applyAllowlist([findingFor(e.rule)], entries)[0].suppressed, false, JSON.stringify(e))
+    }
+  })
+
+  it('should treat a path with ?, [ or { as a glob', () => {
+    for (const p of ['.github/workflows/c?.yml', '.github/workflows/[c]i.yml', '.github/workflows/{ci,x}.yml']) {
+      const list = [{ rule: 'wf-unpinned-action', path: p }]
+      assert.equal(applyAllowlist([findingFor('wf-unpinned-action')], parseAllowlist(list).entries)[0].suppressed, false, p)
+      assert.equal(allowlistWarnings(list).length, 1, p)
+    }
+  })
+
+  it('should give one wf-allowlist-ignored warning per ignored entry, naming it by index, rule and path', () => {
+    const list = [{ rule: 'wf-write-all' }, ...ignored, { rule: 'wf-unpinned-action', path: WF }]
+    const warnings = allowlistWarnings(list)
+    assert.equal(warnings.length, 3)
+    warnings.forEach((w, i) => {
+      const e = ignored[i]
+      assert.deepEqual({ ...w, detail: undefined }, { rule: 'wf-allowlist-ignored', tier: 'warning', file: '.claude/engineering.json', line: 1, suppressed: false, detail: undefined })
+      assert.ok(w.detail.includes(`governance.allowlist[${i + 1}]`), w.detail)
+      assert.ok(w.detail.includes(e.rule) && w.detail.includes(e.path), w.detail)
+    })
+  })
+
+  it('should keep the config valid: the ignored entries are not config problems', () => {
+    assert.deepEqual(parseAllowlist(ignored).problems, [])
+  })
+
+  it('should still suppress a literal-path workflow entry, also when matched case-insensitively, with no warning', () => {
+    const list = [{ rule: 'wf-unpinned-action', path: '.GitHub/Workflows/CI.yml' }]
+    assert.equal(applyAllowlist([findingFor('wf-unpinned-action')], parseAllowlist(list).entries, true)[0].suppressed, true)
+    assert.deepEqual(allowlistWarnings(list), [])
+  })
+
+  it('should give no warning for sc-* or fp-* globs, a non-workflow package-only entry or a missing allowlist', () => {
+    assert.deepEqual(allowlistWarnings([{ rule: 'fp-no-assert', path: 'tests/*.test.mjs' }, { rule: 'sc-resolved', path: '**/package-lock.json' }, { rule: 'npm-install-script', package: 'x' }]), [])
+    assert.deepEqual(allowlistWarnings(undefined), [])
+  })
+
+  it('should warn on a package-only workflow entry, since workflow findings have no package to match', () => {
+    const list = [{ rule: 'wf-unpinned-action', package: 'actions/checkout' }]
+    assert.equal(applyAllowlist([findingFor('wf-unpinned-action')], parseAllowlist(list).entries)[0].suppressed, false)
+    const [w, ...rest] = allowlistWarnings(list)
+    assert.deepEqual(rest, [])
+    assert.equal(w?.rule, 'wf-allowlist-ignored')
+    assert.match(w.detail, /governance\.allowlist\[0\].*wf-unpinned-action.*package "actions\/checkout".*must name one file in "path"/)
+  })
+})
+
 describe('allowlist (R15)', () => {
   const finding = { rule: 'wf-unpinned-action', tier: 'warning', file: '.github/workflows/ci.yml', line: 7, detail: 'x' }
 
@@ -157,9 +218,14 @@ describe('allowlist (R15)', () => {
     assert.deepEqual(parseAllowlist(undefined), { entries: [], problems: [] })
   })
 
-  it('should mark a finding suppressed when rule and path glob both match', () => {
-    const { entries } = parseAllowlist([{ rule: 'wf-unpinned-action', path: '.github/workflows/*.yml' }])
+  it('should mark a finding suppressed when rule and path both match', () => {
+    const { entries } = parseAllowlist([{ rule: 'wf-unpinned-action', path: '.github/workflows/ci.yml' }])
     assert.equal(applyAllowlist([finding], entries)[0].suppressed, true)
+  })
+
+  it('should still let a path glob suppress a finding of a non-workflow rule', () => {
+    const { entries } = parseAllowlist([{ rule: 'fp-no-assert', path: 'tests/*.test.mjs' }])
+    assert.equal(applyAllowlist([{ ...finding, rule: 'fp-no-assert', file: 'tests/a.test.mjs' }], entries)[0].suppressed, true)
   })
 
   it('should change nothing when the rule or the path does not match', () => {

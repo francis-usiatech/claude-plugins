@@ -539,6 +539,40 @@ describe('evaluate: workflow content checks (R11, R15; AC9, AC12)', () => {
     assert.equal(r.findings[0].suppressed, false)
   })
 
+  describe('a glob or wf-unparsed allowlist entry (R8; AC8)', () => {
+    const unparsed = 'on: push\njobs:\n  a:\n    steps:\n      - run: "\\q"\n'
+    const cases = [
+      [{ rule: 'wf-unpinned-action', path: '.github/workflows/*' }, unpinned, null],
+      [{ rule: 'wf-unpinned-action', path: '**/*.yml' }, unpinned, null],
+      [{ rule: 'wf-unparsed', path: WF }, unparsed, 'ask'],
+    ]
+    for (const [entry, content, decision] of cases) {
+      it(`should not suppress, and should warn about, ${JSON.stringify(entry)}`, async () => {
+        const cfg = { governance: { askPaths: [], allowlist: [entry] } }
+        const r = (await run('Write', { file_path: WF, content }, { cfg }))
+        assert.equal(r.decision, decision, r.reason)
+        assert.equal(r.findings.find((f) => f.rule === entry.rule).suppressed, false)
+        const warnings = r.findings.filter((f) => f.rule === 'wf-allowlist-ignored')
+        assert.equal(warnings.length, 1)
+        assert.ok(warnings[0].detail.includes('governance.allowlist[0]') && warnings[0].detail.includes(entry.path), warnings[0].detail)
+        assert.equal(logEntries(r, 'Write').filter((e) => e.rule === 'wf-allowlist-ignored').length, 1)
+        if (decision === 'ask') assert.match(r.reason, /\[wf-allowlist-ignored, warning\] \.claude\/engineering\.json:1/)
+        assert.doesNotMatch(r.reason, /Config problem/)
+      })
+    }
+
+    it('should give no warning for a literal-path entry, which still suppresses', async () => {
+      const cfg = { governance: { askPaths: [], allowlist: [{ rule: 'wf-unpinned-action', path: WF }] } }
+      const r = (await run('Write', { file_path: WF, content: unpinned }, { cfg }))
+      assert.deepEqual(r.findings.map((f) => `${f.rule}:${f.suppressed}`), ['wf-unpinned-action:true'])
+    })
+
+    it('should not warn on an edit to a file that is not a workflow', async () => {
+      const cfg = { governance: { askPaths: [], allowlist: [cases[0][0]] } }
+      assert.equal((await run('Write', { file_path: 'src/a.ts', content: 'export {}\n' }, { cfg })), null)
+    })
+  })
+
   it('should keep a secret deny ahead of workflow findings', async () => {
     const r = (await run('Write', { file_path: WF, content: injection + '# AKIA' + 'Q'.repeat(16) + '\n' }))
     assert.equal(r.decision, 'deny')

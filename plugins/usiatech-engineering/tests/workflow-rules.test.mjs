@@ -414,6 +414,49 @@ describe('checkWorkflow: pinning and permissions (R10; AC8)', () => {
   })
 })
 
+describe('checkWorkflow: widened permissions against an unparsable old version (ESP-5, R10; AC10)', () => {
+  // The invalid escape gives wf-unparsed, so the old version can't be fully read.
+  const base = 'on: push\njobs:\n  a:\n    steps:\n      - run: "\\q"\n'
+  const job = (id, perms) => `  ${id}:\n${perms ? `    permissions:\n      ${perms}\n` : ''}    steps:\n      - run: echo ok\n`
+  const check = (content) => checkWorkflow({ file: '.github/workflows/x.yml', content, base })
+
+  it('should warn when the new version adds contents: write, saying the old version could not be parsed', () => {
+    assert.ok(unparsed(base).length > 0)
+    const f = check(`on: push\njobs:\n${job('a', 'contents: write')}`)
+    assert.deepEqual(rules(f), ['wf-permissions-widened:warning'])
+    assert.match(f[0].detail, /contents: none → write/)
+    assert.match(f[0].detail, /old version could not be parsed/)
+  })
+
+  it('should compare every level as granting no permissions: the workflow and a job the old version lacks', () => {
+    const f = check(`on: push\npermissions: read-all\njobs:\n${job('b', 'issues: write')}`)
+    assert.deepEqual(f.map((x) => `${x.rule}:${x.line}`), ['wf-permissions-widened:2', 'wf-permissions-widened:5'])
+    assert.match(f[0].detail, /all scopes: none → read.*old version could not be parsed/)
+    assert.match(f[1].detail, /issues: none → write.*old version could not be parsed/)
+  })
+
+  it('should give nothing when the new version has no permissions block at any level', () => {
+    assert.deepEqual(check(`on: push\njobs:\n${job('a')}`), [])
+  })
+
+  it('should also treat an old version that parses but has a shape problem as unreadable', () => {
+    const shapeBase = 'on: push\njobs:\n  a:\n    permissions:\n      contents: write\n    steps:\n      - echo hi\n'
+    assert.deepEqual(parseWorkflowYaml(shapeBase).problems, [])
+    assert.ok(unparsed(shapeBase).length > 0)
+    const f = checkWorkflow({ file: '.github/workflows/x.yml', content: `on: push\njobs:\n${job('a', 'contents: write')}`, base: shapeBase })
+    assert.deepEqual(rules(f), ['wf-permissions-widened:warning'])
+    assert.match(f[0].detail, /contents: none → write.*old version could not be parsed/)
+  })
+
+  it('should warn on a dropped block that the readable part of the old version still shows, at either level', () => {
+    const baseWithBlocks = `on: push\npermissions:\n  contents: read\njobs:\n${job('a', 'issues: read')}      - run: "\\q"\n`
+    assert.ok(unparsed(baseWithBlocks).length > 0)
+    const f = checkWorkflow({ file: '.github/workflows/x.yml', content: `on: push\njobs:\n${job('a')}`, base: baseWithBlocks })
+    assert.deepEqual(f.map((x) => `${x.rule}:${x.line}`), ['wf-permissions-widened:1', 'wf-permissions-widened:3'])
+    for (const x of f) assert.match(x.detail, /dropped its explicit permissions block.*old version could not be fully parsed/)
+  })
+})
+
 describe('checkWorkflow: tiers', () => {
   it('should only use the two documented tiers', () => {
     assert.deepEqual(Object.values(TIER).sort(), ['high', 'warning'])

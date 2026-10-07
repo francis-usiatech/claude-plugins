@@ -200,6 +200,7 @@ describe('governance-checks: workflow content (R12, R15; AC8, AC10, AC12)', () =
     const r = await runChecks({ repo, config: noAsk })
     assert.equal(r.code, 1, r.stdout)
     assert.match(r.stdout, /\[wf-untrusted-input, high\] \.github\/workflows\/ci\.yml:5/)
+    assert.match(r.stdout, /allowlist them in the base-branch \.claude\/engineering\.json \(a workflow entry needs one literal file path, and wf-unparsed cannot be allowlisted\)/)
   })
 
   it('should pass a warning-only change outside askPaths and list the warning', async () => {
@@ -245,6 +246,33 @@ describe('governance-checks: workflow content (R12, R15; AC8, AC10, AC12)', () =
     assert.equal(r.code, 1, r.stdout)
   })
 
+  describe('a glob or wf-unparsed allowlist entry (R8; AC8)', () => {
+    const unparsed = 'on: push\njobs:\n  a:\n    steps:\n      - run: "\\q"\n'
+    const warning = /\[wf-allowlist-ignored, warning\] \.claude\/engineering\.json:1 [^\n]*governance\.allowlist\[0\]/g
+    const cases = [
+      [{ rule: 'wf-unpinned-action', path: '.github/workflows/*' }, unpinned, 0],
+      [{ rule: 'wf-unpinned-action', path: '**/*.yml' }, unpinned, 0],
+      [{ rule: 'wf-unparsed', path: WF }, unparsed, 1],
+    ]
+    for (const [entry, content, code] of cases) {
+      it(`should not suppress, and should warn once about, ${JSON.stringify(entry)}`, async () => {
+        const repo = makeRepo({ headFiles: { [WF]: content, '.github/workflows/other.yml': content } })
+        const r = await runChecks({ repo, config: { governance: { askPaths: [], allowlist: [entry] } } })
+        assert.equal(r.code, code, r.stdout)
+        assert.equal(r.stdout.match(warning)?.length, 1, r.stdout)
+        assert.match(r.stdout, new RegExp(`\\[${entry.rule}, (warning|high)\\] \\.github/workflows/ci\\.yml`))
+        assert.doesNotMatch(r.stdout, /Base-branch \.claude\/engineering\.json/)
+      })
+    }
+
+    it('should not warn when no workflow changed', async () => {
+      const repo = makeRepo({ headFiles: { 'src/a.ts': 'x' } })
+      const r = await runChecks({ repo, config: { governance: { askPaths: [], allowlist: [cases[0][0]] } } })
+      assert.equal(r.code, 0, r.stdout)
+      assert.doesNotMatch(r.stdout, /wf-allowlist-ignored/)
+    })
+  })
+
   it('should fail with a readable reason for an invalid allowlist', async () => {
     const repo = makeRepo({ headFiles: { 'src/a.ts': 'x' } })
     const r = await runChecks({ repo, config: { governance: { allowlist: [{ rule: 'wf-write-all' }] } } })
@@ -277,6 +305,19 @@ describe('governance-checks: workflow content (R12, R15; AC8, AC10, AC12)', () =
     const r = await runChecks({ repo, config: noAsk })
     assert.match(r.stdout, /wf-permissions-widened/)
   })
+
+  it('should check a file renamed into .github/workflows from elsewhere as a new workflow (R9; AC9)', async () => {
+    const old = 'on: push\npermissions: write-all\njobs:\n  a:\n    permissions:\n      contents: read\n    steps:\n      - run: echo one\n      - run: echo two\n      - run: echo three\n'
+    const moved = old.replace('contents: read', 'contents: write')
+    const wfLines = (stdout) => stdout.split('\n').filter((l) => /\[wf-/.test(l)).map((l) => l.replace(/^.*?\[/, '['))
+    const renamed = await runChecks({ repo: makeRepo({ baseFiles: { 'docs/x.yml': old }, headFiles: { 'docs/x.yml': null, '.github/workflows/x.yml': moved } }), config: noAsk })
+    const added = await runChecks({ repo: makeRepo({ headFiles: { '.github/workflows/x.yml': moved } }), config: noAsk })
+    // One change record: git saw a rename, not a delete plus an add.
+    assert.match(renamed.stdout, /Files changed: 1\n/, renamed.stdout)
+    assert.doesNotMatch(renamed.stdout, /wf-permissions-widened/)
+    assert.deepEqual(wfLines(renamed.stdout), wfLines(added.stdout))
+    assert.ok(wfLines(added.stdout).some((l) => l.startsWith('[wf-write-all')), added.stdout)
+  })
 })
 
 describe('governance-checks: test content (R10; AC9, D12)', () => {
@@ -288,6 +329,7 @@ describe('governance-checks: test content (R10; AC9, D12)', () => {
     const r = await runChecks({ repo })
     assert.equal(r.code, 1, r.stdout)
     assert.match(r.stdout, /Test changes have 1 high-risk finding\(s\): \[fp-only, high\] tests\/math\.test\.mjs:4 /)
+    assert.match(r.stdout, /allowlist them in the base-branch \.claude\/engineering\.json, or/)
   })
 
   it('should pass a change whose only fake-pass findings are warnings, and list them', async () => {
