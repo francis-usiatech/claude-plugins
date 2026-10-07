@@ -41,7 +41,7 @@ Start from `templates/engineering.json` (or run the `setup-engineering` skill).
 | `allowEnvExample` | Allow edits to `.env.example` (default `true`) |
 | `userGuide` | Guide folder, changelog file, optional manifest |
 | `reviewers` | Agents `release` runs before committing, in two stages: `governance-reviewer` first, then the rest in parallel (default adds `convention-reviewer`, `silent-failure-reviewer`, `security-reviewer`; repo-specific ones allowed) |
-| `governance` | `protectedBranches`, `askPaths`, `requirePlan`, extra `denyCommands` / `askCommands` (regex + reason), `allowlist` (see below), `rulesFile` |
+| `governance` | `protectedBranches`, `askPaths`, `requirePlan`, extra `denyCommands` / `askCommands` (regex + reason), `allowlist` (see below), `trustedWritePaths` and `planEdits` (see "Trusted writes" below), `rulesFile` |
 
 ## Governance model (layered)
 
@@ -89,7 +89,8 @@ The AI review job runs with `--setting-sources user`, so a PR's own `.claude/set
   - commits or merges on protected branches, and pushes to them
   - edits to `.claude/**`, AGENTS.md, CLAUDE.md, REVIEW.md, `.github/**`, `package.json`
   - edits that look like a hard-coded credential (`password = "…"`, `apiKey: "…"`)
-  - edits outside the approved plan, and edits to the plan itself (`.claude/plans/active.md`)
+  - edits outside the approved plan, and edits to the plan itself (`.claude/plans/active.md`) that change more than evidence, task ticks or the change log (see "Trusted writes" below)
+  - edits outside the project folder, except the trusted write paths below
   - any action while `.claude/engineering.json` is malformed or has an invalid command pattern (default deny rules still apply)
 
 **Workflow content checks** (`templates/github/scripts/workflow-rules.mjs`). The guard runs them on the post-edit content of any `.github/workflows/*.yml` edit, and `governance-checks` runs them on each changed workflow in a PR. Both compare against the previous version: the file on disk locally, the base-branch file in CI.
@@ -143,6 +144,37 @@ To accept a known finding, add an entry to `governance.allowlist`: `{ "rule": "w
 All default rules live in one module, `templates/github/scripts/governance-rules.mjs`. The guard hook imports the plugin's copy. `setup-engineering` copies it into `.github/scripts/` with the CI scripts, which read the repo's copy. The two match at install time. After upgrading the plugin, re-copy `templates/github/scripts/` or the PR checks keep the older rules (from 0.9.0 the fake-pass checks need `fake-pass-rules.mjs` and the updated `governance-checks.mjs`).
 
 Path checks ignore case on Windows and macOS (`.ENV` is treated as `.env`), and CI always ignores case. A config value of the wrong type (e.g. a string where a list is expected) is reported the same way as malformed JSON, and the defaults apply for that key. The guard turns the problem into a confirmation prompt. The CI checks (`governance-checks`) fail with the problem named, so a broken base-branch config can't pass a PR.
+
+**Trusted writes** (ESP-9). Some writes carry no risk, so the guard doesn't ask for them. It still logs each one as `"decision": "trusted"`, and `governance-reviewer` lists them all.
+- **`governance.trustedWritePaths`**: writes outside the project folder that go through. The default is:
+  - `$TMP/claude/{project}/**`, the session scratchpad;
+  - `~/.claude/projects/{project}/memory/**`;
+  - `~/.claude/session-data/**`.
+
+  `$TMP` is the OS temp folder and `~` the home folder. `{project}` is the project folder as Claude Code names it: each character other than `A-Z`, `a-z` or `0-9` becomes `-`, so `c:\Users\me\src\app` becomes `c--Users-me-src-app`. Memory and the scratchpad are trusted for the current project only, because memory is loaded into later sessions as instructions.
+  - A repo list replaces the default, and `[]` makes every outside write ask again.
+  - An entry must start with `$TMP/` and name a folder below it, start with `~/.claude/projects/` and name a folder below it, or start with `~/.claude/session-data/`. Any other entry (`~/.claude/**`, `~/.ssh/**`, `$TMP/**`, an absolute path) is a config problem. So is an entry with `\` or `:`, or with a folder name that is empty or ends in `.` or a space (`$TMP/./**`, `$TMP//**`).
+  - Inside a trusted folder these still ask: `settings.json`, `settings.local.json`, `.mcp.json`, `.claude.json`, `CLAUDE.md`, `AGENTS.md`, and anything under a `.git`, `hooks`, `plugins` or `.ssh` folder. So does any name with `:` or ending in `.` or a space, since Windows reads `settings.json.` and `settings.json::$DATA` as `settings.json`, a Windows device name (`CON`, `NUL`, `COM1`…), and an existing file with more than one hard link.
+  - The target is compared by its real path, after following links from the nearest existing folder. A trusted folder that is itself a link to somewhere else is not trusted, and neither is a link to a missing target. If the real path can't be worked out, the write asks.
+  - If the guard can't log a trusted write to `.claude/governance-log.jsonl`, the write asks instead, since the log is its only record.
+  - Env files and secrets are refused there as they are anywhere.
+  - If Claude Code keeps its scratchpad somewhere other than `$TMP/claude/{project}` on your system, add that folder to the list.
+- **`governance.planEdits`**, `"allow"` (default) or `"ask"`. With `"allow"`, an edit to an existing `.claude/plans/active.md` goes through when the only changes are:
+  - lines in the Change log;
+  - the `[ ]`/`[x]` state of lines under Tasks;
+  - `Evidence:` bullets (and the lines indented under them) in the Acceptance criteria section.
+
+  Anything else asks: a change to Files, AC text, task text or a heading, a new plan, or an edit whose result can't be worked out. `"ask"` keeps the 0.5.1 behaviour, where every plan edit asks.
+
+These keys only stop the guard's prompt. Claude Code still asks before writing outside the folders it was started with. To stop that prompt too, add matching rules to your user `~/.claude/settings.json`, using the real folder names:
+
+```json
+{ "permissions": { "allow": [
+  "Edit(//c/Users/<you>/AppData/Local/Temp/claude/**)",
+  "Edit(~/.claude/projects/<project>/memory/**)",
+  "Edit(~/.claude/session-data/**)"
+] } }
+```
 
 The guard fails open on internal errors, so a bug can't lock a session. Each failure is logged as `"decision": "error"` in `governance-log.jsonl` and printed to stderr, and the reviewer reports these entries. `ask` depends on Claude Code's permission prompt: in a fully auto-approved session, rely on `deny` rules and the reviewer.
 
