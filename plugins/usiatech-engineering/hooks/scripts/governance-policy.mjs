@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import {
   matchAny, isSecretEnvFile, escapeRegExp, isPlainObject, isStringArray, findSecret, DENY_COMMANDS, ASK_COMMANDS,
-  DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH, parseAllowlist,
+  DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH, parseAllowlist, allowlistWarnings,
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, applyAllowlist, blockingFindings, formatFinding, TIER,
 } from '../../templates/github/scripts/governance-rules.mjs'
 import { lookupTargets, runLookups, createLookups } from '../../templates/github/scripts/supply-chain-lookups.mjs'
@@ -84,6 +84,8 @@ export const sanitizeConfig = (raw) => {
   const repoRules = { deny: compile('denyCommands', 'repo deny rule'), ask: compile('askCommands', 'repo ask rule') }
   const allow = parseAllowlist(gov.allowlist)
   problems.push(...allow.problems)
+  // R8: named by their index in the raw list, so worked out before the invalid entries are dropped.
+  gov.allowlistWarnings = allowlistWarnings(gov.allowlist)
   gov.allowlist = allow.entries
   return { cfg, gov, repoRules, problems }
 }
@@ -207,8 +209,9 @@ const unreadableEdit = (rule, rel, checks) =>
 // R11: the shared workflow rules run on the post-edit content; the base is the file on disk before the edit.
 const workflowFindings = (rel, tool, ti, gov, root, p, ic) => {
   const { before, content } = readEdit(rel, tool, ti, root, p)
-  if (content == null) return [unreadableEdit('wf-unparsed', rel, 'workflow')]
-  return applyAllowlist(checkWorkflow({ file: rel, content, base: before }), gov.allowlist || [], ic)
+  const findings = content == null ? [unreadableEdit('wf-unparsed', rel, 'workflow')]
+    : applyAllowlist(checkWorkflow({ file: rel, content, base: before }), gov.allowlist || [], ic)
+  return [...findings, ...(gov.allowlistWarnings || [])]
 }
 
 // B9: offline dependency rules, then the registry and advisory lookups under the guard's deadline (R13, R14).
