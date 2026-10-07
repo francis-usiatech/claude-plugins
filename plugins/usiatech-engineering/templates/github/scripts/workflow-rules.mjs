@@ -549,7 +549,13 @@ const permsOf = (v) => {
 }
 const levelOf = (perms, scope) => (Object.hasOwn(perms, scope) ? perms[scope] : perms['*']) ?? 'none'
 
-const permissionRules = (doc, base, file, findings) => {
+// R10: an old version the rules can't fully read counts as granting no permissions at every level, so only a block
+// in the new version that grants something is reported, with a note saying what it was compared against. A block
+// the readable part of the old version still shows is reported when the new version drops it.
+const UNREADABLE_BASE_NOTE = ' The old version could not be parsed, so it was compared as granting no permissions.'
+const UNREADABLE_BASE_DROPPED_NOTE = ' The old version could not be fully parsed; its readable part had this block.'
+
+const permissionRules = (doc, base, baseUnreadable, file, findings) => {
   const levels = [{ where: 'workflow', node: doc, baseNode: base, fallbackLine: 1 }]
   for (const [id, job] of jobsOf(doc)) {
     levels.push({ where: `job "${id}"`, node: job, baseNode: isObj(base?.jobs?.[id]) ? base.jobs[id] : null, fallbackLine: lineOf(doc.jobs, id) })
@@ -560,11 +566,13 @@ const permissionRules = (doc, base, file, findings) => {
       findings.push({ rule: 'wf-write-all', tier: TIER.WARNING, file, line, detail: `The ${where} grants permissions: write-all. List only the scopes it needs.` })
       continue
     }
-    const before = baseNode ? permsOf(baseNode.permissions) : null
+    const baseBlock = baseNode ? permsOf(baseNode.permissions) : null
+    const before = baseUnreadable ? {} : baseBlock
     if (!before) continue
     const after = permsOf(node.permissions)
     if (!after) {
-      findings.push({ rule: 'wf-permissions-widened', tier: TIER.WARNING, file, line, detail: `The ${where} dropped its explicit permissions block, so the repo default token permissions apply.` })
+      if (!baseBlock) continue
+      findings.push({ rule: 'wf-permissions-widened', tier: TIER.WARNING, file, line, detail: `The ${where} dropped its explicit permissions block, so the repo default token permissions apply.${baseUnreadable ? UNREADABLE_BASE_DROPPED_NOTE : ''}` })
       continue
     }
     const scopes = [...new Set([...Object.keys(after), ...Object.keys(before)])].filter((s) => s !== '*')
@@ -572,7 +580,7 @@ const permissionRules = (doc, base, file, findings) => {
       .map((s) => `${s}: ${levelOf(before, s)} → ${levelOf(after, s)}`)
     if (after['*'] && RANK[after['*']] > RANK[before['*'] ?? 'none']) widened.push(`all scopes: ${before['*'] ?? 'none'} → ${after['*']}`)
     if (widened.length) {
-      findings.push({ rule: 'wf-permissions-widened', tier: TIER.WARNING, file, line, detail: `The ${where} widens token permissions (${widened.join(', ')}).` })
+      findings.push({ rule: 'wf-permissions-widened', tier: TIER.WARNING, file, line, detail: `The ${where} widens token permissions (${widened.join(', ')}).${baseUnreadable ? UNREADABLE_BASE_NOTE : ''}` })
     }
   }
 }
@@ -585,7 +593,8 @@ const permissionRules = (doc, base, file, findings) => {
  */
 export const checkWorkflow = ({ file, content, base = null }) => {
   const { doc, problems } = parseWorkflowYaml(content)
-  const baseDoc = base == null ? null : parseYamlSubset(base)
+  const baseParsed = base == null ? null : parseWorkflowYaml(base)
+  const baseUnreadable = !!baseParsed && (baseParsed.problems.length > 0 || shapeProblems(baseParsed.doc).length > 0)
   const findings = []
   // Fail closed: a file the rules can't fully read is high risk, since the part they skipped may be the dangerous one.
   for (const { line, reason } of [...problems, ...shapeProblems(doc)]) {
@@ -594,6 +603,6 @@ export const checkWorkflow = ({ file, content, base = null }) => {
   privilegedRules(doc, file, findings)
   untrustedInputRules(doc, file, findings)
   unpinnedRules(doc, file, findings)
-  permissionRules(doc, baseDoc, file, findings)
+  permissionRules(doc, baseParsed?.doc ?? null, baseUnreadable, file, findings)
   return findings
 }

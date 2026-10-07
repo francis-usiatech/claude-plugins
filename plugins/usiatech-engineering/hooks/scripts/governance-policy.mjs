@@ -4,18 +4,90 @@
 // Decisions: deny (refused) · ask (user must confirm) · null (allow, normal permission flow continues)
 // Repo config: .claude/engineering.json  (keys: protectedPaths, immutableWhenCommitted, allowEnvExample, governance{...})
 // Approved plan: .claude/plans/active.md  ("## Files" section lists paths/globs in scope)
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, lstatSync, statSync, realpathSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
+import os from 'node:os'
 import path from 'node:path'
 import {
   matchAny, isSecretEnvFile, escapeRegExp, isPlainObject, isStringArray, findSecret, DENY_COMMANDS, ASK_COMMANDS,
-  DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH, parseAllowlist,
+  DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH, parseAllowlist, allowlistWarnings,
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, applyAllowlist, blockingFindings, formatFinding, TIER,
 } from '../../templates/github/scripts/governance-rules.mjs'
 import { lookupTargets, runLookups, createLookups } from '../../templates/github/scripts/supply-chain-lookups.mjs'
 
 const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit']
 const CASE_INSENSITIVE_FS = ['win32', 'darwin'].includes(process.platform)
+
+// ESP-9: writes outside the project that need no prompt (still logged, as decision "trusted"). $TMP is the OS temp
+// folder, ~ the home folder, {project} the project folder as Claude Code names it (each character other than
+// A-Z, a-z, 0-9 becomes "-"). Memory and the scratchpad are trusted for this project only.
+export const DEFAULT_TRUSTED_WRITE_PATHS = ['$TMP/claude/{project}/**', '~/.claude/projects/{project}/memory/**', '~/.claude/session-data/**']
+// A repo list may only name folders under these roots, with at least minLiteral plain folder names after the root,
+// so it can't trust Claude Code's own config (~/.claude/**), keys (~/.ssh) or the whole temp folder.
+const TRUSTED_ROOTS = [{ prefix: '$TMP/', place: 'tmpDir', minLiteral: 1 }, { prefix: '~/.claude/projects/', place: 'homeDir', minLiteral: 1 }, { prefix: '~/.claude/session-data/', place: 'homeDir', minLiteral: 0 }]
+// Never trusted inside a trusted folder: agent config, git internals, hooks, plugins and keys (compared lower-case).
+const NEVER_TRUSTED_NAMES = ['settings.json', 'settings.local.json', '.mcp.json', '.claude.json', 'claude.md', 'agents.md']
+const NEVER_TRUSTED_SEGMENTS = ['.git', 'hooks', 'plugins', '.ssh']
+const GLOB_CHARS = /[*?[{]/
+
+const trustedEntryProblem = (e) => {
+  if (typeof e !== 'string') return 'must be a string'
+  const root = TRUSTED_ROOTS.find((r) => e.startsWith(r.prefix))
+  if (!root) return `must start with ${TRUSTED_ROOTS.map((r) => r.prefix).join(', ')} ("${e}")`
+  // On Windows "\" also separates folders and a name ending in "." or a space loses it ("..." is ".."), so either
+  // could climb out of the root once the entry is joined to a real path.
+  if (/[\\:]/.test(e)) return `must use "/" only, with no "\\" or ":" ("${e}")`
+  const segs = e.slice(root.prefix.length).split('/')
+  if (segs.some((s) => !s || /[. ]$/.test(s))) return `must not have an empty folder name or one ending in "." or a space ("${e}")`
+  const literal = segs.findIndex((s) => GLOB_CHARS.test(s.replaceAll('{project}', '')))
+  if ((literal === -1 ? segs.length : literal) < root.minLiteral) return `must name a folder below ${root.prefix} ("${e}")`
+  return null
+}
+
+// The real path of a file that may not exist yet: its nearest existing parent is resolved, so a link anywhere on
+// the way is followed. With a non-native path module (tests), paths are compared as written.
+const realOf = (target, p) => {
+  if (p !== path) return target
+  const tail = []
+  let cur = target
+  while (!existsSync(cur)) {
+    // existsSync follows links, so a link to a missing target looks missing; writing through it creates the target.
+    if (lstatSync(cur, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Error(`${cur} is a link to a missing target`)
+    const parent = p.dirname(cur)
+    if (parent === cur) return target
+    tail.unshift(p.basename(cur))
+    cur = parent
+  }
+  return p.join(realpathSync.native(cur), ...tail)
+}
+
+// The trusted entry an outside-project write falls under, or null. Only the temp and home folders themselves are
+// resolved to real paths, so a link inside them (e.g. session-data pointing at ~/.claude) is never trusted.
+const trustedWriteEntry = (file, gov, root, p, ic, places) => {
+  const real = realOf(p.resolve(root, file), p)
+  // A hard link shares its content with a file elsewhere, which a write would change in place.
+  if (p === path && (statSync(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1) return null
+  const project = root.replace(/[^A-Za-z0-9]/g, '-')
+  for (const entry of gov.trustedWritePaths ?? DEFAULT_TRUSTED_WRITE_PATHS) {
+    const { prefix, place } = TRUSTED_ROOTS.find((r) => entry.startsWith(r.prefix))
+    // The entry after its "$TMP/" or "~/" marker, relative to the temp or home folder.
+    const segs = entry.slice(prefix.indexOf('/') + 1).replaceAll('{project}', project).split('/')
+    // The plain folders before the first glob are the base; an entry with no glob names one file in its last folder.
+    const firstGlob = segs.findIndex((s) => GLOB_CHARS.test(s))
+    const literal = firstGlob === -1 ? segs.length - 1 : firstGlob
+    const base = p.join(realOf(places[place], p), ...segs.slice(0, literal))
+    const rel = p.relative(base, real)
+    if (!rel || rel.startsWith('..') || p.isAbsolute(rel)) continue
+    const relPosix = rel.split(p.sep).join('/')
+    const parts = relPosix.toLowerCase().split('/')
+    // Windows drops a trailing "." or space and reads "name::$DATA" as name, so such a name could stand in for a
+    // never-trusted one; it is never trusted either. Nor is a device name (CON, NUL, COM1…), which is not a file.
+    const disguised = (s) => s.includes(':') || /[. ]$/.test(s) || /^(con|prn|aux|nul|com\d|lpt\d|conin\$|conout\$)(\..*)?$/.test(s)
+    if (parts.some((s) => disguised(s) || NEVER_TRUSTED_SEGMENTS.includes(s)) || NEVER_TRUSTED_NAMES.includes(parts.at(-1))) return null
+    if (matchAny(relPosix, [segs.slice(literal).join('/')], ic)) return entry
+  }
+  return null
+}
 
 // Arguments go to git directly (no shell), so file names can't inject commands.
 export const gitProbe = {
@@ -84,22 +156,86 @@ export const sanitizeConfig = (raw) => {
   const repoRules = { deny: compile('denyCommands', 'repo deny rule'), ask: compile('askCommands', 'repo ask rule') }
   const allow = parseAllowlist(gov.allowlist)
   problems.push(...allow.problems)
+  // R8: named by their index in the raw list, so worked out before the invalid entries are dropped.
+  gov.allowlistWarnings = allowlistWarnings(gov.allowlist)
   gov.allowlist = allow.entries
+  if (gov.planEdits != null && !['allow', 'ask'].includes(gov.planEdits)) {
+    problems.push('"governance.planEdits" must be "allow" or "ask"')
+    delete gov.planEdits
+  }
+  if (gov.trustedWritePaths != null) {
+    if (!Array.isArray(gov.trustedWritePaths)) {
+      problems.push('"governance.trustedWritePaths" must be an array of strings')
+      delete gov.trustedWritePaths
+    } else {
+      gov.trustedWritePaths = gov.trustedWritePaths.filter((e, i) => {
+        const why = trustedEntryProblem(e)
+        if (why) problems.push(`"governance.trustedWritePaths[${i}]" ${why}`)
+        return !why
+      })
+    }
+  }
   return { cfg, gov, repoRules, problems }
 }
+
+// Splits a plan at each heading (# to ######). Lines before the first heading form a section with name null.
+const planSections = (text) => {
+  const sections = [{ heading: null, name: null, lines: [] }]
+  for (const l of text.split(/\r?\n/)) {
+    if (/^#{1,6}\s/.test(l)) sections.push({ heading: l, name: l.replace(/^#{1,6}\s+/, ''), lines: [] })
+    else sections.at(-1).lines.push(l)
+  }
+  return sections
+}
+const isSection = (s, re) => s.name != null && re.test(s.name)
 
 export const planFiles = (root) => {
   const f = path.join(root, ...PLAN_PATH.split('/'))
   if (!existsSync(f)) return null
   const globs = []
-  let inFiles = false
-  for (const l of readFileSync(f, 'utf8').split(/\r?\n/)) {
-    if (/^#{1,6}\s/.test(l)) { inFiles = /^#{1,6}\s+files\b/i.test(l); continue }
-    if (!inFiles) continue
-    const m = l.match(/^\s*[-*]\s+`?([^`\s]+)`?/)
-    if (m) globs.push(m[1].replace(/^\.\//, ''))
+  for (const s of planSections(readFileSync(f, 'utf8')).filter((x) => isSection(x, /^files\b/i))) {
+    for (const l of s.lines) {
+      const m = l.match(/^\s*[-*]\s+`?([^`\s]+)`?/)
+      if (m) globs.push(m[1].replace(/^\.\//, ''))
+    }
   }
   return globs
+}
+
+// Drops each `Evidence:` bullet and the lines indented deeper than it.
+const withoutEvidence = (lines) => {
+  const out = []
+  let indent = -1
+  for (const l of lines) {
+    const lead = l.match(/^\s*/)[0].length
+    if (indent >= 0 && l.trim() && lead > indent) continue
+    indent = -1
+    const m = l.match(/^(\s*)[-*]\s+Evidence:/)
+    if (m) { indent = m[1].length; continue }
+    out.push(l)
+  }
+  return out
+}
+
+// ESP-9: the plan with the parts that don't set scope blanked out: the Change log, task tick state and the Evidence
+// blocks under Acceptance criteria. Headings always stay, so an added or renamed section shows up as a change.
+const scopeView = (text) => planSections(text).flatMap((s) => {
+  if (isSection(s, /^change\s*log\b/i)) return [s.heading]
+  if (isSection(s, /^tasks\b/i)) return [s.heading, ...s.lines.map((l) => l.replace(/^(\s*[-*]\s+)\[[ xX]\]/, '$1[ ]'))]
+  if (isSection(s, /^acceptance criteria\b/i)) return [s.heading, ...withoutEvidence(s.lines)]
+  return [s.heading, ...s.lines]
+}).join('\n')
+
+// True when an edit to an existing plan leaves its scope view unchanged. A new plan, or an edit whose result can't
+// be worked out, is never evidence-only. Nor is a plan that can't be read: the edit goes on to the plan-scope ask.
+const evidenceOnlyPlanEdit = (rel, tool, ti, root, p) => {
+  let edit
+  try {
+    edit = readEdit(rel, tool, ti, root, p)
+  } catch {
+    return false
+  }
+  return edit.before != null && edit.content != null && scopeView(edit.before) === scopeView(edit.content)
 }
 
 const decision = (d, reason, target) => ({ decision: d, reason, target })
@@ -139,10 +275,29 @@ const decideBash = (cmd, { cfg, gov, repoRules }, git, root) => {
   return null
 }
 
-const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net) => {
+// ESP-9: an edit outside the project asks, unless it falls under a trusted write path. A trusted write still gets
+// the env-file and secret checks, and is returned as an allow (decision null) that logEntries records as "trusted".
+const decideOutsideEdit = (file, gov, root, p, ic, tool, ti, places, cfg) => {
+  let entry
+  // Fail closed: a lookup that throws (an unreadable folder, a link loop, a dangling link) must not reach the hook's
+  // fail-open catch, since an outside edit asked before trusted write paths existed.
+  try {
+    entry = trustedWriteEntry(file, gov, root, p, ic, places)
+  } catch (e) {
+    return decision('ask', `Edit outside the project folder (${file}). The guard could not check it against the trusted write paths: ${e?.message || e}.`, file)
+  }
+  if (!entry) return decision('ask', `Edit outside the project folder (${file}).`, file)
+  if (isSecretEnvFile(p.basename(file), cfg.allowEnvExample !== false, ic)) return decision('deny', 'Env files hold secrets.', file)
+  const secret = findSecret(editedText(tool, ti))
+  if (secret?.decision === 'deny') return decision('deny', `The edit writes what looks like a ${secret.why}. Keep secrets in env files or a secret manager.`, file)
+  if (secret) return decision('ask', `The edit looks like it hard-codes a ${secret.why}. Confirm it is not a real secret.`, file)
+  return { ...decision(null, `Trusted write path "${entry}".`, file), trusted: true }
+}
+
+const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, places) => {
   const relNative = p.relative(root, p.resolve(root, file))
   // On Windows a path on another drive comes back absolute rather than starting with "..".
-  if (relNative.startsWith('..') || p.isAbsolute(relNative)) return decision('ask', `Edit outside the project folder (${file}).`, file)
+  if (relNative.startsWith('..') || p.isAbsolute(relNative)) return decideOutsideEdit(file, gov, root, p, ic, tool, ti, places, cfg)
   const rel = relNative.split(p.sep).join('/')
 
   if (isSecretEnvFile(path.posix.basename(rel), cfg.allowEnvExample !== false, ic)) return decision('deny', 'Env files hold secrets.', rel)
@@ -162,15 +317,18 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net) =
     : kind === 'dependency' ? await dependencyFindings(rel, tool, ti, gov, root, p, ic, net)
     : { findings: [], failures: [] }
   const blocking = blockingFindings(findings)
-  const scope = decideScope(rel, gov, root, ic)
+  const scope = matchAny(rel, [PLAN_PATH], ic) && gov.planEdits !== 'ask' && evidenceOnlyPlanEdit(rel, tool, ti, root, p)
+    ? { ...decision(null, 'The plan edit only changes evidence, task ticks or the change log.', rel), trusted: true }
+    : decideScope(rel, gov, root, ic)
   // A credential or content ask must not hide a scope or governance ask; the user confirms them all at once.
   const reasons = [
     secret && `The edit looks like it hard-codes a ${secret.why}. Confirm it is not a real secret.`,
     blocking.length && `The ${kind} change has ${blocking.length} high-risk finding(s).`,
-    scope?.reason,
+    scope?.decision && scope.reason,
   ].filter(Boolean)
   const result = reasons.length
     ? decision('ask', reasons.join(' Also: ') + (findings.length ? ` Findings: ${findings.map(formatFinding).join(' ')}` : ''), rel)
+    : scope?.trusted ? scope
     : findings.length || failures.length ? decision(null, '', rel) : null
   if (result && findings.length) result.findings = findings
   if (result && failures.length) result.failures = failures
@@ -207,8 +365,9 @@ const unreadableEdit = (rule, rel, checks) =>
 // R11: the shared workflow rules run on the post-edit content; the base is the file on disk before the edit.
 const workflowFindings = (rel, tool, ti, gov, root, p, ic) => {
   const { before, content } = readEdit(rel, tool, ti, root, p)
-  if (content == null) return [unreadableEdit('wf-unparsed', rel, 'workflow')]
-  return applyAllowlist(checkWorkflow({ file: rel, content, base: before }), gov.allowlist || [], ic)
+  const findings = content == null ? [unreadableEdit('wf-unparsed', rel, 'workflow')]
+    : applyAllowlist(checkWorkflow({ file: rel, content, base: before }), gov.allowlist || [], ic)
+  return [...findings, ...(gov.allowlistWarnings || [])]
 }
 
 // B9: offline dependency rules, then the registry and advisory lookups under the guard's deadline (R13, R14).
@@ -253,7 +412,7 @@ const decideScope = (rel, gov, root, ic) => {
  *   null, or decision null, means allow. findings (workflow and dependency content checks) and failures (lookups
  *   that failed open) are set whenever there are any, so the hook can log them even when the edit is allowed.
  */
-export const evaluate = async (input, { root, cfg = {}, configError = null, git = gitProbe, pathApi = path, caseInsensitive = CASE_INSENSITIVE_FS, lookups, lookupDeadlineMs }) => {
+export const evaluate = async (input, { root, cfg = {}, configError = null, git = gitProbe, pathApi = path, caseInsensitive = CASE_INSENSITIVE_FS, lookups, lookupDeadlineMs, homeDir = os.homedir(), tmpDir = os.tmpdir() }) => {
   const tool = input.tool_name || ''
   const ti = input.tool_input || {}
   const safe = sanitizeConfig(cfg)
@@ -270,7 +429,7 @@ export const evaluate = async (input, { root, cfg = {}, configError = null, git 
     if (typeof target !== 'string') {
       target = JSON.stringify(target)
       result = decision('ask', 'The edit target is not a file path string. Confirm the edit.', target)
-    } else result = await decideEdit(target, safe, git, root, pathApi, caseInsensitive, tool, ti, { lookups, deadlineMs: lookupDeadlineMs })
+    } else result = await decideEdit(target, safe, git, root, pathApi, caseInsensitive, tool, ti, { lookups, deadlineMs: lookupDeadlineMs }, { homeDir, tmpDir })
   } else return null
 
   // Default deny rules still hold with a broken config; anything else becomes a confirmation.
@@ -296,5 +455,6 @@ export const logEntries = (result, tool) => {
     ...(result.findings || []).map((f) => ({ ...at, decision: 'finding', rule: f.rule, tier: f.tier, file: f.file, line: f.line, detail: f.detail, suppressed: !!f.suppressed })),
     ...(result.failures || []).map((f) => ({ ...at, decision: 'error', lookup: f.lookup, reason: `lookup failed open (${f.lookup}): ${f.reason}` })),
     ...(result.decision ? [{ ...at, decision: result.decision, reason: result.reason }] : []),
+    ...(!result.decision && result.trusted ? [{ ...at, decision: 'trusted', reason: result.reason }] : []),
   ]
 }

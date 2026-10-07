@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 import {
   matchAny, isSecretEnvFile, isPlainObject, isStringArray, DEFAULT_ASK_PATHS,
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, checkFakePasses, isJsTsFile,
-  parseAllowlist, applyAllowlist, blockingFindings, formatFinding,
+  parseAllowlist, applyAllowlist, allowlistWarnings, blockingFindings, formatFinding,
 } from './governance-rules.mjs'
 import { createLookups, lookupTargets, runLookups, CI_TIMEOUT_MS, CI_DEADLINE_MS } from './supply-chain-lookups.mjs'
 
@@ -21,6 +21,9 @@ const IGNORE_CASE = true
 // The workflow runs the base-branch copy (_gov/) against the PR checkout, so resolving
 // relative to cwd would let a PR rewrite the rules it is about to be judged by.
 const SCRIPT_GOV_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+
+// R8 limits what a workflow allowlist entry can suppress, so the fix hint for workflow findings says how.
+const WORKFLOW_ALLOWLIST_HINT = ' (a workflow entry needs one literal file path, and wf-unparsed cannot be allowlisted)'
 
 const DEFAULT_REF_PATTERN = String.raw`(\bC\d{1,2}\b|\bFR-\d{2}\b|\bAC-\d{2}\b|\bADR-\d{4}\b|\bD\d{1,2}\b|§\s?\d+|#\d+)`
 
@@ -147,14 +150,16 @@ export const runGovernanceChecks = async ({ env, lookups, govRoot = SCRIPT_GOV_R
   // The buffer fits the largest file the rules read (1,000,000 characters of up to 4 UTF-8 bytes), so the size rule
   // decides what is unreadable, not node's 1 MiB default.
   const show = (ref, p) => execFileSync('git', ['show', `${ref}:${p}`], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 8 * 1024 * 1024 })
-  // Each added, changed or renamed file of one kind, with its base-branch version (null when added).
-  const readChanged = (isKind, what) => {
+  // Each added, changed or renamed file of one kind, with its base-branch version (null when added). With
+  // otherKindIsNew, a file renamed or copied from a path of another kind counts as added too (R9).
+  const readChanged = (isKind, what, otherKindIsNew = false) => {
     const files = []
     for (const [status, p1, p2] of changes) {
       const target = p2 || p1
       if (status === 'D' || !isKind(target)) continue
+      const isNew = status === 'A' || (otherKindIsNew && !isKind(p1))
       try {
-        files.push({ file: target, content: show('HEAD', target), base: status === 'A' ? null : show(`origin/${base}`, p1) })
+        files.push({ file: target, content: show('HEAD', target), base: isNew ? null : show(`origin/${base}`, p1) })
       } catch (e) {
         errors.push(`Could not read ${target} to check its ${what} content: ${e.message.split('\n')[0]}`)
       }
@@ -168,11 +173,14 @@ export const runGovernanceChecks = async ({ env, lookups, govRoot = SCRIPT_GOV_R
     if (blocking.length) {
       const msg = `${label} changes have ${blocking.length} high-risk finding(s): ${blocking.map(formatFinding).join(' ')}`
       if (approved) notes.push(`${msg} Accepted via label "${approvalLabel}".`)
-      else errors.push(`${msg} Fix them, allowlist them in the base-branch .claude/engineering.json, or have the Document Owner add the label "${approvalLabel}".`)
+      else errors.push(`${msg} Fix them, allowlist them in the base-branch .claude/engineering.json${label === 'Workflow' ? WORKFLOW_ALLOWLIST_HINT : ''}, or have the Document Owner add the label "${approvalLabel}".`)
     }
     for (const f of checked.filter((x) => !blocking.includes(x))) warnings.push(formatFinding(f))
   }
-  reportFindings('Workflow', readChanged(isWorkflowPath, 'workflow').flatMap(checkWorkflow))
+  const workflows = readChanged(isWorkflowPath, 'workflow', true)
+  reportFindings('Workflow', workflows.flatMap(checkWorkflow))
+  // R8: allowlist entries that can't suppress a workflow finding, once per run when workflows were checked.
+  if (workflows.length) warnings.push(...allowlistWarnings(gov.allowlist).map(formatFinding))
 
   // 5. Dependency content (R1–R6): the offline rules on each changed manifest and lockfile, then the advisory and
   // registry lookups across all of them, so a manifest range is looked up at the version its lockfile pins.

@@ -1,21 +1,25 @@
 #!/usr/bin/env node
 // usiatech-engineering: governance guard (PreToolUse on Bash, Edit, MultiEdit, Write, NotebookEdit).
 // Reads the hook payload, asks governance-policy.mjs for a decision and reports it to Claude Code.
-// Every deny/ask, every workflow or dependency content finding (decision "finding") and every dependency lookup
-// that failed open (decision "error") is appended to .claude/governance-log.jsonl.
+// Every deny/ask, every workflow or dependency content finding (decision "finding"), every dependency lookup
+// that failed open (decision "error") and every write let through without asking because it is trusted (a trusted
+// write path or an evidence-only plan edit; decision "trusted") is appended to .claude/governance-log.jsonl.
 // Internal errors fail open (exit 0) so a bug never wedges a session, but they are logged as
 // decision "error" so the governance-reviewer can see that the guard was not enforcing.
 import { existsSync, appendFileSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
 
+// Returns whether the entry was written.
 const logDecision = (root, entry) => {
   try {
     const dir = path.join(root, '.claude')
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     appendFileSync(path.join(dir, 'governance-log.jsonl'),
       JSON.stringify({ ts: new Date().toISOString(), ...entry, target: String(entry.target || '').slice(0, 300) }) + '\n')
+    return true
   } catch (e) {
     process.stderr.write(`[governance] could not write governance-log.jsonl: ${e.message}\n`)
+    return false
   }
 }
 
@@ -33,9 +37,13 @@ try {
   // Imported here so a missing or broken policy module is logged like any other internal error.
   const { evaluate, loadConfig, logEntries } = await import('./governance-policy.mjs')
   const { cfg, error } = loadConfig(root)
-  const result = await evaluate(input, { root, cfg, configError: error })
+  let result = await evaluate(input, { root, cfg, configError: error })
   // Every finding (R16) and failed-open lookup (R13) is logged whether or not the edit is allowed, then the decision.
-  for (const entry of logEntries(result, tool)) logDecision(root, entry)
+  const logged = logEntries(result, tool).map((entry) => logDecision(root, entry)).every(Boolean)
+  // The log line is a trusted write's only record, so a trusted write that can't be logged needs a prompt instead.
+  if (!logged && !result?.decision && result?.trusted) {
+    result = { ...result, decision: 'ask', reason: `${result.reason} It could not be logged to .claude/governance-log.jsonl, so it needs confirmation.` }
+  }
   if (result?.decision) {
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
