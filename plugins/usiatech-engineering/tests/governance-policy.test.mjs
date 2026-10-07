@@ -1,6 +1,6 @@
 import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, symlinkSync, linkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { evaluate, loadConfig, planFiles, gitProbe, logEntries } from '../hooks/scripts/governance-policy.mjs'
 import { GUARD_DEADLINE_MS } from '../templates/github/scripts/supply-chain-lookups.mjs'
@@ -696,6 +696,203 @@ describe('evaluate: dependency checks with lookups (R2, R3, R13, R14; AC3, AC11)
     assert.equal(r.decision, null)
     assert.equal(r.findings[0].suppressed, true)
     assert.deepEqual(logEntries(r, 'Write').map((e) => `${e.decision}:${e.rule}:${e.suppressed}`), ['finding:sc-typosquat:true'])
+  })
+})
+
+describe('evaluate: trusted write paths (ESP-9; AC1, AC2)', () => {
+  // Fake folders: nothing here exists on disk, so the real-path check compares them as written.
+  const WIN = { root: String.raw`C:\Users\me\src\my-app`, homeDir: String.raw`C:\Users\me`, tmpDir: String.raw`C:\Users\me\AppData\Local\Temp`, pathApi: path.win32, caseInsensitive: true }
+  const POSIX = { root: '/home/me/src/my-app', homeDir: '/home/me', tmpDir: '/tmp', pathApi: path.posix, caseInsensitive: false }
+  const write = (env, file_path, opts = {}) => evaluate({ tool_name: 'Write', tool_input: { file_path, content: opts.content ?? 'notes' } }, { git: fakeGit(), ...env, ...opts })
+  const winTrusted = {
+    scratchpad: String.raw`C:\Users\me\AppData\Local\Temp\claude\C--Users-me-src-my-app\abc\scratchpad\plan.md`,
+    memory: String.raw`C:\Users\me\.claude\projects\C--Users-me-src-my-app\memory\MEMORY.md`,
+    sessionData: String.raw`C:\Users\me\.claude\session-data\2026-10-06-x-session.tmp`,
+  }
+  const trustedEntry = async (env, file, opts) => {
+    const r = await write(env, file, opts)
+    assert.equal(r?.decision ?? null, null, r?.reason)
+    const entries = logEntries(r, 'Write')
+    assert.equal(entries.length, 1, JSON.stringify(entries))
+    assert.equal(entries[0].decision, 'trusted')
+    return entries[0]
+  }
+
+  it('should let writes to the three default locations through on Windows, logged as trusted', async () => {
+    assert.match((await trustedEntry(WIN, winTrusted.scratchpad)).reason, /\$TMP\/claude\/\{project\}\/\*\*/)
+    assert.match((await trustedEntry(WIN, winTrusted.memory)).reason, /~\/\.claude\/projects\/\{project\}\/memory\/\*\*/)
+    assert.match((await trustedEntry(WIN, winTrusted.sessionData)).reason, /~\/\.claude\/session-data\/\*\*/)
+  })
+
+  it('should match the Windows locations ignoring case, as Claude Code writes the drive letter in either case', async () => {
+    assert.match((await trustedEntry(WIN, winTrusted.scratchpad.toLowerCase())).reason, /\$TMP\/claude/)
+    assert.match((await trustedEntry({ ...WIN, root: String.raw`c:\users\me\src\my-app` }, winTrusted.memory)).reason, /memory/)
+  })
+
+  it('should let writes to the three default locations through on POSIX', async () => {
+    assert.match((await trustedEntry(POSIX, '/tmp/claude/-home-me-src-my-app/abc/scratchpad/plan.md')).reason, /\$TMP\/claude/)
+    assert.match((await trustedEntry(POSIX, '/home/me/.claude/projects/-home-me-src-my-app/memory/MEMORY.md')).reason, /memory/)
+    assert.match((await trustedEntry(POSIX, '/home/me/.claude/session-data/2026-10-06-x-session.tmp')).reason, /session-data/)
+  })
+
+  it('should still ask when the config has a problem', async () => {
+    const r = await write(WIN, winTrusted.scratchpad, { cfg: { governance: { askPaths: 'x' } } })
+    assert.equal(r.decision, 'ask')
+    assert.match(r.reason, /Config problem/)
+  })
+
+  for (const [what, file] of [
+    ['Claude Code settings', String.raw`C:\Users\me\.claude\settings.json`],
+    ['an ssh key', String.raw`C:\Users\me\.ssh\id_x`],
+    ["another project's memory", String.raw`C:\Users\me\.claude\projects\other\memory\x.md`],
+    ['a path that climbs out of session-data', String.raw`C:\Users\me\.claude\session-data\..\settings.json`],
+    ['another project folder under the scratchpad root', String.raw`C:\Users\me\AppData\Local\Temp\claude\other\x.md`],
+  ]) {
+    it(`should still ask for ${what}`, async () => {
+      assert.match((await write(WIN, file)).reason, /outside the project folder/)
+    })
+  }
+
+  // Windows drops a trailing dot or space and reads "name::$DATA" as name, so these stand in for never-trusted names.
+  for (const name of ['settings.json', 'settings.local.json', '.mcp.json', '.claude.json', 'CLAUDE.md', 'AGENTS.md', String.raw`.git\config`, String.raw`hooks\x.mjs`, String.raw`plugins\x\a.js`, String.raw`.ssh\k`,
+    'settings.json.', 'settings.json ', 'settings.json::$DATA', String.raw`hooks.\x.mjs`, String.raw`.git::$INDEX_ALLOCATION\config`,
+    // Windows device names are not files at all.
+    'CON', 'nul.txt', 'COM1', 'CONIN$']) {
+    it(`should still ask for the never-trusted name ${name} inside a trusted folder`, async () => {
+      assert.match((await write(WIN, path.win32.join(String.raw`C:\Users\me\.claude\session-data`, name))).reason, /outside the project folder/)
+    })
+  }
+
+  it('should still deny a secret or an env file in a trusted folder', async () => {
+    assert.equal((await write(WIN, winTrusted.scratchpad, { content: 'AKIA' + 'Q'.repeat(16) })).decision, 'deny')
+    assert.equal((await write(WIN, String.raw`C:\Users\me\.claude\session-data\.env`)).decision, 'deny')
+  })
+
+  it('should still ask when a trusted folder is a link to somewhere else', async () => {
+    const home = tempDir()
+    const elsewhere = tempDir()
+    mkdirSync(path.join(home, '.claude'), { recursive: true })
+    symlinkSync(elsewhere, path.join(home, '.claude', 'session-data'), 'junction')
+    const env = { root: tempDir(), homeDir: home, tmpDir: tempDir() }
+    // The target doesn't exist yet: its nearest existing parent (the link) is resolved.
+    assert.match((await write(env, path.join(home, '.claude', 'session-data', 'x.tmp'))).reason, /outside the project folder/)
+  })
+
+  it('should still ask when a link inside a trusted folder points at a missing target', async () => {
+    const root = tempDir()
+    const tmp = tempDir()
+    const scratch = path.join(tmp, 'claude', root.replace(/[^A-Za-z0-9]/g, '-'))
+    mkdirSync(scratch, { recursive: true })
+    // Writing through the link would create its target, which is outside the trusted folder.
+    symlinkSync(path.join(tempDir(), 'missing'), path.join(scratch, 'x'), 'junction')
+    const r = await write({ root, homeDir: tempDir(), tmpDir: tmp }, path.join(scratch, 'x', 'a.md'))
+    assert.equal(r.decision, 'ask')
+    assert.match(r.reason, /could not check it against the trusted write paths: .*missing target/)
+  })
+
+  it('should still ask for an existing file in a trusted folder that is hard-linked elsewhere', async () => {
+    const home = tempDir()
+    const sessionData = path.join(home, '.claude', 'session-data')
+    mkdirSync(sessionData, { recursive: true })
+    const elsewhere = path.join(tempDir(), 'settings.json')
+    writeFileSync(elsewhere, '{}')
+    // A write to the link changes the other file in place.
+    linkSync(elsewhere, path.join(sessionData, 's.json'))
+    const r = await write({ root: tempDir(), homeDir: home, tmpDir: tempDir() }, path.join(sessionData, 's.json'))
+    assert.match(r.reason, /outside the project folder/)
+  })
+
+  it('should ask, not throw, when the trusted-path lookup fails', async () => {
+    const r = await write({ root: tempDir(), homeDir: null, tmpDir: null }, path.join(tempDir(), 'a.md'))
+    assert.equal(r.decision, 'ask')
+    assert.match(r.reason, /could not check it against the trusted write paths/)
+  })
+
+  it('should replace the defaults with a repo list, and ask again for an empty one', async () => {
+    assert.match((await write(WIN, winTrusted.scratchpad, { cfg: { governance: { trustedWritePaths: [] } } })).reason, /outside the project folder/)
+    const notes = { cfg: { governance: { trustedWritePaths: ['$TMP/claude/{project}/notes/**'] } } }
+    await trustedEntry(WIN, String.raw`C:\Users\me\AppData\Local\Temp\claude\C--Users-me-src-my-app\notes\a.md`, notes)
+    assert.match((await write(WIN, winTrusted.memory, notes)).reason, /outside the project folder/)
+  })
+
+  for (const bad of ['x', [1], ['relative/**'], ['C:/other/**'], ['~/**'], ['~/.claude/**'], ['~/.claude/projects/**'], ['$TMP/**'], ['/**'], ['C:/**'],
+    // Backslashes, ":" and empty, "." or dot-ended folders could climb out of the root once joined on Windows.
+    [String.raw`~/.claude/projects/x\..\..\../**`], ['~/.claude/session-data/a:b/**'], ['$TMP/./**'], ['$TMP//**'], ['~/.claude/projects/./**'], ['~/.claude/projects/.../**'], ['$TMP/x /**']]) {
+    it(`should report a config problem for trustedWritePaths ${JSON.stringify(bad)}`, async () => {
+      const r = await write(WIN, winTrusted.sessionData, { cfg: { governance: { trustedWritePaths: bad } } })
+      assert.equal(r.decision, 'ask')
+      assert.match(r.reason, /Config problem: "governance\.trustedWritePaths(\[0\])?" must /)
+    })
+  }
+})
+
+describe('evaluate: evidence-only plan edits (ESP-9; AC3)', () => {
+  const PLAN = '# Plan: x\n\n## Goal\ng\n\n## Acceptance criteria\n- AC1: a works\n  - Evidence:\n\n## Tasks\n- [ ] T1: do a (covers AC1)\n\n## Files\n- `src/**`\n\n## Change log\n- 2026-10-06: drafted\n'
+  const planEdit = (tool_input, opts = {}) => {
+    const root = tempDir()
+    if (opts.plan !== null) writeFiles(root, { '.claude/plans/active.md': opts.plan ?? PLAN })
+    return evaluate({ tool_name: opts.tool ?? 'Edit', tool_input: { file_path: '.claude/plans/active.md', ...tool_input } }, { root, git: fakeGit(), ...opts })
+  }
+  const replace = (old_string, new_string, opts) => planEdit({ old_string, new_string }, opts)
+  const evidence = ['  - Evidence:\n', '  - Evidence:\n    - Green: 3/3 pass\n    - (shown, 2026-10-06T00:00Z)\n']
+
+  // "trusted": let through with one trusted log entry; "ask": the plan-scope ask; anything else is shown as is.
+  const outcome = (r) => {
+    if (r?.decision === 'ask' && /approved plan sets the edit scope/.test(r.reason)) return 'ask'
+    const entries = logEntries(r, 'Edit')
+    const trusted = !r?.decision && entries.length === 1 && entries[0].decision === 'trusted' && /only changes evidence, task ticks or the change log/.test(entries[0].reason)
+    return trusted ? 'trusted' : JSON.stringify(r)
+  }
+
+  it('should let an evidence block, a task tick or a change-log line through, logged as trusted', async () => {
+    assert.equal(outcome(await replace(...evidence)), 'trusted')
+    assert.equal(outcome(await replace('  - Evidence:\n', '  - Evidence: npm test 3/3 (shown, 2026-10-06T00:00Z)\n')), 'trusted')
+    assert.equal(outcome(await replace('- [ ] T1', '- [x] T1')), 'trusted')
+    assert.equal(outcome(await replace('- 2026-10-06: drafted\n', '- 2026-10-06: drafted\n- 2026-10-07: T1 done\n')), 'trusted')
+  })
+
+  it('should let a Write of the whole plan through when it changes only those parts', async () => {
+    const content = PLAN.replace(...evidence).replace('- [ ] T1', '- [x] T1').replace('drafted\n', 'drafted\n- 2026-10-07: T1 done\n')
+    assert.equal(outcome(await planEdit({ content }, { tool: 'Write' })), 'trusted')
+  })
+
+  for (const [what, from, to] of [
+    ['a new Files entry', '- `src/**`\n', '- `src/**`\n- `**`\n'],
+    ['an Evidence-looking block in Files', '- `src/**`\n', '- `src/**`\n  - Evidence:\n    - `lib/**`\n'],
+    ['an Evidence block under a task', '- [ ] T1: do a (covers AC1)\n', '- [ ] T1: do a (covers AC1)\n  - Evidence: x\n'],
+    ['AC text', 'a works', 'b works'],
+    ['task text', 'do a', 'do b'],
+    ['the goal', '## Goal\ng', '## Goal\nh'],
+    ['an added heading', '- 2026-10-06: drafted\n', '- 2026-10-06: drafted\n\n## Files\n- `**`\n'],
+    ['a renamed heading', '## Tasks', '## Task list'],
+  ]) {
+    it(`should still ask for ${what}`, async () => assert.equal(outcome(await replace(from, to)), 'ask'))
+  }
+
+  it('should still ask for a change under ### Files or a lowercase # files heading', async () => {
+    for (const heading of ['### Files', '# files']) {
+      const plan = PLAN.replace('## Files', heading)
+      assert.equal(outcome(await replace('- `src/**`\n', '- `src/**`\n- `lib/**`\n', { plan })), 'ask')
+    }
+  })
+
+  it('should still ask when creating the plan or when the edit result cannot be worked out', async () => {
+    assert.equal(outcome(await planEdit({ content: PLAN }, { tool: 'Write', plan: null })), 'ask')
+    assert.equal(outcome(await replace('not in the plan', 'x')), 'ask')
+  })
+
+  it('should still ask, not throw, when the plan cannot be read', async () => {
+    const root = tempDir()
+    mkdirSync(path.join(root, '.claude', 'plans', 'active.md'), { recursive: true })
+    const r = await evaluate({ tool_name: 'Edit', tool_input: { file_path: '.claude/plans/active.md', old_string: 'a', new_string: 'b' } }, { root, git: fakeGit() })
+    assert.equal(outcome(r), 'ask')
+  })
+
+  it('should ask for every plan edit with planEdits "ask", and report other values as a config problem', async () => {
+    assert.equal(outcome(await replace(...evidence, { cfg: { governance: { planEdits: 'ask' } } })), 'ask')
+    const r = await replace(...evidence, { cfg: { governance: { planEdits: 'yes' } } })
+    assert.equal(r.decision, 'ask')
+    assert.match(r.reason, /Config problem: "governance\.planEdits" must be "allow" or "ask"/)
   })
 })
 

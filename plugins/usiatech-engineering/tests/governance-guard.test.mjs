@@ -1,7 +1,8 @@
 import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
+import { tmpdir } from 'node:os'
 import { GUARD_SCRIPT, runNode, tempDir, cleanupTempDirs, writeFiles } from './helpers.mjs'
 
 after(cleanupTempDirs)
@@ -46,6 +47,29 @@ describe('governance-guard hook', () => {
     assert.equal(r.code, 0)
     assert.equal(r.stdout, '')
     assert.deepEqual(readLog(root), [])
+  })
+
+  it('should print no decision for a write to this project\'s scratchpad and log it once as trusted (ESP-9; AC1)', async () => {
+    const root = tempDir()
+    const file = path.join(tmpdir(), 'claude', root.replace(/[^A-Za-z0-9]/g, '-'), 'scratchpad', 'notes.md')
+    const r = await runGuard(root, { tool_name: 'Write', tool_input: { file_path: file, content: 'notes' } })
+    assert.equal(r.code, 0)
+    assert.equal(r.stdout, '')
+    const log = readLog(root)
+    assert.deepEqual(log.map((e) => e.decision), ['trusted'], JSON.stringify(log))
+    assert.equal(log[0].target, file)
+  })
+
+  it('should ask for a trusted write when its log entry cannot be written, so no trusted write goes unrecorded (ESP-9)', async () => {
+    const root = tempDir()
+    // A folder where the log file should be makes the append fail.
+    mkdirSync(path.join(root, '.claude', 'governance-log.jsonl'), { recursive: true })
+    const file = path.join(tmpdir(), 'claude', root.replace(/[^A-Za-z0-9]/g, '-'), 'scratchpad', 'notes.md')
+    const r = await runGuard(root, { tool_name: 'Write', tool_input: { file_path: file, content: 'notes' } })
+    assert.equal(r.code, 0)
+    const out = JSON.parse(r.stdout).hookSpecificOutput
+    assert.equal(out.permissionDecision, 'ask')
+    assert.match(out.permissionDecisionReason, /could not be logged/)
   })
 
   it('should ask and name the problem when engineering.json is malformed', async () => {
