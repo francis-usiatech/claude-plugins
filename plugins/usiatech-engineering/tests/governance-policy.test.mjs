@@ -778,6 +778,15 @@ describe('evaluate: trusted write paths (ESP-9; AC1, AC2)', () => {
     assert.match((await write(env, path.join(home, '.claude', 'session-data', 'x.tmp'))).reason, /outside the project folder/)
   })
 
+  it('should trust a write when the temp folder itself is a link, as the trusted base is resolved too', async () => {
+    const realTmp = tempDir()
+    const tmpLink = path.join(tempDir(), 'tmp-link')
+    symlinkSync(realTmp, tmpLink, 'junction')
+    const root = tempDir()
+    const file = path.join(realTmp, 'claude', root.replace(/[^A-Za-z0-9]/g, '-'), 'abc', 'plan.md')
+    assert.match((await trustedEntry({ root, homeDir: tempDir(), tmpDir: tmpLink }, file)).reason, /\$TMP\/claude/)
+  })
+
   it('should still ask when a link inside a trusted folder points at a missing target', async () => {
     const root = tempDir()
     const tmp = tempDir()
@@ -817,7 +826,7 @@ describe('evaluate: trusted write paths (ESP-9; AC1, AC2)', () => {
 
   for (const bad of ['x', [1], ['relative/**'], ['C:/other/**'], ['~/**'], ['~/.claude/**'], ['~/.claude/projects/**'], ['$TMP/**'], ['/**'], ['C:/**'],
     // Backslashes, ":" and empty, "." or dot-ended folders could climb out of the root once joined on Windows.
-    [String.raw`~/.claude/projects/x\..\..\../**`], ['~/.claude/session-data/a:b/**'], ['$TMP/./**'], ['$TMP//**'], ['~/.claude/projects/./**'], ['~/.claude/projects/.../**'], ['$TMP/x /**']]) {
+    [String.raw`~/.claude/projects/x\..\..\../**`], [String.raw`~/.claude/projects/x\..\..\y/**`], ['~/.claude/session-data/a:b/**'], ['$TMP/./**'], ['$TMP//**'], ['~/.claude/projects/./**'], ['~/.claude/projects/.../**'], ['$TMP/x /**']]) {
     it(`should report a config problem for trustedWritePaths ${JSON.stringify(bad)}`, async () => {
       const r = await write(WIN, winTrusted.sessionData, { cfg: { governance: { trustedWritePaths: bad } } })
       assert.equal(r.decision, 'ask')
@@ -868,6 +877,11 @@ describe('evaluate: evidence-only plan edits (ESP-9; AC3)', () => {
   ]) {
     it(`should still ask for ${what}`, async () => assert.equal(outcome(await replace(from, to)), 'ask'))
   }
+
+  it('should still ask for a change to a line after an Evidence bullet at the same indent', async () => {
+    const plan = PLAN.replace('  - Evidence:\n', '  - Evidence:\n  - Scope: only `src/a.ts`\n')
+    assert.equal(outcome(await replace('only `src/a.ts`', 'any file', { plan })), 'ask')
+  })
 
   it('should still ask for a change under ### Files or a lowercase # files heading', async () => {
     for (const heading of ['### Files', '# files']) {
