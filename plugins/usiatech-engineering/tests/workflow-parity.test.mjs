@@ -69,7 +69,9 @@ describe('workflow rules: guard and CI parity (AC14)', () => {
       const { doc, problems } = parseWorkflowYaml(read(name))
       assert.deepEqual(problems, [], name)
       const jobs = Object.values(doc.jobs ?? {})
-      assert.ok(jobs.length > 0 && jobs.every((j) => Array.isArray(j.steps) && j.steps.length > 0), `${name}: jobs or steps not parsed`)
+      // A job that calls a reusable workflow has a "uses" string and no steps of its own.
+      const parsed = (j) => (Array.isArray(j.steps) && j.steps.length > 0) || (typeof j.uses === 'string' && j.steps === undefined)
+      assert.ok(jobs.length > 0 && jobs.every(parsed), `${name}: jobs or steps not parsed`)
     }
   })
 

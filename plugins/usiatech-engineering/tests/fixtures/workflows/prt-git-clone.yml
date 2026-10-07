@@ -1,0 +1,23 @@
+name: PR target git checkout forms
+on: pull_request_target
+jobs:
+  clone-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - run: git clone --branch ${{ github.head_ref }} https://github.com/o/r
+  clone-head-repo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: git clone ${{ github.event.pull_request.head.repo.clone_url }}
+  pull-head-ref:
+    runs-on: ubuntu-latest
+    steps:
+      - run: git pull origin ${{ github.head_ref }}
+  fetch-head-sha:
+    runs-on: ubuntu-latest
+    steps:
+      - run: git fetch origin ${{ github.event.pull_request.head.sha }} && git checkout FETCH_HEAD
+  gh-pr-checkout:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh pr checkout ${{ github.event.number }}
