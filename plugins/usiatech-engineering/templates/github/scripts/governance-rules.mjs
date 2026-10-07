@@ -97,13 +97,35 @@ export const parseAllowlist = (list) => {
   return { entries, problems }
 }
 
+// R8: a workflow entry suppresses only when its path names one literal file, and never for wf-unparsed (the part of
+// the file the checks couldn't read may hide anything). A package-only entry can't match either, since workflow
+// findings have no package. Such entries stay valid config but suppress nothing.
+const ignoredWorkflowEntry = (e) => e.rule.startsWith('wf-') && (e.path == null || /[*?[{]/.test(e.path) || e.rule === 'wf-unparsed')
+
 // Marks each finding suppressed (true/false), copying the matching entry's reason. Suppressed findings are still
 // reported and logged, but never block.
 export const applyAllowlist = (findings, entries, ignoreCase = false) => findings.map((f) => {
-  const match = entries.find((e) => e.rule === f.rule
+  const match = entries.find((e) => e.rule === f.rule && !ignoredWorkflowEntry(e)
     && (!e.path || globToRegExp(e.path, ignoreCase).test(f.file))
     && (!e.package || e.package === f.package))
   return { ...f, suppressed: !!match, ...(typeof match?.reason === 'string' && match.reason && { reason: match.reason }) }
+})
+
+/**
+ * One wf-allowlist-ignored warning for each valid allowlist entry that R8 ignores, naming it by its index in the
+ * raw governance.allowlist. Invalid entries are left to parseAllowlist's problems.
+ * @returns {{ rule: string, tier: 'warning', file: string, line: number, detail: string, suppressed: false }[]}
+ */
+export const allowlistWarnings = (list) => (Array.isArray(list) ? list : []).flatMap((raw, i) => {
+  const [e] = parseAllowlist([raw]).entries
+  if (!e || !ignoredWorkflowEntry(e)) return []
+  const why = e.rule === 'wf-unparsed'
+    ? 'wf-unparsed findings cannot be allowlisted, since the part of the file the checks could not read may hide anything'
+    : e.path == null
+      ? 'a workflow entry must name one file in "path"; workflow findings have no package'
+      : 'a workflow entry must name one file, with no *, ?, [ or {'
+  const target = e.path == null ? `package "${e.package}"` : `path "${e.path}"`
+  return [{ rule: 'wf-allowlist-ignored', tier: 'warning', file: '.claude/engineering.json', line: 1, suppressed: false, detail: `"governance.allowlist[${i}]" (${e.rule}, ${target}) suppresses nothing: ${why}.` }]
 })
 
 export const blockingFindings = (findings) => findings.filter((f) => f.tier === 'high' && !f.suppressed)
