@@ -16,7 +16,7 @@ Plan references use these IDs (e.g. "Improvement roadmap step 3: B1, B2").
 | 4 | Security and supply chain | B9, B10 | Shipped v0.8.0 (B10 #10, B9 #11) |
 | 4.1 | Hardening follow-ups | #13 CI kit items, #16 staleness | Shipped v0.8.1 |
 | 4.2 | Test honesty: fake-pass checks and mutation testing | A6, B26 | Shipped v0.9.0 (A6 #20/#21, B26 #22; [spec](specs/2026-09-30-fake-pass-and-mutation-test.md), [ADR 0002](adr/0002-fake-pass-checks-fail-the-gate.md)) |
-| 4.3 | Guard enforcement gaps | remaining #13 items | Queued after 4.2 |
+| 4.3 | Guard enforcement gaps | remaining #13 items | Shipped v0.10.0 (#43–#47; [spec](specs/2026-10-02-workflow-checks-hardening.md)) |
 | 5 | Delivery and operations | B11–B19 | Not started; B12 (handoff) first, after 4.3 |
 | 6 | Plugin health | B20–B25 | Not started |
 
