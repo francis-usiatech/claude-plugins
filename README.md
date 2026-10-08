@@ -4,7 +4,7 @@ Private Claude plugin marketplace for UsiaTech repositories.
 
 | Plugin               | Version | Install ID                      |
 | -------------------- | ------- | ------------------------------- |
-| UsiaTech Engineering | 0.9.0   | `usiatech-engineering@usiatech` |
+| UsiaTech Engineering | 0.10.0  | `usiatech-engineering@usiatech` |
 
 ## Design records
 
@@ -12,6 +12,7 @@ Private Claude plugin marketplace for UsiaTech repositories.
 - Specs in [docs/specs/](docs/specs/):
   - [security and supply chain](docs/specs/2026-09-28-security-supply-chain.md) (approved, shipped 0.8.0)
   - [fake-pass checks and mutation testing](docs/specs/2026-09-30-fake-pass-and-mutation-test.md) (approved, shipped 0.9.0)
+  - [workflow checks hardening](docs/specs/2026-10-02-workflow-checks-hardening.md) (approved, shipped 0.10.0)
 - ADRs in [docs/adr/](docs/adr/):
   - [0001 guard network lookups](docs/adr/0001-guard-network-lookups.md) (accepted)
   - [0002 fake-pass checks fail the gate](docs/adr/0002-fake-pass-checks-fail-the-gate.md) (accepted)
