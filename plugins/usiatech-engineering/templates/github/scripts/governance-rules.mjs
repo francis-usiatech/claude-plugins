@@ -132,7 +132,7 @@ export const blockingFindings = (findings) => findings.filter((f) => f.tier === 
 
 // File names, detail and reason text can come from the PR, so each finding stays on one line (no newlines or control
 // characters that could start a workflow command in CI logs) and is capped in length.
-const oneLine = (s, max) => String(s).replace(/[\u0000-\u001f\u007f]+/g, ' ').slice(0, max)
+export const oneLine = (s, max) => String(s).replace(/[\u0000-\u001f\u007f]+/g, ' ').slice(0, max)
 
 export const formatFinding = (f) => `[${f.rule}, ${f.tier}${f.suppressed ? `, suppressed${f.reason ? `: ${oneLine(f.reason, 200)}` : ''}` : ''}] ${oneLine(f.file, 300)}:${f.line} ${oneLine(f.detail, 300)}`
 

@@ -6,22 +6,8 @@
 // write path or an evidence-only plan edit; decision "trusted") is appended to .claude/governance-log.jsonl.
 // Internal errors fail open (exit 0) so a bug never wedges a session, but they are logged as
 // decision "error" so the governance-reviewer can see that the guard was not enforcing.
-import { existsSync, appendFileSync, mkdirSync } from 'node:fs'
-import path from 'node:path'
-
-// Returns whether the entry was written.
-const logDecision = (root, entry) => {
-  try {
-    const dir = path.join(root, '.claude')
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-    appendFileSync(path.join(dir, 'governance-log.jsonl'),
-      JSON.stringify({ ts: new Date().toISOString(), ...entry, target: String(entry.target || '').slice(0, 300) }) + '\n')
-    return true
-  } catch (e) {
-    process.stderr.write(`[governance] could not write governance-log.jsonl: ${e.message}\n`)
-    return false
-  }
-}
+// Before a Bash call it doesn't deny, it snapshots the workflow files for the after-Bash check (R6).
+import { appendGovernanceLog as logDecision } from './governance-log.mjs'
 
 let root = process.env.CLAUDE_PROJECT_DIR || process.cwd()
 let tool = ''
@@ -43,6 +29,16 @@ try {
   // The log line is a trusted write's only record, so a trusted write that can't be logged needs a prompt instead.
   if (!logged && !result?.decision && result?.trusted) {
     result = { ...result, decision: 'ask', reason: `${result.reason} It could not be logged to .claude/governance-log.jsonl, so it needs confirmation.` }
+  }
+  if (tool === 'Bash' && result?.decision !== 'deny') {
+    // A failed snapshot must not stop the command; the after-Bash check then falls back to the files changed since HEAD.
+    // Imported here so a broken after-Bash module costs only the snapshot, not the guard.
+    try {
+      const { snapshotWorkflows } = await import('./bash-workflow-check.mjs')
+      snapshotWorkflows(root, input.tool_use_id)
+    } catch (e) {
+      logDecision(root, { tool, target, decision: 'error', reason: `could not snapshot workflow files for the after-Bash check: ${e?.message || e}` })
+    }
   }
   if (result?.decision) {
     process.stdout.write(JSON.stringify({

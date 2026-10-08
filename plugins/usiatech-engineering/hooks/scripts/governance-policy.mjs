@@ -16,7 +16,13 @@ import {
 import { lookupTargets, runLookups, createLookups } from '../../templates/github/scripts/supply-chain-lookups.mjs'
 
 const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit']
-const CASE_INSENSITIVE_FS = ['win32', 'darwin'].includes(process.platform)
+/** Whether this platform's file system ignores case (used for path matching here and in the after-Bash check). */
+export const CASE_INSENSITIVE_FS = ['win32', 'darwin'].includes(process.platform)
+
+// R7: Windows reads "name:stream" and "name::$DATA" as a stream of "name" and drops trailing dots and spaces from
+// every folder and file name, so `.github./workflows/x.yml::$DATA` writes `.github/workflows/x.yml`. Used only to
+// decide whether an edit lands on a workflow or dependency file (and to read that file); other path checks keep the raw name.
+const windowsCanonical = (rel) => rel.split('/').map((seg) => seg.replace(/:.*$/, '').replace(/[. ]+$/, '')).join('/')
 
 // ESP-9: writes outside the project that need no prompt (still logged, as decision "trusted"). $TMP is the OS temp
 // folder, ~ the home folder, {project} the project folder as Claude Code names it (each character other than
@@ -256,6 +262,8 @@ const editedText = (tool, ti) => {
 const pushTargets = (cmd, branch) =>
   new RegExp(String.raw`\bgit\s+push\b[^;&|]*(\s["']?|:["']?|refs/heads/)${escapeRegExp(branch)}["']?(?=\s|$|[;&|])`).test(cmd)
 
+const SNAPSHOT_COMMAND = /usiatech-governance|bash-wf-/i
+
 const decideBash = (cmd, { cfg, gov, repoRules }, git, root) => {
   for (const [why, re] of [...DENY_COMMANDS, ...repoRules.deny]) {
     if (new RegExp(re, 'i').test(cmd)) return decision('deny', `Blocked: ${why}.`, cmd)
@@ -272,6 +280,8 @@ const decideBash = (cmd, { cfg, gov, repoRules }, git, root) => {
   for (const [why, re] of [...ASK_COMMANDS, ...repoRules.ask]) {
     if (new RegExp(re, 'i').test(cmd)) return decision('ask', `Risky action: ${why}. Confirm it is part of the approved plan.`, cmd)
   }
+  // R6: the after-Bash check trusts its snapshot, so a command that could rewrite one needs confirmation.
+  if (SNAPSHOT_COMMAND.test(cmd)) return decision('ask', 'The command names the after-Bash workflow snapshots (usiatech-governance, bash-wf-*), which could hide a workflow change. Confirm it is part of the approved plan.', cmd)
   return null
 }
 
@@ -312,9 +322,10 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
   // Before the plan/exempt/ask checks: a secret is never fine, wherever it is written.
   const secret = findSecret(editedText(tool, ti))
   if (secret?.decision === 'deny') return decision('deny', `The edit writes what looks like a ${secret.why}. Keep secrets in env files or a secret manager.`, rel)
-  const kind = isWorkflowPath(rel) ? 'workflow' : dependencyKind(rel) ? 'dependency' : null
-  const { findings, failures } = kind === 'workflow' ? { findings: workflowFindings(rel, tool, ti, gov, root, p, ic), failures: [] }
-    : kind === 'dependency' ? await dependencyFindings(rel, tool, ti, gov, root, p, ic, net)
+  const contentRel = p.sep === '\\' ? windowsCanonical(rel) : rel
+  const kind = isWorkflowPath(contentRel) ? 'workflow' : dependencyKind(contentRel) ? 'dependency' : null
+  const { findings, failures } = kind === 'workflow' ? { findings: workflowFindings(contentRel, tool, ti, gov, root, p, ic), failures: [] }
+    : kind === 'dependency' ? await dependencyFindings(contentRel, tool, ti, gov, root, p, ic, net)
     : { findings: [], failures: [] }
   const blocking = blockingFindings(findings)
   const scope = matchAny(rel, [PLAN_PATH], ic) && gov.planEdits !== 'ask' && evidenceOnlyPlanEdit(rel, tool, ti, root, p)

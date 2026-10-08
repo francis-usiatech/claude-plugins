@@ -52,6 +52,19 @@ describe('evaluate: Bash ask rules', () => {
   for (const cmd of ['npm install', 'npm ci', 'git status', 'cat .env.example', 'ls -la', 'rm file.txt', 'ansible-playbook site.yml --check']) {
     it(`should allow: ${cmd}`, async () => assert.equal((await bash(cmd)), null))
   }
+
+  // R6: a command that names the after-Bash snapshots could rewrite its own snapshot to hide a workflow change.
+  for (const cmd of [
+    'rm /tmp/usiatech-governance/C--repo/bash-wf-toolu_1.json',
+    'echo {} > "$TMPDIR/USIATECH-GOVERNANCE/x/y.json"',
+    'cp empty.json ./bash-wf-toolu_abc.json',
+  ]) {
+    it(`should ask when a command names the after-Bash snapshots: ${cmd}`, async () => {
+      const r = await bash(cmd)
+      assert.equal(r?.decision, 'ask')
+      assert.match(r.reason, /snapshot/)
+    })
+  }
 })
 
 describe('evaluate: protected branches', () => {
@@ -379,6 +392,63 @@ describe('evaluate: Windows paths', () => {
 
   it('should treat a different drive-letter case as the same drive', async () => {
     assert.equal((await win(String.raw`c:\repo\.env`)).decision, 'deny')
+  })
+})
+
+describe('evaluate: Windows workflow path variants (R7; AC7)', () => {
+  const injection = 'on: issues\njobs:\n  a:\n    steps:\n      - run: echo "${{ github.event.issue.title }}"\n'
+  const noAsk = { governance: { askPaths: [] } }
+  const variants = ['.github/workflows/x.yml.', '.github/workflows/x.yml ', '.github/workflows/x.yml::$DATA', '.github/workflows/x.yml:stream',
+    '.github/workflows/x.yml. .', '.github./workflows/x.yml', '.github/workflows /x.yml']
+  const write = (file_path, pathApi, root) =>
+    evaluate({ tool_name: 'Write', tool_input: { file_path, content: injection } }, { root, git: fakeGit(), pathApi, caseInsensitive: pathApi === path.win32, cfg: noAsk })
+
+  for (const file of variants) {
+    it(`should check ${JSON.stringify(file)} as a workflow on Windows`, async () => {
+      const r = await write(file, path.win32, String.raw`C:\repo`)
+      assert.equal(r?.decision, 'ask', JSON.stringify(r))
+      assert.match(r.reason, /\[wf-untrusted-input, high\] \.github\/workflows\/x\.yml:5/)
+    })
+
+    it(`should not treat ${JSON.stringify(file)} as a workflow on POSIX`, async () => {
+      assert.equal(await write(file, path.posix, '/repo'), null)
+    })
+  }
+
+  it('should compare against the real file on disk when the edit names it by a variant', async () => {
+    const root = tempDir()
+    const wf = '.github/workflows/ci.yml'
+    writeFiles(root, { [wf]: 'on: push\njobs:\n  a:\n    permissions:\n      contents: read\n    steps:\n      - run: echo ok\n' })
+    const r = await evaluate({ tool_name: 'Edit', tool_input: { file_path: `${wf}::$DATA`, old_string: 'contents: read', new_string: 'contents: write' } },
+      { root, git: fakeGit(), cfg: noAsk })
+    // Native paths: only Windows maps the variant onto ci.yml; elsewhere it is an unrelated, non-workflow name.
+    if (process.platform === 'win32') assert.deepEqual(r?.findings?.map((f) => f.rule), ['wf-permissions-widened'], JSON.stringify(r))
+    else assert.equal(r, null)
+  })
+
+  describe('dependency files', () => {
+    const typosquat = JSON.stringify({ name: 'app', dependencies: { expresss: '^4.0.0' } }, null, 2) + '\n'
+    const lookups = { registry: async () => ({ found: true, version: '4.0.0', deprecated: null, latestTime: new Date().toISOString(), scripts: {} }), advisories: async () => ({}) }
+    const writeDep = (file_path, pathApi, root) =>
+      evaluate({ tool_name: 'Write', tool_input: { file_path, content: typosquat } }, { root, git: fakeGit(), pathApi, caseInsensitive: pathApi === path.win32, cfg: noAsk, lookups })
+
+    for (const file of ['package.json.', 'package.json ', 'package.json::$DATA', 'apps/web/package.json:x']) {
+      it(`should check ${JSON.stringify(file)} as a dependency manifest on Windows`, async () => {
+        const r = await writeDep(file, path.win32, String.raw`C:\repo`)
+        assert.equal(r?.decision, 'ask', JSON.stringify(r))
+        assert.match(r.reason, /\[sc-typosquat, high\]/)
+      })
+
+      it(`should not treat ${JSON.stringify(file)} as a dependency manifest on POSIX`, async () => {
+        assert.equal(await writeDep(file, path.posix, '/repo'), null)
+      })
+    }
+  })
+
+  it('should leave non-workflow checks on the raw name', async () => {
+    const win = (file_path) => evaluate({ tool_name: 'Edit', tool_input: { file_path } }, { root: String.raw`C:\repo`, git: fakeGit(), pathApi: path.win32, caseInsensitive: true, cfg: noAsk })
+    assert.equal(await win('src/a.mjs:hidden'), null)
+    assert.equal(await win('.github/workflows/notes.txt.'), null)
   })
 })
 
