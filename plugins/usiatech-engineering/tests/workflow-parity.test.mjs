@@ -7,7 +7,8 @@ import path from 'node:path'
 import { evaluate } from '../hooks/scripts/governance-policy.mjs'
 import { parseWorkflowYaml } from '../templates/github/scripts/workflow-rules.mjs'
 import { runGovernanceChecks } from '../templates/github/scripts/governance-checks.mjs'
-import { makeRepo, makeGovTree, runNode, tempDir, writeFiles, cleanupTempDirs, PLUGIN_ROOT } from './helpers.mjs'
+import { snapshotWorkflows } from '../hooks/scripts/bash-workflow-check.mjs'
+import { makeRepo, makeGovTree, runNode, tempDir, writeFiles, cleanupTempDirs, PLUGIN_ROOT, BASH_WF_SCRIPT } from './helpers.mjs'
 
 after(cleanupTempDirs)
 
@@ -30,6 +31,20 @@ const guardTiers = async (file, content, base, lookups) => {
   const r = await evaluate({ tool_name: 'Write', tool_input: { file_path: file, content } }, { root, cfg: config, git, lookups })
   assert.equal(r?.failures, undefined, `guard lookup failures for ${file}`)
   return key((r?.findings || []).map((f) => `${f.rule}:${f.tier}`))
+}
+
+// The after-Bash hook (R6): snapshot, a shell-style write, then the hook; tiers come from its log entries.
+const bashTiers = async (file, content, base) => {
+  const root = tempDir()
+  writeFiles(root, { '.claude/engineering.json': JSON.stringify(config), ...(base != null && { [file]: base }) })
+  snapshotWorkflows(root, 'toolu_parity')
+  writeFiles(root, { [file]: content })
+  const r = await runNode(BASH_WF_SCRIPT, { cwd: root, env: { CLAUDE_PROJECT_DIR: root }, input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'x' }, tool_use_id: 'toolu_parity' }) })
+  assert.equal(r.code, 0, r.stderr)
+  const log = path.join(root, '.claude', 'governance-log.jsonl')
+  const entries = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []
+  assert.deepEqual(entries.filter((e) => e.decision === 'error'), [], `after-Bash errors for ${file}`)
+  return key(entries.filter((e) => e.decision === 'finding').map((e) => `${e.rule}:${e.tier}`))
 }
 
 const repoFor = (file, content, base) =>
@@ -60,7 +75,9 @@ describe('workflow rules: guard and CI parity (AC14)', () => {
     it(`should give the same tiers for ${name}`, async () => {
       const file = `.github/workflows/${name}`
       const base = BASES[name] ? read(BASES[name]) : null
-      assert.equal(await ciTiers(file, read(name), base), await guardTiers(file, read(name), base))
+      const guard = await guardTiers(file, read(name), base)
+      assert.equal(await ciTiers(file, read(name), base), guard)
+      assert.equal(await bashTiers(file, read(name), base), guard, 'after-Bash check (R6)')
     })
   }
 

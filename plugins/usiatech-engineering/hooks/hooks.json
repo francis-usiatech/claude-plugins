@@ -1,11 +1,27 @@
 {
-  "description": "Governance guard: denies catastrophic or rule-breaking actions and edits that write secrets, asks for confirmation on risky commands, likely hard-coded credentials, governance/CI/dependency files and edits outside the approved plan; logs every decision to .claude/governance-log.jsonl.",
+  "description": "Governance guard: denies catastrophic or rule-breaking actions and edits that write secrets, asks for confirmation on risky commands, likely hard-coded credentials, governance/CI/dependency files and edits outside the approved plan; after each Bash command, checks any workflow file it changed; logs every decision to .claude/governance-log.jsonl.",
   "hooks": {
     "PreToolUse": [
       {
         "matcher": "Bash|Edit|MultiEdit|Write|NotebookEdit",
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/governance-guard.mjs\"", "timeout": 10 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/bash-workflow-check.mjs\"", "timeout": 10 }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/bash-workflow-check.mjs\"", "timeout": 10 }
         ]
       }
     ]
