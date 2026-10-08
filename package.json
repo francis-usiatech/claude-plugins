@@ -7,6 +7,6 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test && node --test plugins/usiatech-engineering/tests/bash-workflow-timing.perf.mjs"
   }
 }

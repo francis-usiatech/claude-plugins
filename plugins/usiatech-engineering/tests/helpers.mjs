@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 export const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 export const CI_SCRIPTS = path.join(PLUGIN_ROOT, 'templates', 'github', 'scripts')
 export const GUARD_SCRIPT = path.join(PLUGIN_ROOT, 'hooks', 'scripts', 'governance-guard.mjs')
+export const BASH_WF_SCRIPT = path.join(PLUGIN_ROOT, 'hooks', 'scripts', 'bash-workflow-check.mjs')
 
 const tempDirs = []
 export const tempDir = (prefix = 'usiatech-test-') => {
