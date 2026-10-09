@@ -35,6 +35,9 @@ const TRUSTED_ROOTS = [{ prefix: '$TMP/', place: 'tmpDir', minLiteral: 1 }, { pr
 const NEVER_TRUSTED_NAMES = ['settings.json', 'settings.local.json', '.mcp.json', '.claude.json', 'claude.md', 'agents.md']
 const NEVER_TRUSTED_SEGMENTS = ['.git', 'hooks', 'plugins', '.ssh']
 const GLOB_CHARS = /[*?[{]/
+// ESP-21: the after-Bash snapshots live in $TMP/usiatech-governance (snapshotDir in bash-workflow-check.mjs). Trusting
+// that folder would let an Edit or Write rewrite a snapshot without a prompt and hide a workflow change.
+const SNAPSHOT_FOLDER = 'usiatech-governance'
 
 const trustedEntryProblem = (e) => {
   if (typeof e !== 'string') return 'must be a string'
@@ -47,6 +50,7 @@ const trustedEntryProblem = (e) => {
   if (segs.some((s) => !s || /[. ]$/.test(s))) return `must not have an empty folder name or one ending in "." or a space ("${e}")`
   const literal = segs.findIndex((s) => GLOB_CHARS.test(s.replaceAll('{project}', '')))
   if ((literal === -1 ? segs.length : literal) < root.minLiteral) return `must name a folder below ${root.prefix} ("${e}")`
+  if (root.place === 'tmpDir' && segs[0].toLowerCase() === SNAPSHOT_FOLDER) return `must not name the after-Bash snapshot folder $TMP/${SNAPSHOT_FOLDER} ("${e}")`
   return null
 }
 
