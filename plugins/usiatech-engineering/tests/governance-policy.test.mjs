@@ -937,6 +937,35 @@ describe('evaluate: trusted write paths (ESP-9; AC1, AC2)', () => {
       assert.match(r.reason, /Config problem: "governance\.trustedWritePaths(\[0\])?" must /)
     })
   }
+
+  // ESP-21: the after-Bash snapshots live in $TMP/usiatech-governance; trusting that folder would let an Edit or
+  // Write rewrite a snapshot without a prompt and hide a workflow change.
+  for (const bad of ['$TMP/usiatech-governance/**', '$TMP/usiatech-governance/x/**', '$TMP/usiatech-governance/bash-wf-1.json',
+    '$TMP/USIATECH-Governance/**', '$TMP/usiatech-governance']) {
+    it(`should report a config problem for the snapshot folder entry ${JSON.stringify(bad)}`, async () => {
+      const r = await write(WIN, winTrusted.sessionData, { cfg: { governance: { trustedWritePaths: [bad] } } })
+      assert.equal(r.decision, 'ask')
+      assert.match(r.reason, /Config problem: "governance\.trustedWritePaths\[0\]" must not name the after-Bash snapshot folder/)
+    })
+  }
+
+  // Other spellings of the snapshot folder are already refused by the separator, folder-name and literal-folder rules.
+  for (const bad of ['$TMP/usiatech-governance./**', '$TMP/usiatech-governance /**', '$TMP/usiatech-governance:x/**',
+    String.raw`$TMP/usiatech-governance\x/**`, '$TMP/usiatech-gov*/**', '$TMP/{usiatech-governance,x}/**', '$TMP/*/**']) {
+    it(`should report a config problem for the snapshot folder spelling ${JSON.stringify(bad)}`, async () => {
+      const r = await write(WIN, winTrusted.sessionData, { cfg: { governance: { trustedWritePaths: [bad] } } })
+      assert.equal(r.decision, 'ask')
+      assert.match(r.reason, /Config problem: "governance\.trustedWritePaths\[0\]" must /)
+    })
+  }
+
+  it('should still trust a $TMP folder whose name only starts like the snapshot folder', async () => {
+    const opts = { cfg: { governance: { trustedWritePaths: ['$TMP/usiatech-governance-notes/**', '$TMP/claude/{project}/**'] } } }
+    const notes = await trustedEntry(WIN, String.raw`C:\Users\me\AppData\Local\Temp\usiatech-governance-notes\a.md`, opts)
+    assert.match(notes.reason, /\$TMP\/usiatech-governance-notes\/\*\*/)
+    const scratchpad = await trustedEntry(WIN, winTrusted.scratchpad, opts)
+    assert.match(scratchpad.reason, /\$TMP\/claude\/\{project\}\/\*\*/)
+  })
 })
 
 describe('evaluate: evidence-only plan edits (ESP-9; AC3)', () => {
