@@ -5,7 +5,7 @@ description: Records the plan the user has approved as .claude/plans/active.md, 
 
 # Approve, update or close a plan
 
-The approved plan is the scope baseline. The governance guard asks for confirmation on any file edit outside the plan's **Files** list. The `governance-reviewer` agent checks the finished diff against it. Because the plan sets the scope, the guard also asks before every write to `.claude/plans/active.md`, so expect a confirmation prompt when you record or update it.
+The approved plan is the scope baseline. The governance guard asks for confirmation on any file edit outside the plan's **Files** list. The `governance-reviewer` agent checks the finished diff against it. Because the plan sets the scope, the guard also asks before every write to `.claude/plans/active.md`, so expect a confirmation prompt when you record or update it. A repo that sets `governance.planEdits` to `"all"` in `.claude/engineering.json` turns that prompt off for `active.md` and `.claude/plans/archive/`; each write is still logged as trusted. The trade-off: the governance-reviewer's check for scope added without a dated Change log line is then the only scope check on plan changes, so still add a dated Change log line for every scope change.
 
 Before routing, if `.claude/plans/active.md` already exists and is unfinished, ask whether to close it or replace it. Settle this first, so no clarify or spec work is spent while another plan is in progress.
 

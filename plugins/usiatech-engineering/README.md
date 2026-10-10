@@ -42,7 +42,7 @@ Start from `templates/engineering.json` (or run the `setup-engineering` skill).
 | `allowEnvExample` | Allow edits to `.env.example` (default `true`) |
 | `userGuide` | Guide folder, changelog file, optional manifest |
 | `reviewers` | Agents `release` runs before committing, in two stages: `governance-reviewer` first, then the rest in parallel (default adds `convention-reviewer`, `silent-failure-reviewer`, `security-reviewer`; repo-specific ones allowed) |
-| `governance` | `protectedBranches`, `askPaths`, `requirePlan`, extra `denyCommands` / `askCommands` (regex + reason), `allowlist` (see below), `trustedWritePaths` and `planEdits` (see "Trusted writes" below), `rulesFile` |
+| `governance` | `protectedBranches`, `askPaths`, `requirePlan`, extra `denyCommands` / `askCommands` (regex + reason), `allowlist` (see below), `trustedWritePaths` and `planEdits` (`"allow"`, `"ask"` or `"all"`; see "Trusted writes" below), `rulesFile` |
 
 ## Governance model (layered)
 
@@ -173,12 +173,14 @@ Path checks ignore case on Windows and macOS (`.ENV` is treated as `.env`), and 
   - If the guard can't log a trusted write to `.claude/governance-log.jsonl`, the write asks instead, since the log is its only record.
   - Env files and secrets are refused there as they are anywhere.
   - If Claude Code keeps its scratchpad somewhere other than `$TMP/claude/{project}` on your system, add that folder to the list.
-- **`governance.planEdits`**, `"allow"` (default) or `"ask"`. With `"allow"`, an edit to an existing `.claude/plans/active.md` goes through when the only changes are:
+- **`governance.planEdits`**, `"allow"` (default), `"ask"` or `"all"`. With `"allow"`, an edit to an existing `.claude/plans/active.md` goes through when the only changes are:
   - lines in the Change log;
   - the `[ ]`/`[x]` state of lines under Tasks;
   - `Evidence:` bullets (and the lines indented under them) in the Acceptance criteria section.
 
   Anything else asks: a change to Files, AC text, task text or a heading, a new plan, or an edit whose result can't be worked out. `"ask"` keeps the 0.5.1 behaviour, where every plan edit asks.
+
+  `"all"` trusts every Write, Edit or MultiEdit of `.claude/plans/active.md` and of any file under `.claude/plans/archive/`, including creating or replacing the plan and changing its Files, ACs or tasks. Each one is logged as `"decision": "trusted"`. Env files, secrets and `protectedPaths` are still refused or asked about, and plan files written or moved through Bash are checked as before. **Trade-off:** Claude can then widen its own scope without a prompt, so the governance-reviewer's check becomes the only scope check on plan changes. It flags any Files entry, AC or task added after approval without a dated Change log line. Set the value back to `"allow"` to restore the prompt.
 
 These keys only stop the guard's prompt. Claude Code still asks before writing outside the folders it was started with. To stop that prompt too, add matching rules to your user `~/.claude/settings.json`, using the real folder names:
 
