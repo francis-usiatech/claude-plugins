@@ -73,7 +73,7 @@ Add `governance.planEdits: "all"`. Under it, plan (`active.md`) and archive writ
 - 2026-10-09: PR #78 opened. AC10 and T6 added from the security reviewer's symlink note (a linked `active.md` would be trusted under "all" where it used to ask); Francis chose "Fix in this PR". Spec R9 and AC10 added. Files unchanged.
 
 ## Final status
-- **Shipped** to develop: commits `14cad94` (feature) and `59d78da` (link check), PR #78 merged as `b1cacc9` (2026-10-09). Released as 0.11.0 (minor) under the version-bump rule, on its own release plan. Jira ESP-24/25/26 → Ready for Release.
+- **Shipped** to develop: commits `14cad94` (feature) and `59d78da` (link check), PR #78 merged as `b1cacc9` (2026-10-09). To be released as 0.11.0 (minor) under the version-bump rule, on its own release plan. Jira ESP-24/25/26 → Ready for Release.
 - AC1–AC5: shown (9 tests red-first, now green; only the line 1042 regex changed in existing tests).
 - AC6: shown (governance-reviewer check 9). AC7: shown (README, template `$comment`, approve-plan skill).
 - AC8: shown (repo opt-in trusted by `evaluate`). The manual no-prompt check is still pending the 0.11.0 install.
