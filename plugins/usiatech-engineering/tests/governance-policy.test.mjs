@@ -1115,6 +1115,49 @@ describe('evaluate: planEdits "all" (ESP-24; AC1–AC4)', () => {
     assert.equal((await run('Write', { file_path: '.claude/engineering.json', content: '{}' })).decision, 'ask')
     assert.equal(await run('Write', { file_path: '.claude/governance-log.jsonl', content: '' }), null)
   })
+
+  // R9: a plan path that resolves outside .claude/plans is not trusted. Junctions and hard links need no admin on Windows.
+  const linked = async (setup, file_path) => {
+    const root = tempDir()
+    setup(root)
+    return evaluate({ tool_name: 'Write', tool_input: { file_path, content: PLAN } }, { root, git: fakeGit(), cfg: ALL })
+  }
+  // The ask reason, or the whole result when it didn't ask.
+  const askReason = (r) => (r?.decision === 'ask' ? r.reason : JSON.stringify(r))
+  // Each test names its own reason, so a crash in the check ("could not check") can't pass for a found link.
+  const OUTSIDE = /not trusted by governance\.planEdits "all": "[^"]+" resolves outside \.claude\/plans through a link or junction/
+  const HARD_LINK = /not trusted by governance\.planEdits "all": "[^"]+" is a hard link to another file/
+  const MISSING = /not trusted by governance\.planEdits "all": could not check "[^"]+" for links: .*link to a missing target/
+
+  it('should ask when the archive folder is a link to another folder', async () => {
+    assert.match(askReason(await linked((root) => {
+      mkdirSync(path.join(root, '.github', 'workflows'), { recursive: true })
+      mkdirSync(path.join(root, '.claude', 'plans'), { recursive: true })
+      symlinkSync(path.join(root, '.github', 'workflows'), path.join(root, '.claude', 'plans', 'archive'), 'junction')
+    }, '.claude/plans/archive/ci.yml')), OUTSIDE)
+  })
+
+  it('should ask when the plans folder is a link to another folder', async () => {
+    assert.match(askReason(await linked((root) => {
+      mkdirSync(path.join(root, 'src'), { recursive: true })
+      mkdirSync(path.join(root, '.claude'), { recursive: true })
+      symlinkSync(path.join(root, 'src'), path.join(root, '.claude', 'plans'), 'junction')
+    }, '.claude/plans/active.md')), OUTSIDE)
+  })
+
+  it('should ask when the plan is a hard link to another file', async () => {
+    assert.match(askReason(await linked((root) => {
+      writeFiles(root, { 'src/a.ts': 'x', '.claude/plans/.keep': '' })
+      linkSync(path.join(root, 'src', 'a.ts'), path.join(root, '.claude', 'plans', 'active.md'))
+    }, '.claude/plans/active.md')), HARD_LINK)
+  })
+
+  it('should ask when the archive folder is a link to a missing target', async () => {
+    assert.match(askReason(await linked((root) => {
+      mkdirSync(path.join(root, '.claude', 'plans'), { recursive: true })
+      symlinkSync(path.join(tempDir(), 'missing'), path.join(root, '.claude', 'plans', 'archive'), 'junction')
+    }, '.claude/plans/archive/x.md')), MISSING)
+  })
 })
 
 describe('logEntries (R16, A11)', () => {

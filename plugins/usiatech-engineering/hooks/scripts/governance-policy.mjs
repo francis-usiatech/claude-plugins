@@ -72,6 +72,21 @@ const realOf = (target, p) => {
   return p.join(realpathSync.native(cur), ...tail)
 }
 
+// Why a plan or archive write can't be trusted under planEdits "all", or null. The file must really be under the
+// project's .claude/plans: not reached through a link or junction, and not a hard link sharing content elsewhere.
+const planLinkProblem = (rel, root, p) => {
+  if (p !== path) return null
+  try {
+    const real = realOf(p.join(root, rel), p)
+    const inside = p.relative(p.join(realOf(root, p), '.claude', 'plans'), real)
+    if (inside.startsWith('..') || p.isAbsolute(inside)) return `"${rel}" resolves outside .claude/plans through a link or junction.`
+    if ((statSync(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1) return `"${rel}" is a hard link to another file.`
+    return null
+  } catch (e) {
+    return `could not check "${rel}" for links: ${e?.message || e}.`
+  }
+}
+
 // The trusted entry an outside-project write falls under, or null. Only the temp and home folders themselves are
 // resolved to real paths, so a link inside them (e.g. session-data pointing at ~/.claude) is never trusted.
 const trustedWriteEntry = (file, gov, root, p, ic, places) => {
@@ -333,9 +348,12 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
     : kind === 'dependency' ? await dependencyFindings(contentRel, tool, ti, gov, root, p, ic, net)
     : { findings: [], failures: [] }
   const blocking = blockingFindings(findings)
-  // ESP-22: under "all" every plan and archive write is trusted; the secret ask above and the denies before it still win.
-  const scope = gov.planEdits === 'all' && matchAny(rel, [PLAN_PATH, PLAN_ARCHIVE_PATH], ic)
-    ? { ...decision(null, 'Plan or archive write trusted by governance.planEdits "all".', rel), trusted: true }
+  // ESP-24: under "all" every plan and archive write is trusted; the secret ask above and the denies before it still win.
+  // A path that leaves .claude/plans through a link asks instead (R9).
+  const allPlan = gov.planEdits === 'all' && matchAny(rel, [PLAN_PATH, PLAN_ARCHIVE_PATH], ic)
+  const linkProblem = allPlan && planLinkProblem(rel, root, p)
+  const scope = linkProblem ? decision('ask', `Plan or archive write not trusted by governance.planEdits "all": ${linkProblem}`, rel)
+    : allPlan ? { ...decision(null, 'Plan or archive write trusted by governance.planEdits "all".', rel), trusted: true }
     : matchAny(rel, [PLAN_PATH], ic) && gov.planEdits !== 'ask' && evidenceOnlyPlanEdit(rel, tool, ti, root, p)
       ? { ...decision(null, 'The plan edit only changes evidence, task ticks or the change log.', rel), trusted: true }
       : decideScope(rel, gov, root, ic)
