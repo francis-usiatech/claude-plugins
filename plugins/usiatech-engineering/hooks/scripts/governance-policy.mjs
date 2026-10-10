@@ -16,6 +16,7 @@ import {
 import { lookupTargets, runLookups, createLookups } from '../../templates/github/scripts/supply-chain-lookups.mjs'
 
 const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit']
+const PLAN_ARCHIVE_PATH = '.claude/plans/archive/**'
 /** Whether this platform's file system ignores case (used for path matching here and in the after-Bash check). */
 export const CASE_INSENSITIVE_FS = ['win32', 'darwin'].includes(process.platform)
 
@@ -169,8 +170,8 @@ export const sanitizeConfig = (raw) => {
   // R8: named by their index in the raw list, so worked out before the invalid entries are dropped.
   gov.allowlistWarnings = allowlistWarnings(gov.allowlist)
   gov.allowlist = allow.entries
-  if (gov.planEdits != null && !['allow', 'ask'].includes(gov.planEdits)) {
-    problems.push('"governance.planEdits" must be "allow" or "ask"')
+  if (gov.planEdits != null && !['allow', 'ask', 'all'].includes(gov.planEdits)) {
+    problems.push('"governance.planEdits" must be "allow", "ask" or "all"')
     delete gov.planEdits
   }
   if (gov.trustedWritePaths != null) {
@@ -332,9 +333,12 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
     : kind === 'dependency' ? await dependencyFindings(contentRel, tool, ti, gov, root, p, ic, net)
     : { findings: [], failures: [] }
   const blocking = blockingFindings(findings)
-  const scope = matchAny(rel, [PLAN_PATH], ic) && gov.planEdits !== 'ask' && evidenceOnlyPlanEdit(rel, tool, ti, root, p)
-    ? { ...decision(null, 'The plan edit only changes evidence, task ticks or the change log.', rel), trusted: true }
-    : decideScope(rel, gov, root, ic)
+  // ESP-22: under "all" every plan and archive write is trusted; the secret ask above and the denies before it still win.
+  const scope = gov.planEdits === 'all' && matchAny(rel, [PLAN_PATH, PLAN_ARCHIVE_PATH], ic)
+    ? { ...decision(null, 'Plan or archive write trusted by governance.planEdits "all".', rel), trusted: true }
+    : matchAny(rel, [PLAN_PATH], ic) && gov.planEdits !== 'ask' && evidenceOnlyPlanEdit(rel, tool, ti, root, p)
+      ? { ...decision(null, 'The plan edit only changes evidence, task ticks or the change log.', rel), trusted: true }
+      : decideScope(rel, gov, root, ic)
   // A credential or content ask must not hide a scope or governance ask; the user confirms them all at once.
   const reasons = [
     secret && `The edit looks like it hard-codes a ${secret.why}. Confirm it is not a real secret.`,

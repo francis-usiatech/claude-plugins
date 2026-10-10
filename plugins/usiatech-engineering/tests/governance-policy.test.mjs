@@ -1039,7 +1039,81 @@ describe('evaluate: evidence-only plan edits (ESP-9; AC3)', () => {
     assert.equal(outcome(await replace(...evidence, { cfg: { governance: { planEdits: 'ask' } } })), 'ask')
     const r = await replace(...evidence, { cfg: { governance: { planEdits: 'yes' } } })
     assert.equal(r.decision, 'ask')
-    assert.match(r.reason, /Config problem: "governance\.planEdits" must be "allow" or "ask"/)
+    assert.match(r.reason, /Config problem: "governance\.planEdits" must be "allow", "ask" or "all"/)
+  })
+})
+
+describe('evaluate: planEdits "all" (ESP-24; AC1–AC4)', () => {
+  const PLAN = '# Plan: x\n\n## Goal\ng\n\n## Acceptance criteria\n- AC1: a works\n  - Evidence:\n\n## Tasks\n- [ ] T1: do a (covers AC1)\n\n## Files\n- `src/**`\n\n## Change log\n- 2026-10-06: drafted\n'
+  const ARCHIVE = '.claude/plans/archive/2026-10-09-x.md'
+  const ALL = { governance: { planEdits: 'all' } }
+  // Built at runtime so this file never holds a secret-shaped literal.
+  const privateKey = '-----BEGIN ' + 'RSA PRIVATE KEY-----\n' + 'A'.repeat(64) + '\n'
+  const askSecret = 'const password = "' + 'h'.repeat(16) + '"'
+  const run = (tool_name, tool_input, opts = {}) => {
+    const root = tempDir()
+    writeFiles(root, opts.files ?? {})
+    return evaluate({ tool_name, tool_input }, { root, git: fakeGit(), cfg: ALL, ...opts })
+  }
+  // "trusted": let through with exactly one trusted log entry that names the setting.
+  const outcome = (r, tool) => {
+    const entries = logEntries(r, tool)
+    const trusted = !r?.decision && entries.length === 1 && entries[0].decision === 'trusted' && /planEdits "all"/.test(entries[0].reason)
+    return trusted ? 'trusted' : r?.decision ? `${r.decision}: ${r.reason}` : JSON.stringify(r)
+  }
+
+  it('should accept "all" with no config problem', async () => {
+    assert.equal(await run('Write', { file_path: 'src/a.ts', content: 'x' }), null)
+    assert.equal(await run('Write', { file_path: 'src/a.ts', content: 'x' }, { cfg: { governance: { planEdits: 'everything' } } }).then((r) => r?.decision), 'ask')
+  })
+
+  it('should trust creating and replacing the plan with Write', async () => {
+    const create = { file_path: '.claude/plans/active.md', content: PLAN }
+    assert.equal(outcome(await run('Write', create), 'Write'), 'trusted')
+    assert.equal(outcome(await run('Write', { ...create, content: PLAN.replace('a works', 'b works') }, { files: { '.claude/plans/active.md': PLAN } }), 'Write'), 'trusted')
+  })
+
+  it('should trust a new Files entry made with Edit or MultiEdit', async () => {
+    const files = { '.claude/plans/active.md': PLAN }
+    const add = { old_string: '- `src/**`\n', new_string: '- `src/**`\n- `lib/**`\n' }
+    assert.equal(outcome(await run('Edit', { file_path: '.claude/plans/active.md', ...add }, { files }), 'Edit'), 'trusted')
+    assert.equal(outcome(await run('MultiEdit', { file_path: '.claude/plans/active.md', edits: [add, { old_string: 'a works', new_string: 'b works' }] }, { files }), 'MultiEdit'), 'trusted')
+  })
+
+  it('should still ask when creating the plan without "all"', async () => {
+    const r = await run('Write', { file_path: '.claude/plans/active.md', content: PLAN }, { cfg: {} })
+    assert.equal(r.decision, 'ask')
+    assert.match(r.reason, /approved plan sets the edit scope/)
+  })
+
+  it('should trust creating, editing and overwriting an archive file', async () => {
+    const files = { [ARCHIVE]: PLAN }
+    assert.equal(outcome(await run('Write', { file_path: ARCHIVE, content: PLAN }), 'Write'), 'trusted')
+    assert.equal(outcome(await run('Edit', { file_path: ARCHIVE, old_string: 'a works', new_string: 'b works' }, { files }), 'Edit'), 'trusted')
+    assert.equal(outcome(await run('Write', { file_path: ARCHIVE, content: '# replaced\n' }, { files }), 'Write'), 'trusted')
+  })
+
+  it('should still deny a private key in a plan or archive write', async () => {
+    assert.equal((await run('Write', { file_path: '.claude/plans/active.md', content: PLAN + privateKey })).decision, 'deny')
+    assert.equal((await run('Edit', { file_path: ARCHIVE, old_string: 'a works', new_string: privateKey }, { files: { [ARCHIVE]: PLAN } })).decision, 'deny')
+  })
+
+  it('should still ask about a secret the guard only asks about', async () => {
+    const r = await run('Write', { file_path: '.claude/plans/active.md', content: PLAN + askSecret })
+    assert.equal(r.decision, 'ask')
+    assert.match(r.reason, /hard-coded credential/)
+    assert.doesNotMatch(r.reason, /approved plan sets the edit scope/)
+  })
+
+  it('should still deny a plan or archive path matched by protectedPaths', async () => {
+    const cfg = { ...ALL, protectedPaths: ['.claude/plans/**'] }
+    assert.equal((await run('Write', { file_path: '.claude/plans/active.md', content: PLAN }, { cfg })).decision, 'deny')
+    assert.equal((await run('Write', { file_path: ARCHIVE, content: PLAN }, { cfg })).decision, 'deny')
+  })
+
+  it('should not trust other files under .claude/ or the governance log', async () => {
+    assert.equal((await run('Write', { file_path: '.claude/engineering.json', content: '{}' })).decision, 'ask')
+    assert.equal(await run('Write', { file_path: '.claude/governance-log.jsonl', content: '' }), null)
   })
 })
 
