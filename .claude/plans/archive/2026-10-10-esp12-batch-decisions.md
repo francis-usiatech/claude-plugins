@@ -60,7 +60,7 @@ At approve-plan pre-flight and at release review, Claude asks one batched questi
 - 2026-10-10: closed and archived inside the 0.12.0 release PR instead of a separate close-plan PR, per ESP-39's intent; the release has no separate release plan (Francis: "Approve as written").
 
 ## Final status
-- **Shipped** to develop: feature commit `7a62993`, PR #83 merged as `407f7c4` (2026-10-10). To be released as 0.12.0 (minor, feat) under the version-bump rule, in PR `chore/release-0.12.0`. Jira ESP-12/32/33/34 → Ready for Release.
+- **Shipped** to develop: feature commit `7a62993`, PR #83 merged as `407f7c4` (2026-10-10). Released as 0.12.0 (minor, feat) under the version-bump rule: release PR #84 (`f4020ba`), promotion PR #85 (`6173c5d`), annotated tag `v0.12.0` on main. `claude plugin update` shows 0.12.0 at user scope. Jira ESP-12/32/33/34 → Released.
 - AC1–AC5: shown (plugin-structure batch-decisions tests red-first, now green; file 89/89).
 - AC6: shown (governance-policy decisions-key tests red-first, now green; file 263/263).
 - AC7: shown (README `decisions` row, template key, both validates exit 0).
