@@ -42,6 +42,7 @@ Start from `templates/engineering.json` (or run the `setup-engineering` skill).
 | `allowEnvExample` | Allow edits to `.env.example` (default `true`) |
 | `userGuide` | Guide folder, changelog file, optional manifest |
 | `reviewers` | Agents `release` runs before committing, in two stages: `governance-reviewer` first, then the rest in parallel (default adds `convention-reviewer`, `silent-failure-reviewer`, `security-reviewer`; repo-specific ones allowed) |
+| `decisions` | How `approve-plan` and `release` ask for decisions. `batch` (default `true`) puts every open decision at pre-flight and at release review into one question with a recommended default; `false` asks about each one on its own. `nitsNeedDecision` (default `false`) means nits listed in the PR need no decision; `true` asks about each nit. A non-boolean value is reported as a config problem and counts as the default. Older guards ignore the `decisions` key |
 | `governance` | `protectedBranches`, `askPaths`, `requirePlan`, extra `denyCommands` / `askCommands` (regex + reason), `allowlist` (see below), `trustedWritePaths` and `planEdits` (`"allow"`, `"ask"` or `"all"`; see "Trusted writes" below), `rulesFile` |
 
 ## Governance model (layered)
