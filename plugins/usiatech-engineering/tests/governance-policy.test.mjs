@@ -2,7 +2,7 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, mkdirSync, symlinkSync, linkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { evaluate, loadConfig, planFiles, gitProbe, logEntries } from '../hooks/scripts/governance-policy.mjs'
+import { evaluate, loadConfig, sanitizeConfig, planFiles, gitProbe, logEntries } from '../hooks/scripts/governance-policy.mjs'
 import { GUARD_DEADLINE_MS } from '../templates/github/scripts/supply-chain-lookups.mjs'
 import { tempDir, cleanupTempDirs, writeFiles, makeRepo, git, PLUGIN_ROOT } from './helpers.mjs'
 
@@ -1177,5 +1177,32 @@ describe('logEntries (R16, A11)', () => {
   it('should log nothing for an allowed action with no findings', () => {
     assert.deepEqual(logEntries(null, 'Bash'), [])
     assert.deepEqual(logEntries({ decision: null, reason: '', target: 'x' }, 'Write'), [])
+  })
+})
+
+describe('evaluate: decisions keys (ESP-32; spec AC6)', () => {
+  const run = (cfg) => evaluate({ tool_name: 'Write', tool_input: { file_path: 'src/a.ts', content: 'x' } }, { root: tempDir(), git: fakeGit(), cfg })
+
+  it('should report no config problem for a missing decisions or valid booleans', async () => {
+    assert.equal(await run({}), null)
+    assert.equal(await run({ decisions: { batch: false, nitsNeedDecision: true } }), null)
+    assert.equal(await run({ decisions: {} }), null)
+  })
+
+  it('should report a non-object decisions as a config problem and drop it', async () => {
+    const r = await run({ decisions: 'x' })
+    assert.equal(r?.decision, 'ask')
+    assert.match(r.reason, /Config problem: "decisions" must be an object/)
+    assert.equal(sanitizeConfig({ decisions: 'x' }).cfg.decisions, undefined)
+  })
+
+  it('should report a non-boolean decisions.batch or decisions.nitsNeedDecision and drop only that value', async () => {
+    const batch = await run({ decisions: { batch: 'yes' } })
+    assert.equal(batch?.decision, 'ask')
+    assert.match(batch.reason, /Config problem: "decisions\.batch" must be true or false/)
+    const nits = await run({ decisions: { nitsNeedDecision: 1 } })
+    assert.equal(nits?.decision, 'ask')
+    assert.match(nits.reason, /Config problem: "decisions\.nitsNeedDecision" must be true or false/)
+    assert.deepEqual(sanitizeConfig({ decisions: { batch: 'yes', nitsNeedDecision: true } }).cfg.decisions, { nitsNeedDecision: true })
   })
 })

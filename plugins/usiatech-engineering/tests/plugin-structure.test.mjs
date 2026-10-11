@@ -514,6 +514,35 @@ describe('plugin structure: step-4.2 mutation-test (#22, AC14, R18)', () => {
   })
 })
 
+describe('plugin structure: batch decisions (ESP-33; spec AC1–AC5)', () => {
+  const approve = () => body(read('skills', 'approve-plan', 'SKILL.md'))
+  const release = () => body(read('skills', 'release', 'SKILL.md'))
+
+  it('should batch pre-flight decisions in approve-plan with a recommended default, unless decisions.batch is false (AC1)', () => {
+    assert.match(approve(), /one question/i)
+    assert.match(approve(), /recommended default/i)
+    assert.match(approve(), /`decisions\.batch`[^\n]*`false`/)
+  })
+
+  it('should stop after stage 1 only on a FLAG and otherwise ask once after stage 2, blocking findings excluded (AC2)', () => {
+    const text = release()
+    assert.match(text, /\*\*Stage 1[^\n]*FLAG[^\n]*one question/i)
+    assert.match(text, /after stage 2[^\n]*one question[^\n]*recommended default/i)
+    assert.match(text, /\*\*Decisions:\*\*[^\n]*the `mutation-test` suggestion/)
+    assert.match(text, /blocking findings[^\n]*(not|never)[^\n]*(batch|decision)/i)
+    assert.match(text, /`decisions\.batch`[^\n]*`false`/)
+  })
+
+  it('should record FLAG decisions in the plan change log in both skills (AC3)', () => {
+    assert.match(approve(), /FLAG[^\n]*decision[^\n]*change log/i)
+    assert.match(release(), /FLAG[^\n]*decision[^\n]*change log[^\n]*one question/i)
+  })
+
+  it('should say nits listed in the PR need no decision unless decisions.nitsNeedDecision is true (AC4)', () => {
+    assert.match(release(), /nits[^\n]*PR[^\n]*no decision[^\n]*`decisions\.nitsNeedDecision`[^\n]*`true`/i)
+  })
+})
+
 describe('plugin structure: release metadata', () => {
   it('should keep plugin, marketplace and both README versions in step', () => {
     const version = JSON.parse(read('.claude-plugin', 'plugin.json')).version
