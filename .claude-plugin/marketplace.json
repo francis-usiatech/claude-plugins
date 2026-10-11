@@ -7,7 +7,7 @@
       "name": "usiatech-engineering",
       "source": "./plugins/usiatech-engineering",
       "description": "UsiaTech Engineering: verification gate, release flow, plan approval and scope control, governance and convention review, user-guide updates, and a guard for dangerous actions.",
-      "version": "0.11.0"
+      "version": "0.12.0"
     }
   ]
 }

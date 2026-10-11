@@ -157,6 +157,14 @@ export const sanitizeConfig = (raw) => {
     cfg.git = { ...cfg.git }
     delete cfg.git.releaseBranch
   }
+  // ESP-12: read by the approve-plan and release skills, not by the guard; checked here so a typo is reported.
+  if (cfg.decisions != null && !isPlainObject(cfg.decisions)) { problems.push('"decisions" must be an object'); delete cfg.decisions }
+  for (const key of ['batch', 'nitsNeedDecision']) {
+    if (cfg.decisions?.[key] == null || typeof cfg.decisions[key] === 'boolean') continue
+    problems.push(`"decisions.${key}" must be true or false`)
+    cfg.decisions = { ...cfg.decisions }
+    delete cfg.decisions[key]
+  }
 
   for (const [obj, key, label] of [[cfg, 'protectedPaths'], [cfg, 'immutableWhenCommitted'], [gov, 'askPaths', 'governance.askPaths'], [gov, 'protectedBranches', 'governance.protectedBranches']]) {
     if (obj[key] == null) continue
