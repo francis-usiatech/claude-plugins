@@ -1,7 +1,10 @@
 import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, rmSync, symlinkSync } from 'node:fs'
+import { setTimeout as sleep } from 'node:timers/promises'
+import { pathToFileURL } from 'node:url'
 import { makeRepo, runNode, writeFiles, tempDir, cleanupTempDirs, git, PLUGIN_ROOT } from './helpers.mjs'
 
 // The runner makes a temp folder of its own for each run's log, outside the test's temp dirs.
@@ -157,6 +160,14 @@ describe('gate runner: a gate that cannot start (ESP-44 AC4)', () => {
     ['a when prefix with a leading space', { verify: [ok('a')], verifyConditional: [{ ...ok('cond'), when: [' src/'] }] }, /"when"/],
     ['a when prefix that leaves the repo', { verify: [ok('a')], verifyConditional: [{ ...ok('cond'), when: ['../src/'] }] }, /"when"/],
     ['a step named like the fake-pass check', { verify: [ok('fake-pass check')] }, /"fake-pass check"/],
+    // ESP-52 AC3. Node runs a timer above 2147483647 ms after 1 ms, so a larger value would stop the step at once.
+    ['a timeoutMs of 0', { verify: [{ ...ok('a'), timeoutMs: 0 }] }, /"timeoutMs" of step "a"/],
+    ['a negative timeoutMs', { verify: [{ ...ok('a'), timeoutMs: -1 }] }, /"timeoutMs" of step "a"/],
+    ['a timeoutMs that is not a whole number', { verify: [{ ...ok('a'), timeoutMs: 1.5 }] }, /"timeoutMs" of step "a"/],
+    ['a timeoutMs that is a string', { verify: [{ ...ok('a'), timeoutMs: '60' }] }, /"timeoutMs" of step "a"/],
+    ['a timeoutMs that is null', { verify: [{ ...ok('a'), timeoutMs: null }] }, /"timeoutMs" of step "a"/],
+    ['a timeoutMs above 2147483647', { verify: [{ ...ok('a'), timeoutMs: 2147483648 }] }, /"timeoutMs" of step "a"/],
+    ['a conditional step with a timeoutMs of 0', { verify: [ok('a')], verifyConditional: [{ ...ok('cond'), when: ['src/'], timeoutMs: 0 }] }, /"timeoutMs" of step "cond"/],
   ]
   for (const [what, config, reason] of cases) {
     it(`should run nothing and exit 2 with ${what}`, async () => {
@@ -196,6 +207,132 @@ describe('gate runner: a gate that cannot start (ESP-44 AC4)', () => {
     assert.match(r.stdout, /git/)
     assert.doesNotMatch(r.stdout, /^(PASS|FAIL|NOT RUN|SKIPPED) /m)
     assert.equal(lines(r).at(-1), 'Gate: FAIL')
+  })
+})
+
+describe('gate runner: per-step timeout (ESP-52)', () => {
+  const ON_WINDOWS = process.platform === 'win32'
+  // Prints 60 lines and then never ends.
+  const hang = (name, timeoutMs) => ({ name, run: 'node -e "for(let i=1;i<=60;i++)console.log(\'out \'+i);setInterval(()=>{},1000)"', timeoutMs })
+
+  // A step that starts a second process; both write their process id to a file in the repo and then stay for a
+  // minute, far past any timeout here. They end on their own, so a failed test leaves nothing running for long
+  // and no test has to stop a process by its id.
+  const TREE = `import { spawn } from 'node:child_process'
+import { writeFileSync } from 'node:fs'
+spawn(process.execPath, ['-e', "require('node:fs').writeFileSync('child.pid', String(process.pid));setTimeout(() => {}, 60000)"], { stdio: 'ignore' })
+writeFileSync('parent.pid', String(process.pid))
+setTimeout(() => {}, 60000)
+`
+  const treeRepo = (timeoutMs) => repoWith({ verify: [{ name: 'tree', run: 'node tree.mjs', timeoutMs }] }, { committed: { 'tree.mjs': TREE } })
+  const PID_FILES = ['parent.pid', 'child.pid']
+  const started = (repo) => PID_FILES.every((f) => existsSync(path.join(repo, f)) && /^\d+$/.test(readFileSync(path.join(repo, f), 'utf8')))
+  const pidsOf = (repo) => PID_FILES.map((f) => Number(readFileSync(path.join(repo, f), 'utf8')))
+  const isAlive = (pid) => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch (e) {
+      return e.code === 'EPERM'
+    }
+  }
+  const waitFor = async (condition, ms) => {
+    for (const end = Date.now() + ms; Date.now() < end;) {
+      if (condition()) return true
+      await sleep(50)
+    }
+    return condition()
+  }
+  // Both processes must be gone.
+  const assertTreeStopped = async (repo) => {
+    assert.ok(started(repo), 'both processes started and wrote their process id')
+    const pids = pidsOf(repo)
+    assert.ok(await waitFor(() => !pids.some(isAlive), 5000), `still running: ${pids.filter(isAlive).join(', ')}`)
+  }
+
+  // The timeout leaves the step time to start and print on a busy machine; the checks below need its output.
+  it('should stop a step at its timeout, show its last lines and skip the rest (AC1)', { timeout: 30000 }, async () => {
+    const r = await runGate(repoWith({ verify: [ok('a'), hang('b', 6000), ok('c')] }))
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    assert.match(r.stdout, /^PASS {2}a \(exit 0, \d+ s\)$/m)
+    assert.match(r.stdout, /^FAIL {2}b \(timed out after 6000 ms, \d+ s\)$/m)
+    assert.match(r.stdout, /^NOT RUN {2}c$/m)
+    assert.match(r.stdout, /^NOT RUN {2}fake-pass check$/m)
+    assert.match(r.stdout, /^out 60$/m, 'the end of the timed-out output is shown')
+    assert.match(r.stdout, /^out 21$/m, 'the last 40 lines are shown')
+    assert.doesNotMatch(r.stdout, /^out 20$/m, 'only the last 40 lines are shown')
+    assert.equal(lines(r).at(-1), 'Gate: FAIL')
+  })
+
+  // The timeout leaves both processes time to start on a busy machine; the check below needs them started.
+  it('should stop the whole process tree of a timed-out step (AC2)', { timeout: 40000 }, async () => {
+    const repo = treeRepo(6000)
+    const r = await runGate(repo)
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    assert.match(r.stdout, /^FAIL {2}tree \(timed out after 6000 ms, \d+ s\)$/m)
+    await assertTreeStopped(repo)
+  })
+
+  it('should accept the largest timeout and run the step', async () => {
+    const r = await runGate(repoWith({ verify: [{ ...ok('a'), timeoutMs: 2147483647 }] }))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /^PASS {2}a \(exit 0, \d+ s\)$/m)
+  })
+
+  it('should fail a step that a signal ended (AC5)', async (t) => {
+    if (ON_WINDOWS) return t.skip('on Windows a shell step cannot end by a signal')
+    const r = await runGate(repoWith({ verify: [{ name: 'a', run: 'kill -9 $$' }, ok('b')] }))
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    assert.match(r.stdout, /^FAIL {2}a \(killed by SIGKILL, \d+ s\)$/m)
+    assert.match(r.stdout, /^NOT RUN {2}b$/m)
+    assert.equal(lines(r).at(-1), 'Gate: FAIL')
+  })
+
+  it('should fail a step whose shell cannot be started (AC5)', async (t) => {
+    if (!ON_WINDOWS) return t.skip('on POSIX the shell is always /bin/sh, so it can always be started')
+    // Windows keeps one value per variable name whatever its case, so the name is taken as this process spells it.
+    const comspec = Object.keys(process.env).find((k) => /^comspec$/i.test(k)) ?? 'ComSpec'
+    const r = await runGate(repoWith({ verify: [ok('a'), ok('b')] }), { [comspec]: path.join(tempDir('usiatech-noshell-'), 'missing.exe') })
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    assert.match(r.stdout, /^FAIL {2}a \(could not start: .+, \d+ s\)$/m)
+    assert.match(r.stdout, /^NOT RUN {2}b$/m)
+    assert.match(r.stdout, /^NOT RUN {2}fake-pass check$/m)
+    assert.equal(lines(r).at(-1), 'Gate: FAIL')
+  })
+
+  it('should exit 2 with Gate: FAIL when something throws while a step runs (AC7)', async () => {
+    // Loaded before the runner: the first step's log offset can't be read, which throws inside the step run.
+    const preload = path.join(tempDir('usiatech-preload-'), 'break-fstat.mjs')
+    writeFiles(path.dirname(preload), { 'break-fstat.mjs': "import fs from 'node:fs'\nimport { syncBuiltinESMExports } from 'node:module'\nfs.fstatSync = () => { throw new Error('disk gone') }\nsyncBuiltinESMExports()\n" })
+    // The log's folder is never printed on this path, so it goes into a temp dir the tests remove.
+    const tmp = tempDir('usiatech-gate-tmp-')
+    const r = await runGate(repoWith({ verify: [ok('a')] }), { NODE_OPTIONS: `--import ${pathToFileURL(preload).href}`, TMP: tmp, TEMP: tmp, TMPDIR: tmp })
+    assert.equal(r.code, 2, r.stdout + r.stderr)
+    assert.match(r.stdout, /^The gate could not finish: disk gone$/m)
+    assert.doesNotMatch(r.stdout, /^PASS /m)
+    assert.equal(lines(r).at(-1), 'Gate: FAIL')
+  })
+
+  it('should stop the running step and fail the gate when it is interrupted (AC9)', { timeout: 40000 }, async (t) => {
+    if (ON_WINDOWS) return t.skip('on Windows a test cannot send a process a signal it can handle')
+    const repo = treeRepo(undefined)
+    const child = spawn(process.execPath, [SCRIPT], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    child.stdout.on('data', (d) => { stdout += d })
+    const closed = new Promise((resolve) => child.on('close', (code, signal) => resolve({ code, signal })))
+    try {
+      assert.ok(await waitFor(() => started(repo), 20000), `the step did not start:\n${stdout}`)
+      child.kill('SIGTERM')
+      const end = await closed
+      const log = stdout.match(/^Log: (.+)$/m)?.[1].trim()
+      if (log) logs.push(log)
+      assert.equal(end.code, 1, `${JSON.stringify(end)}\n${stdout}`)
+      assert.match(stdout, /^FAIL {2}tree \(interrupted, \d+ s\)$/m)
+      assert.equal(stdout.split(/\r?\n/).filter(Boolean).at(-1), 'Gate: FAIL')
+      await assertTreeStopped(repo)
+    } finally {
+      child.kill('SIGKILL')
+    }
   })
 })
 
