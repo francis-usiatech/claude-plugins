@@ -106,7 +106,7 @@ Config problems that are harmless or make the guard stricter warn once per chang
   - Checked, no decision needed: Jira shows ESP-35 and ESP-47..50 at Ready for Release.
 
 ## Final status
-- **Shipped** to develop: feature commit `f1fbe21`, PR #87 merged as `5d56a51` (2026-10-12T02:55:48Z). To be released as 0.13.0 (minor, feat) under the version-bump rule, from branch `chore/release-0.13.0`. Jira ESP-35/47/48/49/50 → Ready for Release.
+- **Shipped** to develop: feature commit `f1fbe21`, PR #87 merged as `5d56a51` (2026-10-12T02:55:48Z). Released as 0.13.0 (minor, feat) under the version-bump rule: release PR #88 (`7c9acf2`), promotion PR #89 (`d4743c9`), annotated tag `v0.13.0` on main. `claude plugin update` shows 0.13.0 at user scope. Jira ESP-35/47/48/49/50 → Released.
 - AC1, AC2: shown (governance-policy "advisory warning, once per change" suite; governance-guard no-decision message test).
 - AC3: shown (unknown `planEdits` counts as `"ask"` and doesn't escalate).
 - AC4, AC5: shown (12 escalating cases ask on every call; an escalation names advisory problems too).
