@@ -152,6 +152,10 @@ describe('gate runner: a gate that cannot start (ESP-44 AC4)', () => {
     ['a when prefix that starts with /', { verify: [ok('a')], verifyConditional: [{ ...ok('cond'), when: ['/src/'] }] }, /"when"/],
     ['a step name with a line break', { verify: [{ ...ok('a'), name: 'a\nGate: PASS' }] }, /control characters/],
     ['a step name with a Unicode line break', { verify: [{ ...ok('a'), name: `a${String.fromCodePoint(8232)}b` }] }, /control characters/],
+    ['a run command with a line break', { verify: [{ name: 'two lines', run: 'node -e "process.exit(0)"\nnode -e "process.exit(1)"' }] }, /"run"/],
+    ['a when prefix with a line break', { verify: [ok('a')], verifyConditional: [{ ...ok('cond'), when: ['src/\nGate: PASS'] }] }, /"when"/],
+    ['a when prefix with a leading space', { verify: [ok('a')], verifyConditional: [{ ...ok('cond'), when: [' src/'] }] }, /"when"/],
+    ['a when prefix that leaves the repo', { verify: [ok('a')], verifyConditional: [{ ...ok('cond'), when: ['../src/'] }] }, /"when"/],
     ['a step named like the fake-pass check', { verify: [ok('fake-pass check')] }, /"fake-pass check"/],
   ]
   for (const [what, config, reason] of cases) {

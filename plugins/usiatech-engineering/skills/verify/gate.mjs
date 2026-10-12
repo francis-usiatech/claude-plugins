@@ -24,7 +24,7 @@ const hasControlChar = (text) => [...text].some((c) => c.codePointAt(0) < 32 || 
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 const isText = (v) => typeof v === 'string' && v.trim() !== ''
 // git lists paths relative to the repo root with forward slashes, so any other spelling could never match.
-const isPrefix = (v) => isText(v) && !v.includes('\\') && !v.startsWith('/') && !v.startsWith('./')
+const isPrefix = (v) => isText(v) && v === v.trim() && !hasControlChar(v) && !v.includes('\\') && !v.startsWith('/') && !v.startsWith('./') && !v.split('/').includes('..')
 
 // The two helpers below repeat what templates/github/scripts/fake-pass-check.mjs does. That file is a CI template
 // repos copy, and it keeps these two to itself, so the list is rebuilt here rather than imported.
@@ -41,6 +41,8 @@ const checkSteps = (steps, key, needsWhen) => {
   for (const s of steps) {
     if (!isPlainObject(s) || !isText(s.name) || !isText(s.run)) throw new Error(`.claude/engineering.json "${key}": every step needs a "name" and "run" string.`)
     if (hasControlChar(s.name) || s.name.trim() === FAKE_PASS_NAME) throw new Error(`.claude/engineering.json "${key}": a step "name" can't hold control characters or be "${FAKE_PASS_NAME}".`)
+    // cmd.exe runs only the first line of a command, so a second line would pass without running.
+    if (hasControlChar(s.run)) throw new Error(`.claude/engineering.json "${key}": the "run" of step "${s.name}" can't hold line breaks or other control characters. Use one command per step.`)
     if (needsWhen && !(Array.isArray(s.when) && s.when.length && s.when.every(isPrefix))) {
       throw new Error(`.claude/engineering.json "${key}": step "${s.name}" needs a "when" list of path prefixes, relative to the repo root with forward slashes (for example "src/").`)
     }
