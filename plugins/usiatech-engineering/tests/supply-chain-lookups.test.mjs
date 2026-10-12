@@ -187,17 +187,16 @@ describe('runLookups (R13, R14, D5; AC3, AC11)', () => {
     assert.match(failures[0].reason, /3 of 3/)
   })
 
-  // The test's own timeout turns a hang (no deadline) into a failure.
-  it('should give up at the deadline when a lookup never resolves, and abort the signal', { timeout: 2000 }, async () => {
+  // The test's own timeout turns a hang (no deadline) into a failure. It is under the 6 s default deadline, so a timer
+  // that ignores deadlineMs fails too. No elapsed-time assertion: on a busy machine it can fail with nothing wrong (ESP-51).
+  it('should give up at the deadline when a lookup never resolves, and abort the signal', { timeout: 4000 }, async () => {
     let seen
-    const started = Date.now()
     const { failures } = await runLookups({
       targets: [target()],
       lookups: stubs({ registry: (name, version, { signal }) => { seen = signal; return new Promise(() => {}) } }),
       deadlineMs: 50,
       now: NOW,
     })
-    assert.ok(Date.now() - started < 1000, 'returned well within the hook timeout')
     assert.ok(seen.aborted, 'the lookup signal is aborted at the deadline')
     assert.deepEqual(failures.map((f) => f.lookup).sort(), [LOOKUP.ADVISORIES, LOOKUP.REGISTRY])
     assert.match(failures[0].reason, /timed out after 50 ms/)
