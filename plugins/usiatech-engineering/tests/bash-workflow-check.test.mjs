@@ -1,6 +1,6 @@
 import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, existsSync, readdirSync, mkdirSync, writeFileSync, utimesSync, cpSync, symlinkSync, statSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync, mkdirSync, writeFileSync, utimesSync, cpSync, symlinkSync, statSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { GUARD_SCRIPT, BASH_WF_SCRIPT, PLUGIN_ROOT, runNode, tempDir, cleanupTempDirs, writeFiles, git } from './helpers.mjs'
@@ -113,6 +113,118 @@ describe('after-Bash workflow check (R6; AC6)', () => {
     const r = await bashCall(root, `mkdir -p .github/workflows && cp "${FIXTURE}" .github/workflows/evil.yml`)
     assert.equal(r.out, null)
     assert.deepEqual(readLog(root).filter((e) => e.decision === 'finding').map((e) => [e.rule, e.suppressed]), [['wf-untrusted-input', true]])
+  })
+
+  // ESP-50 (spec R6, AC7). The check is called directly, without the guard, so the entries are its own. Outside a git
+  // repo with no snapshot every workflow file on disk counts as changed, so the config is read on each run.
+  const configEntries = async (cfg, runs) => {
+    const { checkAfterBash, snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
+    const root = tempDir()
+    writeFiles(root, { '.claude/engineering.json': JSON.stringify(cfg), '.github/workflows/ci.yml': CLEAN })
+    try {
+      for (let run = 0; run < runs; run++) await checkAfterBash({ tool_name: 'Bash', tool_input: { command: 'true' } }, root)
+    } finally {
+      rmSync(snapshotDir(root), { recursive: true, force: true })
+    }
+    return readLog(root).filter((e) => e.target === '.claude/engineering.json')
+  }
+
+  it('should log advisory config problems once, as a warning, over two runs (ESP-50; AC7)', async () => {
+    const entries = await configEntries({ decisions: { batch: 'yes' } }, 2)
+    assert.deepEqual(entries.map((e) => e.decision), ['warn'], JSON.stringify(entries))
+    assert.match(entries[0].reason, /Config warning: "decisions\.batch" must be true or false/)
+  })
+
+  it('should log an escalating config problem as an error on every run, naming advisory ones too (ESP-50; AC7)', async () => {
+    const entries = await configEntries({ decisions: { batch: 'yes' }, governance: { askPaths: 'x' } }, 2)
+    assert.deepEqual(entries.map((e) => e.decision), ['error', 'error'], JSON.stringify(entries))
+    for (const e of entries) assert.match(e.reason, /^config problem, checked with the rules that still apply: .*("governance\.askPaths".*"decisions\.batch"|"decisions\.batch".*"governance\.askPaths")/)
+  })
+
+  it('should warn again for a problem that was fixed while an escalating one was present (ESP-35 R5, R6)', async () => {
+    const { checkAfterBash, snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
+    const root = tempDir()
+    writeFiles(root, { '.github/workflows/ci.yml': CLEAN })
+    try {
+      for (const cfg of [{ decisions: { batch: 'yes' } }, { governance: { askPaths: 'x' } }, { decisions: { batch: 'yes' } }]) {
+        writeFiles(root, { '.claude/engineering.json': JSON.stringify(cfg) })
+        await checkAfterBash({ tool_name: 'Bash', tool_input: { command: 'true' } }, root)
+      }
+    } finally {
+      rmSync(snapshotDir(root), { recursive: true, force: true })
+    }
+    const entries = readLog(root).filter((e) => e.target === '.claude/engineering.json')
+    assert.deepEqual(entries.map((e) => e.decision), ['warn', 'error', 'warn'], JSON.stringify(entries))
+  })
+
+  it('should show an advisory config problem it could not log, and log it on the next run (ESP-35 R5, R6)', async () => {
+    const { checkAfterBash, snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
+    const root = tempDir()
+    writeFiles(root, { '.claude/engineering.json': JSON.stringify({ decisions: { batch: 'yes' } }), '.github/workflows/ci.yml': CLEAN })
+    const logFile = path.join(root, '.claude', 'governance-log.jsonl')
+    const run = () => checkAfterBash({ tool_name: 'Bash', tool_input: { command: 'true' } }, root)
+    try {
+      // A folder where the log file should be makes the append fail.
+      mkdirSync(logFile, { recursive: true })
+      const out = await run()
+      assert.match(out.systemMessage, /could not be logged to \.claude\/governance-log\.jsonl: Config warning: "decisions\.batch"/)
+      assert.equal(out.hookSpecificOutput.additionalContext, out.systemMessage)
+      assert.equal(existsSync(path.join(snapshotDir(root), 'config-warned')), false)
+      rmSync(logFile, { recursive: true })
+      assert.equal(await run(), null)
+      assert.equal(await run(), null)
+      assert.deepEqual(readLog(root).filter((e) => e.target === '.claude/engineering.json').map((e) => e.decision), ['warn'])
+    } finally {
+      rmSync(snapshotDir(root), { recursive: true, force: true })
+    }
+  })
+
+  it('should log an error on each run while the marker cannot be written (ESP-35 R6, R7)', async () => {
+    const { checkAfterBash, snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
+    const root = tempDir()
+    writeFiles(root, { '.claude/engineering.json': JSON.stringify({ decisions: { batch: 'yes' } }), '.github/workflows/ci.yml': CLEAN })
+    try {
+      // A file where the project's state folder should be makes the marker write fail.
+      mkdirSync(path.dirname(snapshotDir(root)), { recursive: true })
+      writeFileSync(snapshotDir(root), 'x')
+      for (let run = 0; run < 2; run++) await checkAfterBash({ tool_name: 'Bash', tool_input: { command: 'true' } }, root)
+    } finally {
+      rmSync(snapshotDir(root), { recursive: true, force: true })
+    }
+    const entries = readLog(root).filter((e) => e.target === '.claude/engineering.json')
+    assert.deepEqual(entries.map((e) => e.decision), ['warn', 'error', 'warn', 'error'], JSON.stringify(entries))
+    assert.match(entries[1].reason, /could not record that the config warning was shown/)
+  })
+
+  it('should log a marker it cannot clear as an error, beside an escalating problem too (ESP-35 R5, R7)', async () => {
+    const { checkAfterBash, snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
+    const root = tempDir()
+    writeFiles(root, { '.github/workflows/ci.yml': CLEAN })
+    try {
+      // A folder with a file in it where the marker should be: removing it fails.
+      mkdirSync(path.join(snapshotDir(root), 'config-warned'), { recursive: true })
+      writeFileSync(path.join(snapshotDir(root), 'config-warned', 'x'), 'x')
+      for (const cfg of [{}, { governance: { askPaths: 'x' } }]) {
+        writeFiles(root, { '.claude/engineering.json': JSON.stringify(cfg) })
+        await checkAfterBash({ tool_name: 'Bash', tool_input: { command: 'true' } }, root)
+      }
+    } finally {
+      rmSync(snapshotDir(root), { recursive: true, force: true })
+    }
+    const entries = readLog(root).filter((e) => e.target === '.claude/engineering.json')
+    assert.deepEqual(entries.map((e) => [e.decision, /could not clear the config-warning marker/.test(e.reason)]), [['error', true], ['error', false], ['error', true]], JSON.stringify(entries))
+  })
+
+  it('should log an unparseable config as an error on every run (ESP-50; AC7)', async () => {
+    const { checkAfterBash, snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
+    const root = tempDir()
+    writeFiles(root, { '.claude/engineering.json': '{ nope', '.github/workflows/ci.yml': CLEAN })
+    try {
+      for (let run = 0; run < 2; run++) await checkAfterBash({ tool_name: 'Bash', tool_input: { command: 'true' } }, root)
+    } finally {
+      rmSync(snapshotDir(root), { recursive: true, force: true })
+    }
+    assert.deepEqual(readLog(root).filter((e) => e.target === '.claude/engineering.json').map((e) => e.decision), ['error', 'error'])
   })
 
   it('should take no snapshot for a tool_use_id that is not a plain id', async () => {

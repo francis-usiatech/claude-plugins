@@ -2,7 +2,8 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, mkdirSync, symlinkSync, linkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { evaluate, loadConfig, sanitizeConfig, planFiles, gitProbe, logEntries } from '../hooks/scripts/governance-policy.mjs'
+import { evaluate, loadConfig, sanitizeConfig, planFiles, gitProbe, logEntries, pendingAdvice, recordAdvice, configMarkerPath } from '../hooks/scripts/governance-policy.mjs'
+import { snapshotDir } from '../hooks/scripts/bash-workflow-check.mjs'
 import { GUARD_DEADLINE_MS } from '../templates/github/scripts/supply-chain-lookups.mjs'
 import { tempDir, cleanupTempDirs, writeFiles, makeRepo, git, PLUGIN_ROOT } from './helpers.mjs'
 
@@ -326,8 +327,6 @@ describe('evaluate: wrong-type config values', () => {
     ['askCommands with an empty pattern', { governance: { askCommands: [{ pattern: '' }] } }, /"governance\.askCommands\[0\]"/],
     ['git as a string', { git: 'main' }, /"git" must be an object/],
     ['releaseBranch as a number', { git: { releaseBranch: 42 } }, /"git\.releaseBranch" must be a non-empty string/],
-    ['allowlist as an object', { governance: { allowlist: { rule: 'wf-write-all' } } }, /"governance\.allowlist" must be an array/],
-    ['allowlist entry without a path or package', { governance: { allowlist: [{ rule: 'wf-write-all' }] } }, /"governance\.allowlist\[0\]"/],
   ]
   for (const [name, cfg, re] of cases) {
     it(`should ask and name the problem for ${name}`, async () => {
@@ -928,13 +927,26 @@ describe('evaluate: trusted write paths (ESP-9; AC1, AC2)', () => {
     assert.match((await write(WIN, winTrusted.memory, notes)).reason, /outside the project folder/)
   })
 
-  for (const bad of ['x', [1], ['relative/**'], ['C:/other/**'], ['~/**'], ['~/.claude/**'], ['~/.claude/projects/**'], ['$TMP/**'], ['/**'], ['C:/**'],
+  // ESP-35 R1: a bad value is advisory. It is reported and dropped, and the action isn't escalated: a list left
+  // empty trusts nothing, and neither does a value that isn't a list (the defaults would trust more).
+  // Returns the one advisory problem reported, for the test to match.
+  const dropped = async (bad) => {
+    const cfg = { governance: { trustedWritePaths: bad } }
+    const safe = sanitizeConfig(cfg)
+    assert.deepEqual(safe.escalating, [])
+    assert.equal(safe.advisory.length, 1)
+    const r = await write(WIN, winTrusted.sessionData, { cfg })
+    assert.equal(r.decision, 'ask')
+    assert.match(r.reason, /outside the project folder/)
+    assert.doesNotMatch(r.reason, /Config problem/)
+    return safe.advisory[0]
+  }
+
+  for (const bad of ['x', false, {}, [1], ['relative/**'], ['C:/other/**'], ['~/**'], ['~/.claude/**'], ['~/.claude/projects/**'], ['$TMP/**'], ['/**'], ['C:/**'],
     // Backslashes, ":" and empty, "." or dot-ended folders could climb out of the root once joined on Windows.
     [String.raw`~/.claude/projects/x\..\..\../**`], [String.raw`~/.claude/projects/x\..\..\y/**`], ['~/.claude/session-data/a:b/**'], ['$TMP/./**'], ['$TMP//**'], ['~/.claude/projects/./**'], ['~/.claude/projects/.../**'], ['$TMP/x /**']]) {
     it(`should report a config problem for trustedWritePaths ${JSON.stringify(bad)}`, async () => {
-      const r = await write(WIN, winTrusted.sessionData, { cfg: { governance: { trustedWritePaths: bad } } })
-      assert.equal(r.decision, 'ask')
-      assert.match(r.reason, /Config problem: "governance\.trustedWritePaths(\[0\])?" must /)
+      assert.match(await dropped(bad), /^"governance\.trustedWritePaths(\[0\])?" must /)
     })
   }
 
@@ -943,9 +955,7 @@ describe('evaluate: trusted write paths (ESP-9; AC1, AC2)', () => {
   for (const bad of ['$TMP/usiatech-governance/**', '$TMP/usiatech-governance/x/**', '$TMP/usiatech-governance/bash-wf-1.json',
     '$TMP/USIATECH-Governance/**', '$TMP/usiatech-governance']) {
     it(`should report a config problem for the snapshot folder entry ${JSON.stringify(bad)}`, async () => {
-      const r = await write(WIN, winTrusted.sessionData, { cfg: { governance: { trustedWritePaths: [bad] } } })
-      assert.equal(r.decision, 'ask')
-      assert.match(r.reason, /Config problem: "governance\.trustedWritePaths\[0\]" must not name the after-Bash snapshot folder/)
+      assert.match(await dropped([bad]), /^"governance\.trustedWritePaths\[0\]" must not name the after-Bash snapshot folder/)
     })
   }
 
@@ -953,9 +963,7 @@ describe('evaluate: trusted write paths (ESP-9; AC1, AC2)', () => {
   for (const bad of ['$TMP/usiatech-governance./**', '$TMP/usiatech-governance /**', '$TMP/usiatech-governance:x/**',
     String.raw`$TMP/usiatech-governance\x/**`, '$TMP/usiatech-gov*/**', '$TMP/{usiatech-governance,x}/**', '$TMP/*/**']) {
     it(`should report a config problem for the snapshot folder spelling ${JSON.stringify(bad)}`, async () => {
-      const r = await write(WIN, winTrusted.sessionData, { cfg: { governance: { trustedWritePaths: [bad] } } })
-      assert.equal(r.decision, 'ask')
-      assert.match(r.reason, /Config problem: "governance\.trustedWritePaths\[0\]" must /)
+      assert.match(await dropped([bad]), /^"governance\.trustedWritePaths\[0\]" must /)
     })
   }
 
@@ -1035,11 +1043,11 @@ describe('evaluate: evidence-only plan edits (ESP-9; AC3)', () => {
     assert.equal(outcome(r), 'ask')
   })
 
-  it('should ask for every plan edit with planEdits "ask", and report other values as a config problem', async () => {
+  it('should ask for every plan edit with planEdits "ask", and treat an unknown value the same (ESP-35 R2, AC3)', async () => {
     assert.equal(outcome(await replace(...evidence, { cfg: { governance: { planEdits: 'ask' } } })), 'ask')
     const r = await replace(...evidence, { cfg: { governance: { planEdits: 'yes' } } })
-    assert.equal(r.decision, 'ask')
-    assert.match(r.reason, /Config problem: "governance\.planEdits" must be "allow", "ask" or "all"/)
+    assert.equal(outcome(r), 'ask')
+    assert.doesNotMatch(r.reason, /Config problem/)
   })
 })
 
@@ -1064,7 +1072,8 @@ describe('evaluate: planEdits "all" (ESP-24; AC1–AC4)', () => {
 
   it('should accept "all" with no config problem', async () => {
     assert.equal(await run('Write', { file_path: 'src/a.ts', content: 'x' }), null)
-    assert.equal(await run('Write', { file_path: 'src/a.ts', content: 'x' }, { cfg: { governance: { planEdits: 'everything' } } }).then((r) => r?.decision), 'ask')
+    assert.deepEqual(sanitizeConfig(ALL).problems, [])
+    assert.equal(sanitizeConfig({ governance: { planEdits: 'everything' } }).advisory.length, 1)
   })
 
   it('should trust creating and replacing the plan with Write', async () => {
@@ -1190,19 +1199,278 @@ describe('evaluate: decisions keys (ESP-32; spec AC6)', () => {
   })
 
   it('should report a non-object decisions as a config problem and drop it', async () => {
-    const r = await run({ decisions: 'x' })
-    assert.equal(r?.decision, 'ask')
-    assert.match(r.reason, /Config problem: "decisions" must be an object/)
-    assert.equal(sanitizeConfig({ decisions: 'x' }).cfg.decisions, undefined)
+    const safe = sanitizeConfig({ decisions: 'x' })
+    assert.deepEqual(safe.problems, ['"decisions" must be an object'])
+    assert.equal(safe.cfg.decisions, undefined)
   })
 
   it('should report a non-boolean decisions.batch or decisions.nitsNeedDecision and drop only that value', async () => {
-    const batch = await run({ decisions: { batch: 'yes' } })
-    assert.equal(batch?.decision, 'ask')
-    assert.match(batch.reason, /Config problem: "decisions\.batch" must be true or false/)
-    const nits = await run({ decisions: { nitsNeedDecision: 1 } })
-    assert.equal(nits?.decision, 'ask')
-    assert.match(nits.reason, /Config problem: "decisions\.nitsNeedDecision" must be true or false/)
+    assert.deepEqual(sanitizeConfig({ decisions: { batch: 'yes' } }).problems, ['"decisions.batch" must be true or false'])
+    assert.deepEqual(sanitizeConfig({ decisions: { nitsNeedDecision: 1 } }).problems, ['"decisions.nitsNeedDecision" must be true or false'])
     assert.deepEqual(sanitizeConfig({ decisions: { batch: 'yes', nitsNeedDecision: true } }).cfg.decisions, { nitsNeedDecision: true })
+  })
+})
+
+describe('evaluate: advisory and escalating config problems (ESP-47; spec R1–R3, AC3–AC5)', () => {
+  const run = (cfg, opts = {}) => evaluate({ tool_name: 'Write', tool_input: { file_path: 'src/a.ts', content: 'x' } }, { root: tempDir(), git: fakeGit(), cfg, ...opts })
+
+  // R1: the guard doesn't read the key, or dropping the value makes the guard stricter.
+  for (const [what, cfg, problem] of [
+    ['a non-object decisions', { decisions: 'x' }, /"decisions" must be an object/],
+    ['a non-boolean decisions.batch', { decisions: { batch: 'yes' } }, /"decisions\.batch"/],
+    ['a non-boolean decisions.nitsNeedDecision', { decisions: { nitsNeedDecision: 1 } }, /"decisions\.nitsNeedDecision"/],
+    ['a non-array trustedWritePaths', { governance: { trustedWritePaths: 'x' } }, /"governance\.trustedWritePaths" must/],
+    ['a bad trustedWritePaths entry', { governance: { trustedWritePaths: ['relative/**'] } }, /"governance\.trustedWritePaths\[0\]" must/],
+    ['a bad allowlist entry', { governance: { allowlist: [{ rule: 'x' }] } }, /"governance\.allowlist\[0\]" needs/],
+    ['a non-array allowlist', { governance: { allowlist: 'x' } }, /"governance\.allowlist" must/],
+    ['an unknown planEdits', { governance: { planEdits: 'bogus' } }, /"governance\.planEdits" must/],
+  ]) {
+    it(`should report ${what} as advisory and not escalate the action`, async () => {
+      assert.equal(await run(cfg), null)
+      const safe = sanitizeConfig(cfg)
+      assert.equal(safe.escalating.length, 0)
+      assert.equal(safe.advisory.length, 1)
+      assert.match(safe.advisory[0], problem)
+    })
+  }
+
+  // R1, R3: dropping the value could weaken the guard, so every action that isn't denied asks.
+  for (const [what, cfg, opts] of [
+    ['an unparseable config', {}, { configError: 'could not be parsed: Unexpected token' }],
+    ['a non-object governance', { governance: 1 }],
+    ['a bad askPaths', { governance: { askPaths: 'x' } }],
+    ['a bad protectedBranches', { governance: { protectedBranches: [1] } }],
+    ['a non-array denyCommands', { governance: { denyCommands: 'x' } }],
+    ['a bad denyCommands entry', { governance: { denyCommands: [{ reason: 'no pattern' }] } }],
+    ['a non-array askCommands', { governance: { askCommands: 'x' } }],
+    ['a bad askCommands entry', { governance: { askCommands: [{ pattern: '(' }] } }],
+    ['a non-object git', { git: 'x' }],
+    ['a bad git.releaseBranch', { git: { releaseBranch: '' } }],
+    ['a bad protectedPaths', { protectedPaths: 'x' }],
+    ['a bad immutableWhenCommitted', { immutableWhenCommitted: [1] }],
+  ]) {
+    it(`should escalate ${what} to an ask on every call`, async () => {
+      for (let call = 0; call < 2; call++) {
+        const r = await run(cfg, opts)
+        assert.equal(r?.decision, 'ask')
+        assert.match(r.reason, /Config problem: /)
+      }
+      if (!opts) assert.equal(sanitizeConfig(cfg).escalating.length, 1)
+    })
+  }
+
+  it('should name every problem, advisory ones included, when it escalates', async () => {
+    const r = await run({ governance: { askPaths: 'x' }, decisions: { batch: 'yes' } })
+    assert.equal(r?.decision, 'ask')
+    assert.match(r.reason, /"governance\.askPaths" must.*"decisions\.batch" must|"decisions\.batch" must.*"governance\.askPaths" must/)
+  })
+
+  it('should treat an unknown planEdits as "ask" (R2)', () => {
+    assert.equal(sanitizeConfig({ governance: { planEdits: 'bogus' } }).gov.planEdits, 'ask')
+  })
+})
+
+describe('evaluate: advisory warning, once per change (ESP-48; spec R4, R5, R7, AC1, AC2, AC6, AC8)', () => {
+  const newMarker = () => path.join(tempDir(), 'state', 'config-warned')
+  const check = (cfg, markerFile, file_path = 'src/a.ts') => evaluate({ tool_name: 'Write', tool_input: { file_path, content: 'x' } }, { root: tempDir(), git: fakeGit(), cfg, markerFile })
+  // Like the hooks once the warning is in the log: the set is recorded as shown.
+  const run = async (cfg, markerFile, file_path) => {
+    const r = await check(cfg, markerFile, file_path)
+    if (r?.configWarning) recordAdvice(markerFile, r.configHash)
+    return r
+  }
+  const decisions = (r) => logEntries(r, 'Write').map((e) => e.decision)
+  const BATCH = { decisions: { batch: 'yes' } }
+
+  for (const [what, cfg, problem] of [
+    ['a non-boolean decisions.batch (AC1)', BATCH, /"decisions\.batch" must be true or false/],
+    ['a non-array trustedWritePaths (AC2)', { governance: { trustedWritePaths: 'x' } }, /"governance\.trustedWritePaths" must/],
+    ['a bad trustedWritePaths entry (AC2)', { governance: { trustedWritePaths: ['relative/**'] } }, /"governance\.trustedWritePaths\[0\]" must/],
+    ['a bad allowlist entry (AC2)', { governance: { allowlist: [{ rule: 'x' }] } }, /"governance\.allowlist\[0\]" needs/],
+  ]) {
+    it(`should warn once for ${what} and leave the decision alone`, async () => {
+      const marker = newMarker()
+      const first = await run(cfg, marker)
+      assert.equal(first.decision ?? null, null)
+      assert.match(first.configWarning, problem)
+      const entries = logEntries(first, 'Write')
+      assert.deepEqual(entries.map((e) => e.decision), ['warn'])
+      assert.match(entries[0].reason, problem)
+      assert.equal(entries[0].target, '.claude/engineering.json')
+      assert.equal(await run(cfg, marker), null)
+    })
+  }
+
+  it('should add the warning to an ask without changing its reason', async () => {
+    const marker = newMarker()
+    const plain = await run({}, newMarker(), 'AGENTS.md')
+    const warned = await run(BATCH, marker, 'AGENTS.md')
+    assert.equal(warned.decision, 'ask')
+    assert.equal(warned.reason, plain.reason)
+    assert.match(warned.configWarning, /"decisions\.batch"/)
+    assert.deepEqual(decisions(warned), ['warn', 'ask'])
+    assert.equal((await run(BATCH, marker, 'AGENTS.md')).configWarning, undefined)
+  })
+
+  it('should warn again when the advisory set changes, and after it was cleared (AC6)', async () => {
+    const marker = newMarker()
+    const two = { ...BATCH, governance: { trustedWritePaths: 'x' } }
+    assert.match((await run(BATCH, marker)).configWarning, /"decisions\.batch"/)
+    assert.equal(await run(BATCH, marker), null)
+    assert.match((await run(two, marker)).configWarning, /"decisions\.batch".*"governance\.trustedWritePaths"/)
+    assert.equal(await run(two, marker), null)
+    assert.equal(await run({}, marker), null)
+    assert.equal(existsSync(marker), false)
+    assert.match((await run(BATCH, marker)).configWarning, /"decisions\.batch"/)
+  })
+
+  it('should warn again for a problem that was fixed while an escalating one was present (R5)', async () => {
+    const marker = newMarker()
+    assert.match((await run(BATCH, marker)).configWarning, /"decisions\.batch"/)
+    assert.equal((await run({ governance: { askPaths: 'x' } }, marker)).decision, 'ask')
+    assert.equal(existsSync(marker), false)
+    assert.match((await run(BATCH, marker)).configWarning, /"decisions\.batch"/)
+  })
+
+  it('should keep what was shown when the config cannot be read at all', async () => {
+    const marker = newMarker()
+    await run(BATCH, marker)
+    const broken = await evaluate({ tool_name: 'Write', tool_input: { file_path: 'src/a.ts', content: 'x' } }, { root: tempDir(), git: fakeGit(), cfg: {}, configError: 'is not valid JSON', markerFile: marker })
+    assert.equal(broken.decision, 'ask')
+    assert.equal(existsSync(marker), true)
+    assert.equal(await run(BATCH, marker), null)
+  })
+
+  it('should not depend on the order the problems are found in', async () => {
+    const marker = newMarker()
+    const first = pendingAdvice(['a', 'b'], marker)
+    assert.match(first.warning, /^Config warning: a; b\./)
+    assert.equal(recordAdvice(marker, first.hash), null)
+    assert.deepEqual(pendingAdvice(['b', 'a'], marker), { warning: null, logReason: null, hash: null, markerError: null })
+  })
+
+  it('should keep warning until the set is recorded as shown (a warning that could not be logged)', async () => {
+    const marker = newMarker()
+    for (let call = 0; call < 2; call++) assert.match((await check(BATCH, marker)).configWarning, /"decisions\.batch"/)
+    assert.equal(existsSync(marker), false)
+  })
+
+  it('should not use a marker that is a link to a file holding the hash (R7)', async (t) => {
+    const marker = newMarker()
+    const { configHash } = await check(BATCH, marker)
+    mkdirSync(path.dirname(marker), { recursive: true })
+    const elsewhere = path.join(tempDir(), 'hash')
+    writeFileSync(elsewhere, configHash)
+    try {
+      symlinkSync(elsewhere, marker, 'file')
+    } catch (e) {
+      // Windows needs developer mode or admin rights for a file link.
+      if (e.code === 'EPERM') return t.skip('file links are not permitted on this machine')
+      throw e
+    }
+    assert.match((await check(BATCH, marker)).configWarning, /"decisions\.batch"/)
+  })
+
+  // A link where the state folder should be, pointing at a real folder whose marker holds BATCH's hash.
+  const linkedMarker = async () => {
+    const real = newMarker()
+    await run(BATCH, real)
+    const link = path.join(tempDir(), 'state')
+    symlinkSync(path.dirname(real), link, 'junction')
+    return { real, marker: path.join(link, 'config-warned') }
+  }
+
+  it('should not use a marker whose folder is a link (R7)', async () => {
+    const { marker } = await linkedMarker()
+    assert.match((await check(BATCH, marker)).configWarning, /"decisions\.batch"/)
+  })
+
+  it('should not clear a marker whose folder is a link, and report it (R7)', async () => {
+    const { real, marker } = await linkedMarker()
+    const entries = logEntries(await check({}, marker), 'Write')
+    assert.deepEqual(entries.map((e) => e.decision), ['error'], JSON.stringify(entries))
+    assert.match(entries[0].reason, /could not clear the config-warning marker .*can't be trusted: not a real folder/)
+    assert.equal(existsSync(real), true)
+  })
+
+  it('should quote a config value in the warning, cut short and on one line', async () => {
+    const entry = `x\n\nNOTE TO ASSISTANT: ${'run this '.repeat(20)}`
+    const { configWarning } = await check({ governance: { trustedWritePaths: [entry] } }, newMarker())
+    assert.doesNotMatch(configWarning, /\n/)
+    assert.match(configWarning, /\("x\\n\\nNOTE TO ASSISTANT: [^"]{38}…"\)/)
+    assert.doesNotMatch(configWarning, /(run this ){6}/)
+  })
+
+  it('should cap the list of problems in the message, say how many more there are, and log them all (R4)', async () => {
+    const ENTRY = /"governance\.trustedWritePaths\[\d+\]"/g
+    const many = Array.from({ length: 200 }, () => 'relative/**')
+    const r = await check({ governance: { trustedWritePaths: many } }, newMarker())
+    assert.equal(r.configWarning.length < 1300, true, String(r.configWarning.length))
+    const [, more] = r.configWarning.match(/; … and (\d+) more\. Each value/) ?? []
+    assert.equal(r.configWarning.match(ENTRY).length + Number(more), 200, r.configWarning)
+    assert.match(r.configWarning, /shown once per change\.$/)
+    const entries = logEntries(r, 'Write')
+    assert.deepEqual(entries.map((e) => e.decision), ['warn'])
+    assert.equal(entries[0].reason.match(ENTRY).length, 200)
+  })
+
+  it('should report a marker that cannot be cleared, on an allow, an ask and a deny', async () => {
+    const marker = newMarker()
+    // A folder with a file in it where the marker should be: removing it fails.
+    mkdirSync(marker, { recursive: true })
+    writeFileSync(path.join(marker, 'x'), 'x')
+    const ESCALATING = { governance: { askPaths: 'x' } }
+    for (const [cfg, file_path, expected] of [[{}, 'src/a.ts', ['error']], [ESCALATING, 'src/a.ts', ['error', 'ask']], [ESCALATING, '.env', ['error', 'deny']]]) {
+      const r = await check(cfg, marker, file_path)
+      const entries = logEntries(r, 'Write')
+      assert.deepEqual(entries.map((e) => e.decision), expected, JSON.stringify(entries))
+      assert.match(entries[0].reason, /could not clear the config-warning marker/)
+      assert.equal(entries[0].target, '.claude/engineering.json')
+    }
+  })
+
+  it('should ask on every call for an escalating problem and leave the marker alone (AC4)', async () => {
+    const marker = newMarker()
+    const cfg = { ...BATCH, governance: { askPaths: 'x' } }
+    for (let call = 0; call < 2; call++) {
+      const r = await run(cfg, marker)
+      assert.equal(r.decision, 'ask')
+      assert.match(r.reason, /Config problem: /)
+      assert.equal(r.configWarning, undefined)
+    }
+    assert.equal(existsSync(marker), false)
+    // A marker that already holds this advisory set doesn't stop the ask either.
+    await run(BATCH, marker)
+    assert.equal(existsSync(marker), true)
+    assert.equal((await run(cfg, marker)).decision, 'ask')
+    assert.equal(existsSync(marker), true)
+  })
+
+  it('should show the warning when the marker cannot be read (AC8)', async () => {
+    const marker = newMarker()
+    mkdirSync(marker, { recursive: true })
+    for (let call = 0; call < 2; call++) assert.match((await run(BATCH, marker)).configWarning, /"decisions\.batch"/)
+  })
+
+  it('should report a marker that cannot be written and leave the decision alone (AC8)', async () => {
+    const dir = tempDir()
+    // A file where the marker's folder should be makes the write fail.
+    writeFileSync(path.join(dir, 'state'), 'x')
+    const r = await check(BATCH, path.join(dir, 'state', 'config-warned'))
+    assert.equal(r.decision ?? null, null)
+    assert.deepEqual(decisions(r), ['warn'])
+    assert.match(recordAdvice(path.join(dir, 'state', 'config-warned'), r.configHash), /could not record that the config warning was shown/)
+    const asked = await check(BATCH, path.join(dir, 'state', 'config-warned'), 'AGENTS.md')
+    assert.equal(asked.decision, 'ask')
+    assert.doesNotMatch(asked.reason, /Config problem|config warning/i)
+  })
+
+  it('should keep the marker in the after-Bash snapshot folder, which no trusted write path may name (ESP-21)', () => {
+    const root = tempDir()
+    assert.equal(configMarkerPath(root), path.join(snapshotDir(root), 'config-warned'))
+  })
+
+  it('should not track warnings when no marker is given', async () => {
+    assert.equal(await run(BATCH), null)
   })
 })
