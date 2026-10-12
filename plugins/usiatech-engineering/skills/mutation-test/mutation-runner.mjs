@@ -97,16 +97,20 @@ export const outcomeOf = ({ code, signal, ended, aborted }) => {
 }
 
 /**
- * Runs a shell command in root. Resolves { outcome: 'pass' | 'fail' | 'timeout' | 'aborted' | 'error', code, stderr }.
+ * Runs a shell command in root. Resolves { outcome: 'pass' | 'fail' | 'timeout' | 'aborted' | 'error', code, stderr },
+ * plus `signal` when a signal ended the command and `startError` when it could not be started.
  * `kill` stops the process tree on a timeout or abort (tests inject a failing one).
+ * The gate runner passes two more options (ESP-52): `args` runs `command` as a program with those arguments and no
+ * shell, and `output` is a file descriptor that takes stdout and stderr, so `stderr` in the result stays empty.
  */
-export const runCommand = (command, { root, timeoutMs, signal, kill = killTree }) => new Promise((resolve) => {
+export const runCommand = (command, { root, timeoutMs, signal, kill = killTree, args = null, output = null }) => new Promise((resolve) => {
   if (signal?.aborted) return resolve({ outcome: 'aborted' })
   let stderr = ''
   let ended = null
   let grace = null
-  const child = spawn(command, { cwd: root, shell: true, detached: process.platform !== 'win32', stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true })
-  child.stderr.on('data', (d) => { stderr = (stderr + d).slice(-STDERR_TAIL) })
+  const options = { cwd: root, detached: process.platform !== 'win32', stdio: output === null ? ['ignore', 'ignore', 'pipe'] : ['ignore', output, output], windowsHide: true }
+  const child = args ? spawn(command, args, options) : spawn(command, { ...options, shell: true })
+  child.stderr?.on('data', (d) => { stderr = (stderr + d).slice(-STDERR_TAIL) })
   const stop = (why) => {
     if (ended || child.exitCode !== null || child.signalCode !== null) return
     ended = why
@@ -115,7 +119,7 @@ export const runCommand = (command, { root, timeoutMs, signal, kill = killTree }
     // taskkill also fails when part of the tree has already exited, so give the command a moment to close.
     // If it doesn't, stop waiting and let go of it so it can't hold this process open.
     grace = setTimeout(() => {
-      child.stderr.destroy()
+      child.stderr?.destroy()
       child.unref()
       finish({ outcome: 'error', stderr: `could not stop the command after ${why} (process ${child.pid} may still be running): ${failure}` })
     }, KILL_GRACE_MS)
@@ -129,10 +133,12 @@ export const runCommand = (command, { root, timeoutMs, signal, kill = killTree }
     signal?.removeEventListener('abort', onAbort)
     resolve(result)
   }
-  child.on('error', (e) => finish({ outcome: 'error', stderr: e.message }))
+  // Nothing here sends the child a message or a signal through Node, so an error event means it never started.
+  child.on('error', (e) => finish({ outcome: 'error', stderr: e.message, startError: e.message }))
   child.on('close', (code, sig) => finish({
     outcome: outcomeOf({ code, signal: sig, ended, aborted: signal?.aborted }),
     code,
+    ...(sig ? { signal: sig } : {}),
     stderr: code === null && sig ? `killed by ${sig}` : stderr.trim(),
   }))
 })
@@ -218,6 +224,7 @@ export const runMutations = async ({ root, mutations: input, signal }) => {
 /**
  * Turns SIGINT, SIGTERM and SIGHUP into an abort. The listeners stay for the whole run, so a second
  * Ctrl+C can't fall through to Node's default exit and skip the restore. Returns a function that removes them.
+ * The gate runner uses it too (ESP-52), with a silent `notify`, to stop the running step.
  */
 export const handleInterrupts = (controller, notify = (msg) => console.error(msg), target = process) => {
   const onSignal = () => {

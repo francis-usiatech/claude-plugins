@@ -2,7 +2,7 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile, execFileSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { makeRepo, git, tempDir, cleanupTempDirs, PLUGIN_ROOT } from './helpers.mjs'
@@ -310,5 +310,76 @@ describe('mutation-runner hardening (stage-2 fix set)', () => {
     assert.equal(outcomeOf({ code: 1, ended: 'timeout' }), 'timeout')
     assert.equal(outcomeOf({ code: 0, aborted: true }), 'aborted')
     assert.equal(outcomeOf({ code: 1, aborted: true }), 'aborted')
+  })
+})
+
+// The gate runner runs its steps through runCommand (ESP-52), with their output in its log file.
+describe('mutation-runner runCommand for the gate runner (ESP-52 AC6)', () => {
+  // Runs `run` with a file opened for the command's output and returns what the command wrote there.
+  const withOutputFile = async (run) => {
+    const file = path.join(tempDir('usiatech-output-'), 'out.log')
+    const fd = openSync(file, 'wx+')
+    try {
+      return { result: await run(fd), written: () => readFileSync(file, 'utf8') }
+    } finally {
+      closeSync(fd)
+    }
+  }
+
+  it('should send stdout and stderr to the given file', async () => {
+    const { runCommand } = await importRunner()
+    const command = `${NODE} -e "console.log('to stdout');console.error('to stderr')"`
+    const { result, written } = await withOutputFile((output) => runCommand(command, { root: tempDir('usiatech-out-'), timeoutMs: 15000, output }))
+    assert.equal(result.outcome, 'pass', JSON.stringify(result))
+    assert.match(written(), /^to stdout$/m)
+    assert.match(written(), /^to stderr$/m)
+  })
+
+  it('should run a program with arguments without a shell', async () => {
+    const { runCommand } = await importRunner()
+    // A shell would split this argument at "&&"; without one it arrives whole. Exit 7 shows the script itself ran.
+    const args = ['-e', "process.exit(process.argv[1] === 'a && b' ? 7 : 4)", 'a && b']
+    const r = await runCommand(process.execPath, { root: tempDir('usiatech-args-'), timeoutMs: 15000, args })
+    assert.equal(r.code, 7, JSON.stringify(r))
+    assert.equal(r.outcome, 'fail')
+  })
+
+  it('should resolve as error, not hang, when the tree cannot be killed and the output goes to a file', { timeout: 15000 }, async () => {
+    const { runCommand } = await importRunner()
+    let leaked = null
+    const failingKill = (child) => {
+      leaked = child
+      return 'Access is denied.'
+    }
+    try {
+      const { result } = await withOutputFile((output) => runCommand(HANG, { root: tempDir('usiatech-kill-'), timeoutMs: 200, kill: failingKill, output }))
+      assert.equal(result.outcome, 'error')
+      assert.match(result.stderr, /could not stop[^\n]*Access is denied/)
+    } finally {
+      if (leaked) killForReal(leaked)
+    }
+  })
+
+  it('should report a program that cannot be started as a start error, with no signal', async () => {
+    const { runCommand } = await importRunner()
+    const root = tempDir('usiatech-nostart-')
+    const r = await runCommand(path.join(root, 'no-such-program'), { root, timeoutMs: 15000, args: [] })
+    assert.equal(r.outcome, 'error')
+    assert.match(r.startError, /ENOENT/)
+    assert.equal(r.signal ?? null, null)
+  })
+
+  it('should report the signal that ended a command, and no start error', { timeout: 15000 }, async () => {
+    const { runCommand } = await importRunner()
+    // Node reports a signal for a child it killed itself, on Windows too.
+    const signalKill = (child) => {
+      child.kill('SIGKILL')
+      return null
+    }
+    const args = ['-e', 'setTimeout(() => {}, 60000)']
+    const r = await runCommand(process.execPath, { root: tempDir('usiatech-signal-'), timeoutMs: 200, kill: signalKill, args })
+    assert.equal(r.outcome, 'timeout')
+    assert.equal(r.signal, 'SIGKILL')
+    assert.equal(r.startError, undefined)
   })
 })
