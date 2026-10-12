@@ -5,12 +5,12 @@
 // sed gets the same checks as one written with Edit. Every finding is logged to .claude/governance-log.jsonl;
 // high-risk ones are shown to Claude and the user at once. The command has already run, so nothing is blocked.
 // Internal errors fail open (exit 0) and are logged as decision "error", like the guard.
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, statSync, lstatSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync, rmSync, statSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import os from 'node:os'
 import path from 'node:path'
 import { appendGovernanceLog } from './governance-log.mjs'
+import { stateDir, stateFolderProblem, checkedStateDir } from './governance-state.mjs'
 
 const WORKFLOW_DIR = '.github/workflows'
 // Not workflow-rules' isWorkflowPath: importing it would load the rules module on the no-change path (AC6).
@@ -31,44 +31,15 @@ export const gitRunner = {
   }),
 }
 
-/**
- * Where snapshots for a project live. Deliberately not under a trusted write path ($TMP/claude/{project}/**), so an
- * Edit or Write the guard lets through without asking can't rewrite a snapshot. A Bash command still can: the guard
- * asks before one that names the folder or a snapshot file, but a command that builds the path another way is not
- * caught (a known limitation).
- */
-export const snapshotDir = (root) => path.join(os.tmpdir(), 'usiatech-governance', root.replace(/[^A-Za-z0-9]/g, '-'))
+/** Where snapshots for a project live: its state folder (governance-state.mjs). */
+export const snapshotDir = stateDir
 
-/**
- * Why a snapshot folder can't be trusted, or null. `st` is its lstat; `uid` the user's (undefined on Windows, whose
- * temp folder is per user). In a shared POSIX /tmp another local user could have created the folder first.
- */
-export const snapshotFolderProblem = (st, uid) => {
-  if (st.isSymbolicLink() || !st.isDirectory()) return 'not a real folder'
-  if (uid === undefined) return null
-  if (st.uid !== uid) return `owned by uid ${st.uid}`
-  if (st.mode & 0o022) return 'writable by group or others'
-  return null
-}
+/** Why a snapshot folder can't be trusted, or null: the state-folder rule (governance-state.mjs). */
+export const snapshotFolderProblem = stateFolderProblem
 
 // The snapshot folder, created private when `create` is set; null when it doesn't exist. Throws when it, or the
 // shared folder above it, can't be trusted.
-const checkedSnapshotDir = (root, { create }) => {
-  const dir = snapshotDir(root)
-  if (create) mkdirSync(dir, { recursive: true, mode: 0o700 })
-  for (const d of [path.dirname(dir), dir]) {
-    let st
-    try {
-      st = lstatSync(d)
-    } catch (e) {
-      if (e.code === 'ENOENT' && !create) return null
-      throw e
-    }
-    const problem = snapshotFolderProblem(st, process.getuid?.())
-    if (problem) throw new Error(`snapshot folder ${d} can't be trusted: ${problem}`)
-  }
-  return dir
-}
+const checkedSnapshotDir = (root, { create }) => checkedStateDir(snapshotDir(root), { create, what: 'snapshot' })
 
 const snapshotFile = (dir, id) => path.join(dir, `bash-wf-${id}.json`)
 
@@ -287,20 +258,37 @@ const changedSinceHead = (root, isWorkflowPath) => {
 }
 
 // Runs the rules on the changed files; returns the findings with the repo allowlist applied, each naming where a
-// change outside the files on disk was seen.
+// change outside the files on disk was seen, and the config entries that couldn't be logged (`unlogged`).
 const checkChanged = async (root, changed) => {
-  const { loadConfig, sanitizeConfig, CASE_INSENSITIVE_FS } = await import('./governance-policy.mjs')
+  const { loadConfig, sanitizeConfig, pendingAdvice, recordAdvice, configMarkerPath, CONFIG_FILE, CASE_INSENSITIVE_FS } = await import('./governance-policy.mjs')
   const { checkWorkflow, applyAllowlist } = await import('../../templates/github/scripts/governance-rules.mjs')
   const { cfg, error } = loadConfig(root)
-  const { gov, problems } = sanitizeConfig(cfg)
-  if (error || problems.length) {
-    appendGovernanceLog(root, { tool: 'Bash', target: '.claude/engineering.json', decision: 'error', reason: `config problem, checked with the rules that still apply: ${[error, ...problems].filter(Boolean).join('; ')}` })
+  const { gov, problems, advisory, escalating } = sanitizeConfig(cfg)
+  const unlogged = []
+  const logConfig = (decision, reason) => {
+    const logged = appendGovernanceLog(root, { tool: 'Bash', target: CONFIG_FILE, decision, reason })
+    if (!logged) unlogged.push(reason)
+    return logged
+  }
+  const escalates = !!error || escalating.length > 0
+  if (escalates) logConfig('error', `config problem, checked with the rules that still apply: ${[error, ...problems].filter(Boolean).join('; ')}`)
+  // ESP-35 R6: advisory problems alone are logged once per change, sharing the guard's marker. Beside an escalating
+  // problem the marker is left alone, unless the config was read and has no advisory problem left: then it is cleared (R5).
+  if (!escalates || (!error && !advisory.length)) {
+    const marker = configMarkerPath(root)
+    const { logReason, hash, markerError } = pendingAdvice(advisory, marker)
+    // The marker is recorded only once the warning is in the log, so one that couldn't be logged is due again.
+    const recordError = logReason && logConfig('warn', logReason) ? recordAdvice(marker, hash) : null
+    for (const reason of [markerError, recordError]) if (reason) logConfig('error', reason)
   }
   const seenIn = (source) => (f) => (source ? { ...f, detail: `${f.detail} (seen in ${source})` } : f)
-  return [
-    ...changed.flatMap((c) => applyAllowlist(checkWorkflow(c), gov.allowlist || [], CASE_INSENSITIVE_FS).map(seenIn(c.source))),
-    ...(gov.allowlistWarnings || []),
-  ]
+  return {
+    findings: [
+      ...changed.flatMap((c) => applyAllowlist(checkWorkflow(c), gov.allowlist || [], CASE_INSENSITIVE_FS).map(seenIn(c.source))),
+      ...(gov.allowlistWarnings || []),
+    ],
+    unlogged,
+  }
 }
 
 /** The hook's work for one Bash call in project `root`: returns the hook output, or null when there is nothing to show. */
@@ -341,18 +329,19 @@ export const checkAfterBash = async (input, root) => {
   // The common case: nothing to check, and the rules module is never loaded.
   if (!changed.length && !gitProblem) return null
 
-  const findings = changed.length ? await checkChanged(root, changed) : []
+  const { findings, unlogged } = changed.length ? await checkChanged(root, changed) : { findings: [], unlogged: [] }
   const { logEntries } = await import('./governance-policy.mjs')
   const { blockingFindings, formatFinding, oneLine } = await import('../../templates/github/scripts/governance-rules.mjs')
   const logged = logEntries({ target, findings }, 'Bash').map((entry) => appendGovernanceLog(root, entry)).every(Boolean)
   const blocking = blockingFindings(findings)
   // The log is the only record of a warning, so findings that can't be logged are shown instead. A git failure is
   // shown too: it is exactly when a committed or staged workflow could slip through.
-  if (!blocking.length && logged && !gitProblem) return null
+  if (!blocking.length && logged && !gitProblem && !unlogged.length) return null
   const notes = [
     blocking.length ? `The Bash command changed ${changed.length} workflow file(s) with ${blocking.length} high-risk finding(s). Fix them before going on.` : null,
     !blocking.length && !logged ? `The Bash command changed ${changed.length} workflow file(s); its findings could not be logged to .claude/governance-log.jsonl.` : null,
     gitProblem ? `${oneLine(gitProblem, 500)}.` : null, // git's message can hold line breaks; the log keeps it whole
+    unlogged.length ? `This could not be logged to .claude/governance-log.jsonl: ${oneLine(unlogged.join(' '), 1500)}` : null,
   ].filter(Boolean)
   const message = `[governance] ${notes.join(' ')}${findings.length ? ` Findings: ${findings.map(formatFinding).join(' ')}` : ''}`
   return { systemMessage: message, hookSpecificOutput: { hookEventName: input.hook_event_name || 'PostToolUse', additionalContext: message } }
