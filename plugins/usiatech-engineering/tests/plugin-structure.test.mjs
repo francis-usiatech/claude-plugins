@@ -555,3 +555,36 @@ describe('plugin structure: release metadata', () => {
     assert.match(version, /^\d+\.\d+\.\d+$/, 'plugin version is semver (M9)')
   })
 })
+
+describe('plugin structure: gate runner (ESP-44 AC7)', () => {
+  const verify = () => body(read('skills', 'verify', 'SKILL.md'))
+  const step = (title) => verify().match(new RegExp(`^\\d+\\. \\*\\*${title}[\\s\\S]*?(?=^\\d+\\. \\*\\*)`, 'm'))?.[0]
+
+  it('should ship the runner the verify skill names', () => {
+    assert.match(verify(), /node "\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/verify\/gate\.mjs"/)
+    assert.match(read('skills', 'verify', 'gate.mjs'), /^#!\/usr\/bin\/env node/)
+  })
+
+  it('should run the gate with one runner call when the repo has a verify list, without piping or filtering it', () => {
+    const run = step('Run the gate')
+    assert.ok(run, 'verify has no "Run the gate" step')
+    assert.match(run, /`\.claude\/engineering\.json` has a `verify` list/)
+    assert.match(run, /one call/i)
+    assert.match(run, /don't pipe or filter/i)
+    assert.match(run, /exit code 2/i)
+  })
+
+  it('should keep the AGENTS.md and ask-the-user path, run one command at a time, for a repo with no verify list', () => {
+    const load = step('Load the gate')
+    assert.match(load, /"Definition of done" section of `AGENTS\.md`/)
+    assert.match(load, /stop and ask the user/)
+    const run = step('Run the gate')
+    assert.match(run, /no `verify` list/)
+    assert.match(run, /one at a time/)
+    assert.match(run, /Stop at the first failure/)
+  })
+
+  it('should not run the fake-pass check a second time after the runner ran it', () => {
+    assert.match(step('Check test content \\(fp-\\*\\)'), /the runner already ran this check/i)
+  })
+})

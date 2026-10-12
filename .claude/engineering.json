@@ -1,4 +1,18 @@
 {
+  "verify": [
+    {
+      "name": "tests",
+      "run": "npm test"
+    },
+    {
+      "name": "validate marketplace",
+      "run": "claude plugin validate ."
+    },
+    {
+      "name": "validate plugin",
+      "run": "claude plugin validate plugins/usiatech-engineering"
+    }
+  ],
   "governance": {
     "planEdits": "all"
   }
