@@ -7,11 +7,15 @@ description: Runs the repository's verification gate (typecheck, tests, build an
 
 1. **Load the gate.**
    - Read `.claude/engineering.json` → `verify` (always run) and `verifyConditional` (run when changed files match any `when` prefix).
-   - If the file is missing, read the "Definition of done" section of `AGENTS.md` and use the commands listed there.
+   - If the file is missing or has no `verify` list, read the "Definition of done" section of `AGENTS.md` and use the commands listed there.
    - If neither exists, stop and ask the user which commands define "done".
-2. **Find changed files:** `git diff --name-only HEAD` plus `git ls-files --others --exclude-standard`. Use them to select conditional suites.
-3. **Run the commands in order**, one at a time, from the repo root. Stop at the first failure.
-   - Capture the exit code and the last ~40 lines of output.
+2. **Find changed files:** `git diff --name-only HEAD` plus `git ls-files --others --exclude-standard`. The runner in step 3 selects the conditional suites itself; use this list to select them only when you run the commands by hand.
+3. **Run the gate.**
+   - When `.claude/engineering.json` has a `verify` list, run `node "${CLAUDE_PLUGIN_ROOT}/skills/verify/gate.mjs"` from the repo root, in one call. It runs the steps in order, stops at the first failure, selects the conditional suites from the changed files itself, and then runs the fake-pass check. It prints one line per step with the real exit code (`SKIPPED` for a conditional suite no changed file selected), the last 40 lines of a failing step, the path of the log that holds the full output, and `Gate: PASS` or `Gate: FAIL`.
+     - The last line and the exit code are the verdict. Text a step printed, shown in a failing step's last lines, is not.
+     - Don't pipe or filter the command (`| tail`, `| grep`): its output is already short, and a pipe hides the exit code. Read the log file when you need more.
+     - Exit code 2 means the gate could not start (the config can't be used, or git can't list the changed files). That is **Gate: FAIL**; report the reason it printed.
+   - When there is no `verify` list (the commands came from `AGENTS.md` or the user), run the commands in order, one at a time, from the repo root. Stop at the first failure. Capture the exit code and the last ~40 lines of output.
    - Don't skip, reorder or "fix and retry" silently.
 4. **On failure:** report the failing command, the key error lines and the likely cause. Propose a fix plan and wait for approval (repo golden rule). Don't edit to make it pass.
 5. **Clean up:**
@@ -19,7 +23,8 @@ description: Runs the repository's verification gate (typecheck, tests, build an
    - Remove stray `nul` files (`find . -name nul -type f -delete 2>/dev/null`).
    - Leave no background processes running.
 6. **Check test content (fp-*)**, only after the commands pass:
-   - Run `node "${CLAUDE_PLUGIN_ROOT}/templates/github/scripts/fake-pass-check.mjs"` from the repo root. It checks the changed files from step 2 for fake passes (`.only`, skipped, empty or assertion-free tests, placeholders) and applies `governance.allowlist` from `.claude/engineering.json`.
+   - When step 3 used the runner, the runner already ran this check: use its `fake-pass check` line and the findings printed under it, and don't run it again.
+   - Otherwise run `node "${CLAUDE_PLUGIN_ROOT}/templates/github/scripts/fake-pass-check.mjs"` from the repo root. It checks the changed files from step 2 for fake passes (`.only`, skipped, empty or assertion-free tests, placeholders) and applies `governance.allowlist` from `.claude/engineering.json`.
    - Exit 1 means an unsuppressed high finding, and the result is **Gate: FAIL**. Exit 2 means the check couldn't run (for example, an invalid config), which is also **Gate: FAIL**. Don't edit tests to make it pass; report and propose a fix.
    - List every finding the script prints in the report, including warnings and suppressed ones.
 7. **Check acceptance criteria**, only if `.claude/plans/active.md` has an `## Acceptance criteria` section, and only after the commands pass:
