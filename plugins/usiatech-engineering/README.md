@@ -42,7 +42,7 @@ Start from `templates/engineering.json` (or run the `setup-engineering` skill).
 | `allowEnvExample` | Allow edits to `.env.example` (default `true`) |
 | `userGuide` | Guide folder, changelog file, optional manifest |
 | `reviewers` | Agents `release` runs before committing, in two stages: `governance-reviewer` first, then the rest in parallel (default adds `convention-reviewer`, `silent-failure-reviewer`, `security-reviewer`; repo-specific ones allowed) |
-| `decisions` | How `approve-plan` and `release` ask for decisions. `batch` (default `true`) puts every open decision at pre-flight and at release review into one question with a recommended default; `false` asks about each one on its own. `nitsNeedDecision` (default `false`) means nits listed in the PR need no decision; `true` asks about each nit. A non-boolean value is reported as a config problem and counts as the default. Older guards ignore the `decisions` key |
+| `decisions` | How `approve-plan` and `release` ask for decisions. `batch` (default `true`) puts every open decision at pre-flight and at release review into one question with a recommended default; `false` asks about each one on its own. `nitsNeedDecision` (default `false`) means nits listed in the PR need no decision; `true` asks about each nit. A non-boolean value is reported once as an advisory config problem (see "Config problems" below) and counts as the default. Older guards ignore the `decisions` key |
 | `governance` | `protectedBranches`, `askPaths`, `requirePlan`, extra `denyCommands` / `askCommands` (regex + reason), `allowlist` (see below), `trustedWritePaths` and `planEdits` (`"allow"`, `"ask"` or `"all"`; see "Trusted writes" below), `rulesFile` |
 
 ## Governance model (layered)
@@ -93,7 +93,7 @@ The AI review job runs with `--setting-sources user`, so a PR's own `.claude/set
   - edits that look like a hard-coded credential (`password = "…"`, `apiKey: "…"`)
   - edits outside the approved plan, and edits to the plan itself (`.claude/plans/active.md`) that change more than evidence, task ticks or the change log (see "Trusted writes" below)
   - edits outside the project folder, except the trusted write paths below
-  - any action while `.claude/engineering.json` is malformed or has an invalid command pattern (default deny rules still apply)
+  - any action while `.claude/engineering.json` has an escalating config problem, such as malformed JSON or an invalid command pattern (default deny rules still apply; see "Config problems" below)
 
 **Workflow content checks** (`templates/github/scripts/workflow-rules.mjs`). The guard runs them on the post-edit content of any `.github/workflows/*.yml` edit, the after-Bash check on any workflow a Bash command changed, and `governance-checks` on each changed workflow in a PR. All compare against the previous version: the file on disk (or in git) locally, the base-branch file in CI. A file renamed into `.github/workflows/` from a non-workflow path is checked in CI as a new workflow, not compared with the old file. On Windows the guard also treats a path with trailing dots or spaces or an alternate data stream (`x.yml.`, `x.yml `, `x.yml::$DATA`, `x.yml:stream`) as the workflow it names; on POSIX these are ordinary names.
 
@@ -158,7 +158,23 @@ To accept a known finding, add an entry to `governance.allowlist`: `{ "rule": "w
 
 All default rules live in one module, `templates/github/scripts/governance-rules.mjs`. The guard hook imports the plugin's copy. `setup-engineering` copies it into `.github/scripts/` with the CI scripts, which read the repo's copy. The two match at install time. After upgrading the plugin, re-copy `templates/github/scripts/` or the PR checks keep the older rules (from 0.9.0 the fake-pass checks need `fake-pass-rules.mjs` and the updated `governance-checks.mjs`; 0.10.0 updates `workflow-rules.mjs`, `governance-rules.mjs` and `governance-checks.mjs`).
 
-Path checks ignore case on Windows and macOS (`.ENV` is treated as `.env`), and CI always ignores case. A config value of the wrong type (e.g. a string where a list is expected) is reported the same way as malformed JSON, and the defaults apply for that key. The guard turns the problem into a confirmation prompt. The CI checks (`governance-checks`) fail with the problem named, so a broken base-branch config can't pass a PR.
+Path checks ignore case on Windows and macOS (`.ENV` is treated as `.env`), and CI always ignores case. A config value of the wrong type (e.g. a string where a list is expected) is reported as a config problem; what the guard then does depends on the key (see "Config problems" below). The CI checks (`governance-checks`) fail with the problem named, so a broken base-branch config can't pass a PR.
+
+**Config problems** (ESP-35). What the guard does with a problem in `.claude/engineering.json` depends on the key:
+- **Escalating**: dropping the value could weaken the guard, so every action that isn't denied becomes a confirmation prompt until the file is fixed. The prompt names every problem, advisory ones included. These escalate:
+  - a file that can't be parsed or isn't an object;
+  - a `governance` that isn't an object;
+  - a bad `governance.askPaths`, `governance.protectedBranches`, `governance.denyCommands` or `governance.askCommands` (the list or an entry);
+  - a bad `git` or `git.releaseBranch`;
+  - a bad `protectedPaths` or `immutableWhenCommitted`.
+- **Advisory**: the guard doesn't read the key, or the bad value is dropped or replaced in a way that only makes the guard stricter, so the problem itself never causes a prompt. These are advisory:
+  - a bad `decisions`, `decisions.batch` or `decisions.nitsNeedDecision`;
+  - a bad `governance.trustedWritePaths`: a bad entry is dropped, and a value that isn't a list counts as an empty list, so no path is trusted (not the defaults);
+  - a bad `governance.allowlist` (the list or an entry);
+  - an unknown `governance.planEdits` value, which then counts as `"ask"`, so every plan edit prompts.
+- **Advisory problems warn once per change.** The first time a given set of advisory problems is seen, the guard writes one `"decision": "warn"` entry to the governance log and shows a message beside the action's own decision. It warns again only when the set changes; fixing every problem and later reintroducing one warns again, also when it was fixed while an escalating problem was present. A `trustedWritePaths` entry quoted in the message is cut to 60 characters. The message names as many problems as fit in 1000 characters and then says how many more there are; the log entry names them all.
+- **The after-Bash check uses the same split.** It reads the config only after a Bash call that changed a workflow file. It then logs advisory problems once as `warn`, sharing the guard's record of what was shown, and logs an escalating problem as `error` each time.
+- **Where it is remembered.** The set already shown is kept as a hash in `$TMP/usiatech-governance/{project}/config-warned`, which no trusted write path may name. It is recorded only after the `warn` entry is in the log; a warning that couldn't be logged is shown again. If that file can't be read, isn't a small regular file, or its folder can't be trusted (see the after-Bash check above), the warning is shown again. If it can't be written, or can't be removed once the problems are fixed (it is removed only from a folder that can be trusted), that is logged as `error` and the action's decision is still unchanged. If that `error` entry can't be logged either, it is shown as a message.
 
 **Trusted writes** (ESP-9). Some writes carry no risk, so the guard doesn't ask for them. It still logs each one as `"decision": "trusted"`, and `governance-reviewer` lists them all.
 - **`governance.trustedWritePaths`**: writes outside the project folder that go through. The default is:

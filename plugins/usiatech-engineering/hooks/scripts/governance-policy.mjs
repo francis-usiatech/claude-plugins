@@ -4,15 +4,17 @@
 // Decisions: deny (refused) · ask (user must confirm) · null (allow, normal permission flow continues)
 // Repo config: .claude/engineering.json  (keys: protectedPaths, immutableWhenCommitted, allowEnvExample, governance{...})
 // Approved plan: .claude/plans/active.md  ("## Files" section lists paths/globs in scope)
-import { readFileSync, existsSync, lstatSync, statSync, realpathSync } from 'node:fs'
+import { readFileSync, existsSync, lstatSync, statSync, realpathSync, writeFileSync, renameSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import {
   matchAny, isSecretEnvFile, escapeRegExp, isPlainObject, isStringArray, findSecret, DENY_COMMANDS, ASK_COMMANDS,
   DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH, parseAllowlist, allowlistWarnings,
-  checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, applyAllowlist, blockingFindings, formatFinding, TIER,
+  checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, applyAllowlist, blockingFindings, formatFinding, oneLine, TIER,
 } from '../../templates/github/scripts/governance-rules.mjs'
+import { STATE_FOLDER, stateDir, checkedStateDir } from './governance-state.mjs'
 import { lookupTargets, runLookups, createLookups } from '../../templates/github/scripts/supply-chain-lookups.mjs'
 
 const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit']
@@ -36,22 +38,43 @@ const TRUSTED_ROOTS = [{ prefix: '$TMP/', place: 'tmpDir', minLiteral: 1 }, { pr
 const NEVER_TRUSTED_NAMES = ['settings.json', 'settings.local.json', '.mcp.json', '.claude.json', 'claude.md', 'agents.md']
 const NEVER_TRUSTED_SEGMENTS = ['.git', 'hooks', 'plugins', '.ssh']
 const GLOB_CHARS = /[*?[{]/
-// ESP-21: the after-Bash snapshots live in $TMP/usiatech-governance (snapshotDir in bash-workflow-check.mjs). Trusting
-// that folder would let an Edit or Write rewrite a snapshot without a prompt and hide a workflow change.
-const SNAPSHOT_FOLDER = 'usiatech-governance'
+// ESP-21: the after-Bash snapshots live in $TMP/usiatech-governance (STATE_FOLDER in governance-state.mjs). Trusting
+// that folder would let an Edit or Write rewrite a snapshot without a prompt and hide a workflow change, so
+// trustedEntryProblem refuses it.
+/** The repo config file, as named in messages and log entries. */
+export const CONFIG_FILE = '.claude/engineering.json'
+// A config value quoted in a problem reaches the user and, for an advisory problem, Claude's context, so it is cut
+// short and JSON-quoted: a long value or one with line breaks can't pass for anything but a quoted string.
+const QUOTED_VALUE_MAX = 60
+const quoted = (value) => JSON.stringify(value.length > QUOTED_VALUE_MAX ? `${value.slice(0, QUOTED_VALUE_MAX)}…` : value)
+// The most of a warning's problem list that is shown; the list is as long as the config makes it.
+const ADVICE_MAX = 1000
+// The advisory problems as shown: as many as fit in ADVICE_MAX characters (always the first), then how many more
+// there are. The log entry names them all.
+const adviceShown = (advisory) => {
+  let named = 0
+  let length = 0
+  for (const problem of advisory) {
+    length += problem.length + 2
+    if (named && length > ADVICE_MAX) break
+    named++
+  }
+  const more = advisory.length - named
+  return `${oneLine(advisory.slice(0, named).join('; '), ADVICE_MAX)}${more ? `; … and ${more} more` : ''}`
+}
 
 const trustedEntryProblem = (e) => {
   if (typeof e !== 'string') return 'must be a string'
   const root = TRUSTED_ROOTS.find((r) => e.startsWith(r.prefix))
-  if (!root) return `must start with ${TRUSTED_ROOTS.map((r) => r.prefix).join(', ')} ("${e}")`
+  if (!root) return `must start with ${TRUSTED_ROOTS.map((r) => r.prefix).join(', ')} (${quoted(e)})`
   // On Windows "\" also separates folders and a name ending in "." or a space loses it ("..." is ".."), so either
   // could climb out of the root once the entry is joined to a real path.
-  if (/[\\:]/.test(e)) return `must use "/" only, with no "\\" or ":" ("${e}")`
+  if (/[\\:]/.test(e)) return `must use "/" only, with no "\\" or ":" (${quoted(e)})`
   const segs = e.slice(root.prefix.length).split('/')
-  if (segs.some((s) => !s || /[. ]$/.test(s))) return `must not have an empty folder name or one ending in "." or a space ("${e}")`
+  if (segs.some((s) => !s || /[. ]$/.test(s))) return `must not have an empty folder name or one ending in "." or a space (${quoted(e)})`
   const literal = segs.findIndex((s) => GLOB_CHARS.test(s.replaceAll('{project}', '')))
-  if ((literal === -1 ? segs.length : literal) < root.minLiteral) return `must name a folder below ${root.prefix} ("${e}")`
-  if (root.place === 'tmpDir' && segs[0].toLowerCase() === SNAPSHOT_FOLDER) return `must not name the after-Bash snapshot folder $TMP/${SNAPSHOT_FOLDER} ("${e}")`
+  if ((literal === -1 ? segs.length : literal) < root.minLiteral) return `must name a folder below ${root.prefix} (${quoted(e)})`
+  if (root.place === 'tmpDir' && segs[0].toLowerCase() === STATE_FOLDER) return `must not name the after-Bash snapshot folder $TMP/${STATE_FOLDER} (${quoted(e)})`
   return null
 }
 
@@ -140,48 +163,56 @@ export const loadConfig = (root) => {
 }
 
 /**
- * Checks the shape of the keys the guard reads. Invalid keys are dropped (so defaults apply) and
- * reported; invalid command rules are dropped one by one. Never throws.
- * @returns {{ cfg: object, gov: object, repoRules: { deny: string[][], ask: string[][] }, problems: string[] }}
+ * Checks the shape of the keys the guard reads. Invalid keys are reported and dropped (so defaults apply), or
+ * replaced by their strictest value where the default would be looser; invalid command rules are dropped one by one.
+ * Never throws.
+ * ESP-35 R1: a problem is advisory when the guard doesn't read the key or dropping the value makes the guard
+ * stricter, and escalating when dropping it could weaken the guard. `problems` holds both, in the order found.
+ * @returns {{ cfg: object, gov: object, repoRules: { deny: string[][], ask: string[][] }, problems: string[], advisory: string[], escalating: string[] }}
  */
 export const sanitizeConfig = (raw) => {
   const problems = []
+  const advisory = []
+  const escalating = []
+  const report = (list) => (...found) => { list.push(...found); problems.push(...found) }
+  const advise = report(advisory)
+  const escalate = report(escalating)
   const cfg = isPlainObject(raw) ? { ...raw } : {}
   let gov = cfg.governance ?? {}
-  if (!isPlainObject(gov)) { problems.push('"governance" must be an object'); gov = {} }
+  if (!isPlainObject(gov)) { escalate('"governance" must be an object'); gov = {} }
   gov = { ...gov }
   cfg.governance = gov
-  if (cfg.git != null && !isPlainObject(cfg.git)) { problems.push('"git" must be an object'); delete cfg.git }
+  if (cfg.git != null && !isPlainObject(cfg.git)) { escalate('"git" must be an object'); delete cfg.git }
   if (cfg.git?.releaseBranch != null && (typeof cfg.git.releaseBranch !== 'string' || !cfg.git.releaseBranch)) {
-    problems.push('"git.releaseBranch" must be a non-empty string')
+    escalate('"git.releaseBranch" must be a non-empty string')
     cfg.git = { ...cfg.git }
     delete cfg.git.releaseBranch
   }
   // ESP-12: read by the approve-plan and release skills, not by the guard; checked here so a typo is reported.
-  if (cfg.decisions != null && !isPlainObject(cfg.decisions)) { problems.push('"decisions" must be an object'); delete cfg.decisions }
+  if (cfg.decisions != null && !isPlainObject(cfg.decisions)) { advise('"decisions" must be an object'); delete cfg.decisions }
   for (const key of ['batch', 'nitsNeedDecision']) {
     if (cfg.decisions?.[key] == null || typeof cfg.decisions[key] === 'boolean') continue
-    problems.push(`"decisions.${key}" must be true or false`)
+    advise(`"decisions.${key}" must be true or false`)
     cfg.decisions = { ...cfg.decisions }
     delete cfg.decisions[key]
   }
 
   for (const [obj, key, label] of [[cfg, 'protectedPaths'], [cfg, 'immutableWhenCommitted'], [gov, 'askPaths', 'governance.askPaths'], [gov, 'protectedBranches', 'governance.protectedBranches']]) {
     if (obj[key] == null) continue
-    if (!isStringArray(obj[key])) { problems.push(`"${label || key}" must be an array of strings`); delete obj[key] }
+    if (!isStringArray(obj[key])) { escalate(`"${label || key}" must be an array of strings`); delete obj[key] }
   }
 
   const compile = (key, fallback) => {
     const list = gov[key]
     if (list == null) return []
-    if (!Array.isArray(list)) { problems.push(`"governance.${key}" must be an array of { pattern, reason } objects`); return [] }
+    if (!Array.isArray(list)) { escalate(`"governance.${key}" must be an array of { pattern, reason } objects`); return [] }
     return list.flatMap((r, i) => {
       if (!isPlainObject(r) || typeof r.pattern !== 'string' || !r.pattern) {
-        problems.push(`"governance.${key}[${i}]" needs a non-empty string "pattern"`)
+        escalate(`"governance.${key}[${i}]" needs a non-empty string "pattern"`)
         return []
       }
       try { new RegExp(r.pattern, 'i') } catch (e) {
-        problems.push(`invalid command pattern "${r.pattern}": ${e.message}`)
+        escalate(`invalid command pattern "${r.pattern}": ${e.message}`)
         return []
       }
       return [[typeof r.reason === 'string' && r.reason ? r.reason : fallback, r.pattern]]
@@ -189,27 +220,113 @@ export const sanitizeConfig = (raw) => {
   }
   const repoRules = { deny: compile('denyCommands', 'repo deny rule'), ask: compile('askCommands', 'repo ask rule') }
   const allow = parseAllowlist(gov.allowlist)
-  problems.push(...allow.problems)
+  // Dropping a bad entry only brings back the findings it would have hidden.
+  advise(...allow.problems)
   // R8: named by their index in the raw list, so worked out before the invalid entries are dropped.
   gov.allowlistWarnings = allowlistWarnings(gov.allowlist)
   gov.allowlist = allow.entries
   if (gov.planEdits != null && !['allow', 'ask', 'all'].includes(gov.planEdits)) {
-    problems.push('"governance.planEdits" must be "allow", "ask" or "all"')
-    delete gov.planEdits
+    // R2: "ask", the strictest value, so an unknown value can't make plan edits looser.
+    advise('"governance.planEdits" must be "allow", "ask" or "all"')
+    gov.planEdits = 'ask'
   }
   if (gov.trustedWritePaths != null) {
     if (!Array.isArray(gov.trustedWritePaths)) {
-      problems.push('"governance.trustedWritePaths" must be an array of strings')
-      delete gov.trustedWritePaths
+      // No path is trusted, the strictest value: the defaults would trust more than a valid empty list.
+      advise('"governance.trustedWritePaths" must be an array of strings')
+      gov.trustedWritePaths = []
     } else {
       gov.trustedWritePaths = gov.trustedWritePaths.filter((e, i) => {
         const why = trustedEntryProblem(e)
-        if (why) problems.push(`"governance.trustedWritePaths[${i}]" ${why}`)
+        if (why) advise(`"governance.trustedWritePaths[${i}]" ${why}`)
         return !why
       })
     }
   }
-  return { cfg, gov, repoRules, problems }
+  return { cfg, gov, repoRules, problems, advisory, escalating }
+}
+
+/**
+ * ESP-35 R5: where the guard remembers which advisory config problems it has already shown for a project: the
+ * project's state folder (governance-state.mjs), which no trusted write path may name. The marker can only hide an
+ * advisory warning; it never changes a decision.
+ */
+export const configMarkerPath = (root) => path.join(stateDir(root), 'config-warned')
+
+// A sha256 in hex is 64 bytes; anything bigger, or not a regular file, was not written by recordAdvice.
+const MARKER_MAX_BYTES = 64
+
+// The hash of the set last shown, or null when there is no marker that can be used (R7: the warning is then shown).
+// Checked before it is opened: in a shared POSIX /tmp another user could have put a pipe or a huge file there.
+const readMarker = (markerFile) => {
+  try {
+    if (!checkedStateDir(path.dirname(markerFile), { create: false })) return null
+    const st = lstatSync(markerFile)
+    return st.isFile() && st.size <= MARKER_MAX_BYTES ? readFileSync(markerFile, 'utf8') : null
+  } catch {
+    // A missing or unusable marker means the warning is shown; one that stays unusable fails the write in recordAdvice.
+    return null
+  }
+}
+
+// Writes the marker in a private folder that can be trusted; throws when it can't.
+const writeMarker = (markerFile, hash) => {
+  checkedStateDir(path.dirname(markerFile), { create: true })
+  // Written beside the marker and renamed over it, so a link left at either name is replaced, not followed.
+  const draft = `${markerFile}.${process.pid}.tmp`
+  rmSync(draft, { force: true })
+  writeFileSync(draft, hash, { flag: 'wx', mode: 0o600 })
+  try {
+    renameSync(draft, markerFile)
+  } catch (e) {
+    try {
+      rmSync(draft, { force: true })
+    } catch (cleanup) {
+      e.message = `${e.message} (and the draft could not be removed: ${cleanup.message})`
+    }
+    throw e
+  }
+}
+
+/**
+ * ESP-35 R4, R5, R7: whether the advisory config problems are due to be shown. They are due the first time a given
+ * set is seen; the marker holds a hash of the last set shown. With no problems the marker is removed, so the same
+ * problem warns again when it comes back. Nothing is recorded here: the caller logs the warning and then calls
+ * recordAdvice, so a warning that couldn't be logged is due again next time. Never throws.
+ * @param {string[]} advisory  from sanitizeConfig
+ * @param {string} markerFile  from configMarkerPath
+ * @returns {{ warning: string|null, logReason: string|null, hash: string|null, markerError: string|null }}
+ *   warning: the message to show, its problem list capped. logReason: the same with every problem named, for the
+ *   `warn` log entry. hash: what recordAdvice takes. markerError: an old marker couldn't be removed.
+ */
+export const pendingAdvice = (advisory, markerFile) => {
+  const none = { warning: null, logReason: null, hash: null, markerError: null }
+  if (!advisory.length) {
+    try {
+      // Removed only from a folder that can be trusted, like the read and the write; no folder means no marker.
+      if (checkedStateDir(path.dirname(markerFile), { create: false })) rmSync(markerFile, { force: true })
+      return none
+    } catch (e) {
+      return { ...none, markerError: `could not clear the config-warning marker ${markerFile}: ${e?.message || e}` }
+    }
+  }
+  const hash = createHash('sha256').update([...advisory].sort().join('\n')).digest('hex')
+  if (readMarker(markerFile) === hash) return none
+  const text = (list) => `Config warning: ${list}. Each value is ignored or replaced by its strictest setting, and the guard doesn't ask because of it. Fix ${CONFIG_FILE} to clear this; it is shown once per change.`
+  return { warning: text(adviceShown(advisory)), logReason: text(oneLine(advisory.join('; '))), hash, markerError: null }
+}
+
+/**
+ * Records that the warning pendingAdvice returned was logged, so it isn't shown again for the same set. Never throws.
+ * @returns {string|null} why the marker couldn't be written (the warning will be repeated), or null
+ */
+export const recordAdvice = (markerFile, hash) => {
+  try {
+    writeMarker(markerFile, hash)
+    return null
+  } catch (e) {
+    return `could not record that the config warning was shown, so it will be repeated: ${e?.message || e}`
+  }
 }
 
 // Splits a plan at each heading (# to ######). Lines before the first heading form a section with name null.
@@ -453,15 +570,19 @@ const decideScope = (rel, gov, root, ic) => {
  * @param {boolean} [opts.caseInsensitive] match paths ignoring case (defaults to true on Windows/macOS)
  * @param {{ registry: Function, advisories: Function }} [opts.lookups] dependency lookups (stubs in tests; npm by default)
  * @param {number} [opts.lookupDeadlineMs] shared deadline for the lookups (GUARD_DEADLINE_MS by default)
- * @returns {Promise<{ decision: 'deny'|'ask'|null, reason: string, target: string, findings?: object[], failures?: object[] } | null>}
+ * @param {string} [opts.markerFile]      the warn-once marker (configMarkerPath); without it advisory config problems aren't reported
+ * @returns {Promise<{ decision: 'deny'|'ask'|null, reason: string, target: string, findings?: object[], failures?: object[], configWarning?: string, configLogReason?: string, configHash?: string, markerError?: string } | null>}
  *   null, or decision null, means allow. findings (workflow and dependency content checks) and failures (lookups
  *   that failed open) are set whenever there are any, so the hook can log them even when the edit is allowed.
+ *   configWarning (advisory config problems due to be shown; the caller logs configLogReason, which names them all,
+ *   then passes configHash to recordAdvice) and markerError never change the decision.
  */
-export const evaluate = async (input, { root, cfg = {}, configError = null, git = gitProbe, pathApi = path, caseInsensitive = CASE_INSENSITIVE_FS, lookups, lookupDeadlineMs, homeDir = os.homedir(), tmpDir = os.tmpdir() }) => {
+export const evaluate = async (input, { root, cfg = {}, configError = null, git = gitProbe, pathApi = path, caseInsensitive = CASE_INSENSITIVE_FS, lookups, lookupDeadlineMs, homeDir = os.homedir(), tmpDir = os.tmpdir(), markerFile }) => {
   const tool = input.tool_name || ''
   const ti = input.tool_input || {}
   const safe = sanitizeConfig(cfg)
-  const problems = configError ? [`.claude/engineering.json ${configError}`, ...safe.problems] : safe.problems
+  const problems = configError ? [`${CONFIG_FILE} ${configError}`, ...safe.problems] : safe.problems
+  const escalating = !!configError || safe.escalating.length > 0
 
   let result = null
   let target = ''
@@ -477,18 +598,30 @@ export const evaluate = async (input, { root, cfg = {}, configError = null, git 
     } else result = await decideEdit(target, safe, git, root, pathApi, caseInsensitive, tool, ti, { lookups, deadlineMs: lookupDeadlineMs }, { homeDir, tmpDir })
   } else return null
 
-  // Default deny rules still hold with a broken config; anything else becomes a confirmation.
-  if (!problems.length || result?.decision === 'deny') return result
+  // Advisory problems alone (ESP-35 R1) don't change the decision; they are reported beside it, once per change (R4).
+  if (!escalating && markerFile) {
+    const { warning, logReason, hash, markerError } = pendingAdvice(safe.advisory, markerFile)
+    if (!warning && !markerError) return result
+    return { ...(result ?? decision(null, '', target)), ...(warning && { configWarning: warning, configLogReason: logReason, configHash: hash }), ...(markerError && { markerError }) }
+  }
+  if (!escalating) return result
+  // R5: beside an escalating problem the marker is left alone, unless the config was read and has no advisory problem
+  // left. Then it is cleared, so a problem fixed now and reintroduced later warns again.
+  const markerError = markerFile && !configError && !safe.advisory.length ? pendingAdvice([], markerFile).markerError : null
+  // Default deny rules still hold with a broken config; anything else becomes a confirmation, naming every problem.
+  if (result?.decision === 'deny') return markerError ? { ...result, markerError } : result
   const warn = `Config problem: ${problems.join('; ')}. Repo-specific rules are not fully applied until it is fixed.`
   const asked = decision('ask', result?.decision ? `${result.reason} ${warn}` : warn, result?.target ?? target)
+  if (markerError) asked.markerError = markerError
   if (result?.findings) asked.findings = result.findings
   if (result?.failures) asked.failures = result.failures
   return asked
 }
 
 /**
- * The governance-log entries for one decision, in order: each content finding (R16), each lookup that failed open
- * (R13; logged as decision "error", like other fail-opens, A11), then the deny or ask itself.
+ * The governance-log entries for one decision, in order: an advisory config warning shown now (ESP-35 R4; decision
+ * "warn") and a marker that couldn't be cleared (R7; "error"), each content finding (R16), each lookup that failed
+ * open (R13; logged as decision "error", like other fail-opens, A11), then the deny or ask itself.
  * @param {Awaited<ReturnType<typeof evaluate>>} result
  * @param {string} tool
  * @returns {object[]}
@@ -496,7 +629,10 @@ export const evaluate = async (input, { root, cfg = {}, configError = null, git 
 export const logEntries = (result, tool) => {
   if (!result) return []
   const at = { tool, target: result.target }
+  const atConfig = { tool, target: CONFIG_FILE }
   return [
+    ...(result.configWarning ? [{ ...atConfig, decision: 'warn', reason: result.configLogReason ?? result.configWarning }] : []),
+    ...(result.markerError ? [{ ...atConfig, decision: 'error', reason: result.markerError }] : []),
     ...(result.findings || []).map((f) => ({ ...at, decision: 'finding', rule: f.rule, tier: f.tier, file: f.file, line: f.line, detail: f.detail, suppressed: !!f.suppressed })),
     ...(result.failures || []).map((f) => ({ ...at, decision: 'error', lookup: f.lookup, reason: `lookup failed open (${f.lookup}): ${f.reason}` })),
     ...(result.decision ? [{ ...at, decision: result.decision, reason: result.reason }] : []),
