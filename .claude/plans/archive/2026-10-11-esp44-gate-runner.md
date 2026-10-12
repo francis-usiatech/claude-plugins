@@ -98,7 +98,7 @@ One command runs a repo's whole verification gate and prints one line per step w
   - Stage 2 convention: PASS with five nits, all fixed: this review is recorded here and under Reviews, the first Final status bullet has the merge time and the release branch, and two sentences of the Versioning row are clearer.
 
 ## Final status
-- **Shipped** to develop: feature commit `e5a4337` and fix commit `f521842`, PR #91 merged as `75cb9ed` (2026-10-12T05:24:04Z). To be released as 0.14.0 (minor, feat) under the version-bump rule, from branch `chore/release-0.14.0`. Jira ESP-44 is at Ready for Release.
+- **Shipped** to develop: feature commit `e5a4337` and fix commit `f521842`, PR #91 merged as `75cb9ed` (2026-10-12T05:24:04Z). Released as 0.14.0 (minor, feat) under the version-bump rule: release PR #92 (`fa284c6`), promotion PR #93 (`a829db2`), annotated tag `v0.14.0` on main. `claude plugin update` shows 0.14.0 at user scope. Jira ESP-44 → Released.
 - AC1: shown (one line per step in order, the fake-pass line, a UTC timestamp and `Gate: PASS`).
 - AC2: shown (stops at the first failure with its exit code and the last 40 lines; an unknown command is a `FAIL`).
 - AC3: shown, with one change: a conditional step that isn't selected is listed as `SKIPPED`, not left out (Change log, stage 2).
