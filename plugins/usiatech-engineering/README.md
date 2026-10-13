@@ -51,7 +51,7 @@ Start from `templates/engineering.json` (or run the `setup-engineering` skill).
 | `immutableWhenCommitted` | Globs editable only until committed (e.g. migrations) |
 | `allowEnvExample` | Allow edits to `.env.example` (default `true`) |
 | `userGuide` | Guide folder, changelog file, optional manifest |
-| `reviewers` | Agents `release` runs before committing, in two stages: `governance-reviewer` first, then the rest in parallel (default adds `convention-reviewer`, `silent-failure-reviewer`, `security-reviewer`; repo-specific ones allowed) |
+| `reviewers` | Agents `release` runs before committing, in two stages: `governance-reviewer` first, then the rest in parallel, or both stages together on a small diff inside the plan (default adds `convention-reviewer`, `silent-failure-reviewer`, `security-reviewer`; repo-specific ones allowed). Each PR gets one full review round, and on a docs-only diff two reviewers are skipped and `convention-reviewer` runs on Sonnet (rules in the `release` skill) |
 | `decisions` | How `approve-plan` and `release` ask for decisions. `batch` (default `true`) puts every open decision at pre-flight and at release review into one question with a recommended default; `false` asks about each one on its own. `nitsNeedDecision` (default `false`) means nits listed in the PR need no decision; `true` asks about each nit. A non-boolean value is reported once as an advisory config problem (see "Config problems" below) and counts as the default. Older guards ignore the `decisions` key |
 | `governance` | `protectedBranches`, `askPaths`, `requirePlan`, extra `denyCommands` / `askCommands` (regex + reason), `allowlist` (see below), `trustedWritePaths` and `planEdits` (`"allow"`, `"ask"` or `"all"`; see "Trusted writes" below), `rulesFile` |
 
@@ -253,6 +253,17 @@ Decisions recorded in the step 4.2 spec (D1–D12), made while clarifying on 202
 - **Approval label (D12):** the `governance-approved` label overrides a fake-pass failure in CI, as it does for B9/B10. The finding is still reported.
 
 Approved plans are archived in `.claude/plans/archive/` with their final status, acceptance-criteria evidence and deviations.
+
+## Keeping sessions cheap
+Most of a long session's cost is text that tools put into the conversation: test output, logs, API responses. Three habits keep it down:
+- Send large command output to a file and print only a summary (the counts, the failing lines). The gate runner already works this way: one line per step, with the full output in a log file.
+- Ask Jira, or any API, for only the fields you need. A Jira search with the default fields can return tens of thousands of characters; `summary`, `status`, `priority` and `labels` are usually enough.
+- Use the context-mode plugin to process output when it is installed: the raw output stays in its sandbox and only the derived answer comes back. The plugin doesn't depend on it; without it, a small script that reads the saved file does the same job.
+
+## Checking for duplicate installs
+Two installs of this plugin can be active in one repo, for example an old project-scope install next to a newer user-scope one. It is then unclear which guard runs. After an upgrade, run `claude plugin list` in each repo that uses the plugin and look at the `usiatech-engineering` entries:
+- **More than one `usiatech-engineering@usiatech` entry:** one is usually an older version with `Scope: project`. Remove it from that repo with `claude plugin uninstall usiatech-engineering@usiatech --scope project`, run in the repo's folder. This edits the repo's `.claude/settings.json`, so commit that change. That file is shared: once the entry is gone, the repo no longer enables the plugin for other people who work in it, so check first that each of them has a user-scope install, or they lose the guard without any warning. Keep the project-scope install only if the repo is meant to pin its own version.
+- **A `usiatech-engineering@synced` warning:** a copy synced from claude.ai has the same name. The local install takes precedence and the synced copy is not loaded. Remove the synced copy in claude.ai to clear the warning.
 
 ## Development
 Tests use Node's built-in runner and have no dependencies. From the marketplace root run `npm test`. They cover the shared rules, the guard (as a function and as a hook subprocess), and each CI script against temporary git repos and a local GitHub API stub. `.github/workflows/test.yml` runs them on Ubuntu and Windows with Node 20 and 22.

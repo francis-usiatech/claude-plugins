@@ -588,3 +588,111 @@ describe('plugin structure: gate runner (ESP-44 AC7)', () => {
     assert.match(step('Check test content \\(fp-\\*\\)'), /the runner already ran this check/i)
   })
 })
+
+describe('plugin structure: review and release efficiency (ESP-11, 39, 42, 43, 45)', () => {
+  const release = () => body(read('skills', 'release', 'SKILL.md'))
+  const approve = () => body(read('skills', 'approve-plan', 'SKILL.md'))
+  const readme = () => read('README.md')
+  // The working copy may have CRLF line endings, so compare on LF.
+  const section = (raw, heading) => {
+    const text = raw.replace(/\r\n/g, '\n')
+    const start = text.indexOf(`\n${heading}\n`)
+    assert.ok(start > -1, `missing section "${heading}"`)
+    const next = text.indexOf('\n## ', start + 1)
+    return text.slice(start, next === -1 ? undefined : next)
+  }
+  const ASK_PATHS = /the guard's ask paths \(the defaults plus `governance\.askPaths`\)/
+
+  // One release rule: the bullet that starts with the bold label.
+  const rule = (label) => {
+    const line = release().split('\n').find((l) => l.includes(`**${label}:**`))
+    assert.ok(line, `release must have a "${label}" rule`)
+    return line
+  }
+  const CODE_FOLDERS = ['skills/', 'agents/', 'commands/', 'hooks/', 'templates/', '.github/']
+
+  it('should give each PR one full review round and a governance-only re-review of a later fix (AC1)', () => {
+    const line = rule('One round per PR')
+    assert.match(line, /one full review round[^\n]*one full `governance-reviewer` pass[^\n]*one full stage-2 pass/i)
+    assert.match(line, /fix made after that round, whether it fixes a blocking finding or one the user decided on/)
+    assert.match(line, /one reviewer, `governance-reviewer`, on the fix diff only[^\n]*one checklist/)
+    assert.match(line, /say in the PR that the fix had a governance-only re-review/i)
+    assert.match(line, /`reviewers` doesn't include `governance-reviewer`[^\n]*the reviewer that raised the finding/)
+  })
+
+  it('should say exactly when a fix gets a full round again (AC1)', () => {
+    const line = rule('One round per PR')
+    assert.match(line, /full round again only when/i)
+    assert.match(line, /outside the plan's \*\*Files\*\* list/)
+    for (const p of ['*rules*.mjs', '*checks*.mjs', '*policy*.mjs', '*guard*.mjs', '.github/workflows/', 'package.json']) assert.ok(line.includes(`\`${p}\``), p)
+    const code = line.match(/any file that is not Markdown under a ([^(]*) folder at any depth/)
+    assert.ok(code, 'a non-Markdown file in a code folder must trigger a full round')
+    for (const d of CODE_FOLDERS) assert.ok(code[1].includes(`\`${d}\``), d)
+    assert.match(line, /lockfile/)
+    assert.match(line, ASK_PATHS)
+  })
+
+  it('should let stage 1 run in parallel only for a small in-plan diff, with BLOCK and FLAG unchanged (AC2)', () => {
+    const line = rule('In parallel')
+    assert.match(line, /5 files or fewer[^\n]*every changed file is in the plan's \*\*Files\*\* list/)
+    assert.match(line, /otherwise[^\n]*stage 1 runs first/i)
+    assert.match(line, /`BLOCK` still stops the commit[^\n]*`FLAG` still needs the user's[^\n]*decision/)
+  })
+
+  it('should define a docs-only diff that leaves out instruction, rule and ask-path files (AC3)', () => {
+    const line = rule('Docs-only diff')
+    assert.match(line, /every changed file is Markdown \(`\.md`\)/)
+    assert.doesNotMatch(line, /plain text/)
+    assert.match(line, /none is a `CLAUDE\.md` or `AGENTS\.md` at any depth, is the `governance\.rulesFile`/)
+    for (const d of CODE_FOLDERS) assert.ok(line.includes(`\`${d}\``), d)
+    assert.match(line, /at any depth/)
+    assert.match(line, ASK_PATHS)
+  })
+
+  it('should skip two reviewers on a docs-only diff, say so in the PR, and run convention-reviewer on sonnet (AC3)', () => {
+    const line = rule('Docs-only diff')
+    assert.match(line, /skip `silent-failure-reviewer` and `security-reviewer`[^\n]*say so in the PR/)
+    assert.match(line, /`convention-reviewer` on the `sonnet` model and say that in the PR too/)
+    assert.match(line, /`governance-reviewer` and any repo-specific reviewer still run/)
+    assert.match(readme(), /\| `reviewers` \|[^\n]*docs-only diff[^\n]*`release` skill/)
+  })
+
+  it('should archive the plan in release as the last step before the commit, not at clean-up (AC4)', () => {
+    const commit = section(release(), '## 1. Commit (feature branch off the base branch)')
+    const steps = commit.split('\n').filter((l) => /^\d+\. /.test(l))
+    const archive = steps.findIndex((l) => /archive the plan with the `approve-plan` skill/.test(l))
+    assert.ok(archive > -1, 'section 1 must have an archive step')
+    assert.match(steps[archive], /last step before the commit[^\n]*after the review round and any fix re-review/)
+    assert.match(steps[archive], /`\.claude\/plans\/active\.md`/)
+    assert.match(steps[archive], /same commit/)
+    assert.match(steps[archive], /record the final status as shipped/)
+    assert.equal(archive + 2, steps.length, 'the commit must be the one step after the archive')
+    assert.match(steps[archive + 1], /^\d+\. Commit once/)
+    const cleanUp = section(release(), '## 4. Clean up')
+    assert.doesNotMatch(cleanUp, /Close the plan with the `approve-plan` skill/)
+    assert.match(cleanUp, /already archived/)
+  })
+
+  it('should have approve-plan close the plan in the same PR as the work (AC4)', () => {
+    const close = section(approve(), '## Close (work shipped or abandoned)')
+    assert.match(close, /same PR as the work/)
+    assert.match(close, /not known before the merge \(PR number, tag, Jira status\)[^\n]*later PR only if/)
+  })
+
+  it('should document three ways to keep sessions cheap, without depending on context-mode (AC5)', () => {
+    const cheap = section(readme(), '## Keeping sessions cheap')
+    assert.match(cheap, /large[^\n]*output[^\n]*to a file[^\n]*print only[^\n]*summary/i)
+    assert.match(cheap, /Jira[^\n]*only the fields/i)
+    assert.match(cheap, /context-mode[^\n]*when it is installed/i)
+    assert.match(cheap, /doesn't depend on/i)
+  })
+
+  it('should document how to find and remove a duplicate install (AC6)', () => {
+    const dup = section(readme(), '## Checking for duplicate installs')
+    assert.match(dup, /`claude plugin list`/)
+    assert.match(dup, /Scope: project/)
+    assert.match(dup, /`usiatech-engineering@synced`/)
+    assert.match(dup, /`claude plugin uninstall usiatech-engineering@usiatech --scope project`/)
+    assert.match(dup, /check first that each of them has a user-scope install/)
+  })
+})

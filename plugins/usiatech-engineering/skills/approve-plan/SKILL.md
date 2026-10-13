@@ -41,6 +41,7 @@ When new work falls outside the plan:
 3. Never widen the plan silently or with broad globs such as `**`.
 
 ## Close (work shipped or abandoned)
+Close a shipped plan in the same PR as the work: `release` does it as the last step before the commit, after the reviews, so no follow-up PR is needed.
 1. Move the file to `.claude/plans/archive/YYYY-MM-DD-<short-slug>.md`.
-2. Add the final status (shipped, partial or abandoned), the commit/PR reference, each acceptance criterion with its final evidence status, and any deviations.
-3. Archived plans are committed for traceability. `active.md` itself is never committed.
+2. Add the final status (shipped, partial or abandoned), the branch name (the commit hash isn't known yet when the archive goes into the same commit; use the commit or PR reference when closing after the fact), each acceptance criterion with its final evidence status, and any deviations.
+3. Archived plans are committed for traceability. A detail that is not known before the merge (PR number, tag, Jira status) is added in a later PR only if it's needed. `active.md` itself is never committed.
