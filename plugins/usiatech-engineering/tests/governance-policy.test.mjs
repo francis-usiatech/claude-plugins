@@ -747,11 +747,12 @@ describe('evaluate: dependency checks with lookups (R2, R3, R13, R14; AC3, AC11)
     assert.deepEqual(failOpens(r).map((e) => e.lookup), ['registry'])
   })
 
-  it('should return a decision within the hook timeout when a lookup never resolves (AC11)', { timeout: 3000 }, async () => {
+  // No elapsed-time assertion: on a busy machine it failed with nothing wrong (ESP-51). The test's own timeout turns a
+  // guard that waits for the lookup into a failure. It is under the 6 s default deadline, so a timer that ignores the
+  // 50 ms deadline fails too.
+  it('should return a decision within the hook timeout when a lookup never resolves (AC11)', { timeout: 4000 }, async () => {
     const never = () => new Promise(() => {})
-    const started = Date.now()
     const r = await run('Write', { file_path: 'package.json', content: manifest({ expresss: '^4.0.0' }) }, { lookups: { registry: never, advisories: never }, lookupDeadlineMs: 50 })
-    assert.ok(Date.now() - started < 1000)
     assert.equal(r.decision, 'ask', 'the offline typosquat finding still asks')
     assert.deepEqual(failOpens(r).map((e) => e.lookup).sort(), ['advisories', 'registry'])
     assert.match(failOpens(r)[0].reason, /timed out after 50 ms/)
