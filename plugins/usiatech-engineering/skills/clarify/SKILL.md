@@ -8,7 +8,7 @@ description: Turns a vague request into clear requirements by asking one questio
 Understanding comes before the spec. This skill works in the conversation only. Its output is an understanding note that `to-spec` turns into a spec.
 
 ## 1. Read first
-1. Read what already exists: the request, `AGENTS.md`, the intent docs and ADRs it touches, and any issue it mentions (`gh issue view <n>` when available).
+1. Read what already exists: the request, `AGENTS.md`, the intent docs and ADRs it touches, and any issue it mentions: `gh issue view <n>` for `#NN` when available. A Jira key (e.g. `ESP-24`) is a requirement reference just like `#NN`. For its text, use a Jira tool already in the session, or ask the user to paste it.
 2. Don't ask what the repo already answers. Note those facts and where they came from.
 
 ## 2. Ask

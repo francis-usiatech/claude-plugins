@@ -34,11 +34,31 @@ Repo `AGENTS.md` rules win on conflict.
 ## 2. Pull request into the base branch
 - Include: summary, motivation, references, test evidence (the gate table), screenshots for UI, migration/rollback notes, and whether the user guide was updated.
 - If the change is user-visible and the guide wasn't updated, run the `user-guide-update` skill first.
+- **On merge, Jira tracker only** (see "Jira tracker" below): this step runs once the PR has merged into the base branch, meaning Claude merged it or `gh pr view <n> --json state` shows `MERGED`.
+  - The keys are the Jira tickets named by the tasks in the archived plan for this branch, the one whose final status names the branch. If there's no such plan, or its tasks name no keys, say so; don't skip without a word.
+  - For each key: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" transition --issue <KEY> --event merged`.
+  - Then: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" comment --issue <KEY> --body-file "<file>"`. The body file is in the session scratchpad and holds the PR link.
+  - Add the comment even when the transition failed, or printed `"transitioned":false` because no `merged` status is configured. Report both.
 
 ## 3. Release (only when the user asks)
 1. Confirm CI is green on the base branch. Merge base → release branch.
 2. Tag with the configured format. For `DDMMMYYYY-XX`, use the date in upper-case (e.g. `12JAN2027`) plus a two-digit sequence for that day. Check `git tag -l` to pick the next number.
+   - **Jira tracker only:** before creating the tag, find the previous one with `git describe --tags --abbrev=0`. If git says "No names found", there's no earlier tag, and step 4 below scans the whole history. Any other error is a failure: report it, and don't guess a tag.
 3. Push the branch and tag. Follow the repo's deploy runbook: migrations as a separate step before switching; smoke-test staging, then production; check the status page and health endpoints.
+4. **Jira tracker only:** mark the released tickets. Skip this step when `jira.statuses` in the `check` output has no `released`, and say so.
+   - From a POSIX shell (Git Bash on Windows; a PowerShell 5.1 redirect writes UTF-16, which `keys` can't read), run `git log "<previous tag>..<new tag>" --format=%B > "<file>"`, or `git log "<new tag>" --format=%B > "<file>"` with no previous tag. The file goes in the session scratchpad.
+   - Check that `git log` exited 0. If it didn't, stop this step and report the failure; an empty file from a failed `git log` would read as "no tickets".
+   - Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" keys --messages-file "<file>"`. It prints the project's keys found in the commit subjects and bodies.
+   - Show the list and ask the user once to confirm it. The user may drop keys that are only mentioned, such as a "Follow-up: ESP-61" line.
+   - For each confirmed key: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" transition --issue <KEY> --event released`.
+
+## Jira tracker
+- **Which tracker:** when `.claude/engineering.json` exists, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root and read `tracker` from its output.
+  - With no config file, or `"tracker":"github"`, the Jira steps don't apply.
+  - Any non-zero exit (2 is a config problem) is a failure to report, not a reason to skip.
+- **Failures:** a failed `check`, `git describe`, `git log`, `keys`, `transition` or `comment` never undoes a git step: the merge, the tag and the push stand.
+  - Go on with the other keys. Then report each failure with its message as one the user must fix in Jira.
+  - Don't retry silently, and don't report the release as fully done while a Jira step has failed.
 
 ## 4. Clean up
 - The plan is already archived in the work's PR (section 1, step 5). Don't open a PR just to update it: add a detail that was not known before the merge (PR number, tag, Jira status) in a later PR only if it's needed.

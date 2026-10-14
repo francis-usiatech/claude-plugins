@@ -12,7 +12,7 @@ Before routing, if `.claude/plans/active.md` already exists and is unfinished, a
 ## Route (before drafting)
 Pick the route and tell the user which rule decided it.
 - **Small**, when all of these hold:
-  - the work cites an existing requirement reference (intent §, capability ID, FR/AC, ADR, spec, `#issue`). A spec counts only if it says `Status: approved`.
+  - the work cites an existing requirement reference (intent §, capability ID, FR/AC, ADR, spec, `#issue`, or a Jira key such as `ESP-24`). A spec counts only if it says `Status: approved`.
   - it touches 5 files or fewer
   - it adds no new skill, module, service or public interface
 - **Large**, anything else. Run `clarify` → `to-spec` → `to-tickets` first. The spec path and ticket IDs become the requirement references. Add the spec path to **Files**, since the spec is committed with the work.
@@ -23,9 +23,9 @@ Pick the route and tell the user which rule decided it.
 ## Record
 1. Draft the plan from `${CLAUDE_PLUGIN_ROOT}/templates/plan.md`:
    - **Goal:** one or two sentences.
-   - **Requirement references:** the intent sections, capability IDs, FR/AC numbers, ADRs, D-items, spec path and issues this work implements. Every plan needs at least one. If there isn't one, tell the user the work has no requirement basis and offer the large route.
+   - **Requirement references:** the intent sections, capability IDs, FR/AC numbers, ADRs, D-items, spec path and issues (`#NN` or Jira keys) this work implements. Every plan needs at least one. If there isn't one, tell the user the work has no requirement basis and offer the large route.
    - **Acceptance criteria:** AC1, AC2…, at least one. Each is measurable: an observable behaviour, a command and its expected result, or a metric. Rewrite vague ones ("works well", "is fast") with the user. Leave each `Evidence:` line empty; `verify` fills it.
-   - **Tasks:** a checklist. Each task names the AC it covers and its ticket (`#NN` or spec `T1`). Paths mentioned in tasks don't widen scope: only the **Files** section does.
+   - **Tasks:** a checklist. Each task names the AC it covers and its ticket (`#NN`, a Jira key, or spec `T1`). Paths mentioned in tasks don't widen scope: only the **Files** section does.
    - **Files:** every path or glob to create or change (backticked, one per bullet). Keep globs as narrow as practical.
    - **Commands and actions:** any risky action the plan needs (migrations, dependency adds, deploys). Only include those the user agreed to.
    - **Out of scope:** what this plan explicitly doesn't do.
@@ -33,6 +33,13 @@ Pick the route and tell the user which rule decided it.
 2. Run the `governance-reviewer` agent on the draft in pre-flight mode. On the large route it also checks the plan against the spec and tickets. Fix a `BLOCK` before going on; a `FLAG` needs the user's decision, recorded in the plan's change log.
    - Put every open pre-flight decision (each `FLAG` and any scope question) into one question, with a recommended default for each item. When `.claude/engineering.json` sets `decisions.batch` to `false`, ask about each one on its own instead.
 3. Show the draft and the pre-flight verdict. After the user confirms, write `.claude/plans/active.md` and show it in one short message.
+4. **Jira tracker only:** mark the plan's tickets started.
+   - When `.claude/engineering.json` exists, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root.
+   - Skip this step when there's no config file, when `check` prints `"tracker":"github"`, or when `jira.statuses` in its output has no `started`. Say why you skipped it.
+   - A non-zero exit from `check` (2 is a config problem) is a failure to report, not a reason to skip.
+   - The keys are the Jira tickets the plan's tasks name. A parent or blocker key that appears only in the requirement references is not moved. If the tasks name no Jira key, say so.
+   - For each key: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" transition --issue <KEY> --event started`.
+   - A non-zero exit doesn't undo the plan. Report each failed key with the script's message as one the user must fix, and go on with the other keys.
 
 ## Update (scope change)
 When new work falls outside the plan:
