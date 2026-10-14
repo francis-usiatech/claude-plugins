@@ -15,5 +15,19 @@
   ],
   "governance": {
     "planEdits": "all"
+  },
+  "tickets": {
+    "tracker": "jira",
+    "jira": {
+      "site": "https://usiatech.atlassian.net",
+      "project": "ESP",
+      "issueType": "Subtask",
+      "parent": "ESP-27",
+      "statuses": {
+        "started": "In Progress",
+        "merged": "Ready for Release",
+        "released": "Released"
+      }
+    }
   }
 }

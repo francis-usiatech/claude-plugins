@@ -23,7 +23,7 @@ Status: approved · Date: 2026-10-09 · Author: Francis
 - R3: The script can create an issue (with optional parent), link two issues as Blocks, add a comment, and move an issue to a target status by finding the transition whose target status has that name.
 - R4: The script fails loudly. A missing token or email, a network error or timeout, a 4xx or 5xx response, and a status name with no matching transition each exit non-zero with a message naming the issue and the cause. It never retries silently.
 - R5: With `tracker: "jira"`, `to-tickets` files each ticket through the script in blocker order, links Blocks between them, and lists the keys in the spec's Tickets section. On the first failure it stops and reports which tickets were created and which weren't.
-- R6: With `tracker: "jira"`, `approve-plan` moves each Jira key in the recorded plan's requirement references to the `started` status, when one is configured.
+- R6: With `tracker: "jira"`, `approve-plan` moves the Jira keys named by the recorded plan's tasks to the `started` status, when one is configured. Parent and blocker keys that appear only in the requirement references are not moved.
 - R7: With `tracker: "jira"`, `release` moves the plan's Jira keys to the `merged` status and comments the PR link when the PR merges into the base branch. When it tags the release branch, it moves every Jira key found in commit subjects or bodies since the previous tag to the `released` status, after showing the list. Git steps are not undone by a Jira failure; each failed transition is reported as a failure the user must fix.
 - R8: `clarify` and `approve-plan` accept a Jira key (e.g. `ESP-24`) as a requirement reference, as they accept `#NN` today.
 - R9: The skills, the README and `templates/engineering.json` document the Jira tracker, the environment variables and the failure behaviour. An ADR records the decision to send ticket data to Jira with a user token.
@@ -58,6 +58,7 @@ Status: approved · Date: 2026-10-09 · Author: Francis
 
 ## Change log
 - 2026-10-09: R11 and AC12 added after an automated security review found that a repo-supplied site could receive the token; env variable names chosen. Approved by Francis.
+- 2026-10-14: R6 reworded to the keys named by the plan's tasks, matching what ESP-30 shipped; moving every requirement-reference key would also move parent and blocker tickets. Decided during ESP-30, recorded in ESP-31. Approved by Francis.
 
 ## Tickets
 Filed in Jira as sub-tasks of ESP-27:

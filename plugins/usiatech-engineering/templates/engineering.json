@@ -53,6 +53,10 @@
     "batch": true,
     "nitsNeedDecision": false
   },
+  "tickets": {
+    "$comment": "Ticket tracker for to-tickets, approve-plan and release: \"github\" (the default) or \"jira\". For Jira set tracker to \"jira\" and add \"jira\": {\"site\": \"https://example.atlassian.net\", \"project\": \"ESP\", \"issueType\": \"Subtask\", \"parent\": \"ESP-27\" (optional), \"statuses\": {\"started\": \"In Progress\", \"merged\": \"Ready for Release\", \"released\": \"Released\"} (each optional)}. Credentials come only from the JIRA_EMAIL and JIRA_API_TOKEN environment variables; the token is sent only to an .atlassian.net site or the JIRA_SITE host. Jira failures are never retried and never undo git steps. See the README under Jira tracker and ADR 0003.",
+    "tracker": "github"
+  },
   "governance": {
     "$comment": "Guard settings. Commands are case-insensitive regexes. Defaults already cover destructive git/SQL/rm, curl|sh, --no-verify, dependency adds, remote/infra commands, secrets reads and sudo. allowlist suppresses one workflow/dependency finding by rule ID plus a path glob or package name (still reported, never blocks); a wf-* entry needs one literal file path and can't cover wf-unparsed, otherwise it suppresses nothing and is reported as wf-allowlist-ignored, e.g. {\"rule\": \"wf-unpinned-action\", \"path\": \".github/workflows/pr-governance.yml\", \"reason\": \"...\"} or {\"rule\": \"sc-install-script\", \"package\": \"esbuild\", \"reason\": \"postinstall only fetches its platform binary\"}; it ships empty. trustedWritePaths (writes outside the project that don't ask, still logged as trusted; the values shown are the defaults, [] asks again) and planEdits (\"allow\" lets plan edits that only change evidence, task ticks or the change log through; \"ask\" asks for every plan edit; \"all\" trusts every plan and archive write, still logged, so the governance-reviewer becomes the only scope check on plan changes) are explained in the README under Trusted writes. approvalLabel and requirementRefPattern (null = default C-number/FR/AC/ADR/D-item/\u00a7/#issue) are also used by the PR governance workflow.",
     "protectedBranches": [
