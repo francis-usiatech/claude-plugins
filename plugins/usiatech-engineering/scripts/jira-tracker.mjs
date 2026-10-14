@@ -66,6 +66,20 @@ export const validateTicketsConfig = (raw) => {
 }
 
 /**
+ * Finds the keys of one project in commit-message text (R7), so a release can move them to the released status.
+ * A key inside a longer word (XESP-1, ESP-1a, foo_ESP-1, bar-ESP-1) is not a key.
+ * @param {string} text commit subjects and bodies
+ * @param {string} project the project key, e.g. "ESP"
+ * @returns {string[]} the unique keys, in the order first seen
+ */
+export const findJiraKeys = (text, project) => {
+  if (typeof project !== 'string' || !PROJECT_KEY.test(project)) throw new TypeError(`"${project}" is not a project key such as "ESP"`)
+  if (typeof text !== 'string') throw new TypeError('text must be a string')
+  const pattern = new RegExp(`(?<![A-Za-z0-9_-])${project}-\\d+(?![A-Za-z0-9_])`, 'g')
+  return [...new Set(text.match(pattern) ?? [])]
+}
+
+/**
  * Reads the Jira credentials and the optional trusted site from the environment (R2, R11). Nothing else is a
  * source of credentials. Unset values stay undefined; the client reports them on first use.
  * @param {Record<string, string|undefined>} env usually process.env
@@ -223,11 +237,12 @@ const USAGE = `Usage: node jira-tracker.mjs <command> [options]
   comment --issue <KEY> --body-file <path>
   find-transition --issue <KEY> (--status <name> | --event <event>)
   transition --issue <KEY> (--status <name> | --event <event>)
+  keys --messages-file <path>   (the project's keys in commit messages; sends nothing)
 Every command takes --config <path> (default ${DEFAULT_CONFIG}) and prints one line of JSON.
 Credentials come from JIRA_EMAIL and JIRA_API_TOKEN only; events are ${EVENTS.join(', ')}.`
 
 const CLI_OPTIONS = Object.fromEntries(
-  ['config', 'summary', 'body-file', 'parent', 'blocker', 'blocked', 'issue', 'status', 'event'].map((name) => [name, { type: 'string' }]))
+  ['config', 'summary', 'body-file', 'messages-file', 'parent', 'blocker', 'blocked', 'issue', 'status', 'event'].map((name) => [name, { type: 'string' }]))
 
 // A problem with the arguments or the config (exit 2), as opposed to a Jira failure (exit 1).
 class UsageError extends Error {}
@@ -272,14 +287,18 @@ const requireIssueKey = (values, name) => {
   return key
 }
 
-const readBodyFile = (cwd, values) => {
-  const file = requireOption(values, 'body-file')
-  let text
+// The text of the file a required option names, relative to cwd.
+const readOptionFile = (cwd, values, name) => {
+  const file = requireOption(values, name)
   try {
-    text = readFileSync(path.resolve(cwd, file), 'utf8')
+    return { file, text: readFileSync(path.resolve(cwd, file), 'utf8') }
   } catch (err) {
-    throw new UsageError(`cannot read --body-file ${file}: ${err.message}`)
+    throw new UsageError(`cannot read --${name} ${file}: ${err.message}`)
   }
+}
+
+const readBodyFile = (cwd, values) => {
+  const { file, text } = readOptionFile(cwd, values, 'body-file')
   if (text.trim() === '') throw new UsageError(`--body-file ${file} is empty`)
   return text.trimEnd()
 }
@@ -347,6 +366,11 @@ const JIRA_COMMANDS = {
     if (status == null) return { issue, event, transitioned: false, reason: noStatusFor(event) }
     await client().transitionTo(issue, status)
     return { issue, status, transitioned: true }
+  },
+  // Reads commit messages from a file (an empty one is fine: no commits since the last tag) and sends nothing.
+  keys: async ({ jira, values, cwd }) => {
+    const { text } = readOptionFile(cwd, values, 'messages-file')
+    return { project: jira.project, keys: findJiraKeys(text, jira.project) }
   },
 }
 
