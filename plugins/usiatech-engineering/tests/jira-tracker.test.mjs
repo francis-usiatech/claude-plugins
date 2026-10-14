@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, sy
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { validateTicketsConfig, createJiraClient, credentialsFromEnv, runCli } from '../scripts/jira-tracker.mjs'
+import { validateTicketsConfig, findJiraKeys, createJiraClient, credentialsFromEnv, runCli } from '../scripts/jira-tracker.mjs'
 
 const jira = (over = {}) => ({
   tracker: 'jira',
@@ -92,6 +92,41 @@ const TRANSITIONS = { transitions: [
   { id: '21', name: 'Start work', to: { name: 'In Progress' } },
   { id: '41', name: 'Ship it', to: { name: 'Ready for Release' } },
 ] }
+
+describe('findJiraKeys (R7; AC7)', () => {
+  it('should return the unique keys of the project in the order first seen', () => {
+    const text = 'feat: add the helper (ESP-30)\n\nRefs ESP-27, ESP-30.\nfix: ESP-12 again\n'
+    assert.deepEqual(findJiraKeys(text, 'ESP'), ['ESP-30', 'ESP-27', 'ESP-12'])
+  })
+
+  it('should ignore the keys of other projects', () => {
+    assert.deepEqual(findJiraKeys('ABC-1 ESP-2 ESPX-3 XYZ-4', 'ESP'), ['ESP-2'])
+  })
+
+  it('should ignore a key inside a longer word', () => {
+    assert.deepEqual(findJiraKeys('XESP-1 ESP-1a foo_ESP-2 2ESP-3 bar-ESP-4 ESP-5', 'ESP'), ['ESP-5'])
+  })
+
+  it('should find a key next to punctuation, a slash or a line end', () => {
+    assert.deepEqual(findJiraKeys('(ESP-1) [ESP-2], feature/ESP-3-x "ESP-4"\nESP-5', 'ESP'), ['ESP-1', 'ESP-2', 'ESP-3', 'ESP-4', 'ESP-5'])
+  })
+
+  it('should not match a project whose key is a prefix of another project key', () => {
+    assert.deepEqual(findJiraKeys('ESP-1 ES-2', 'ES'), ['ES-2'])
+  })
+
+  it('should return no keys for text without any', () => {
+    assert.deepEqual(findJiraKeys('', 'ESP'), [])
+    assert.deepEqual(findJiraKeys('chore: tidy up\nesp-1 is lower case', 'ESP'), [])
+  })
+
+  it('should refuse a project that is not a project key and text that is not a string', () => {
+    for (const project of ['esp', 'E.P', 'ESP|ABC', '', undefined]) {
+      assert.throws(() => findJiraKeys('ESP-1', project), /project key/, String(project))
+    }
+    assert.throws(() => findJiraKeys(undefined, 'ESP'), /text must be a string/)
+  })
+})
 
 describe('createJiraClient requests (R3; AC3)', () => {
   it('should create an issue under a parent and return its key', async () => {
@@ -330,6 +365,7 @@ const cliRepo = (t, tickets = jira()) => {
   mkdirSync(path.join(dir, '.claude'))
   writeFileSync(path.join(dir, '.claude', 'engineering.json'), JSON.stringify({ tickets }))
   writeFileSync(path.join(dir, 'body.txt'), 'Body text\n')
+  writeFileSync(path.join(dir, 'messages.txt'), 'feat: helper (ESP-30)\n\nRefs ESP-27 and ABC-9\n')
   return dir
 }
 
@@ -354,7 +390,11 @@ const CLI_COMMANDS = [
   { args: ['comment', '--issue', 'ESP-28', '--body-file', 'body.txt'], replies: [{ status: 201, body: { id: '9' } }] },
   { args: ['find-transition', '--issue', 'ESP-22', '--event', 'merged'], replies: [{ body: TRANSITIONS }] },
   { args: ['transition', '--issue', 'ESP-28', '--status', 'in progress'], replies: [{ body: TRANSITIONS }, { status: 204 }] },
+  { args: ['keys', '--messages-file', 'messages.txt'], replies: [] },
 ]
+
+// Commands that never call Jira: they succeed even when the site is not trusted.
+const LOCAL_COMMANDS = ['check', 'keys']
 
 describe('runCli commands (R3)', () => {
   it('should print the checked config for check and send nothing', async (t) => {
@@ -438,6 +478,47 @@ describe('runCli commands (R3)', () => {
     assert.equal(result.code, 0, result.stderr)
     assert.deepEqual(printed(result), { issue: 'ESP-28', event: 'released', transitioned: false, reason: 'no status is configured for "released"' })
     assert.equal(calls.length, 0)
+  })
+})
+
+describe('runCli keys (R7; AC7)', () => {
+  it('should print the project and the keys found in the messages file, and send nothing', async (t) => {
+    const { fetch, calls } = stubFetch()
+    const result = await runCli(['keys', '--messages-file', 'messages.txt'], { env: {}, fetch, cwd: cliRepo(t) })
+    assert.equal(result.code, 0, result.stderr)
+    assert.deepEqual(printed(result), { project: 'ESP', keys: ['ESP-30', 'ESP-27'] })
+    assert.equal(calls.length, 0)
+  })
+
+  it('should take the project from the config', async (t) => {
+    const result = await runCli(['keys', '--messages-file', 'messages.txt'], { env: {}, fetch: stubFetch().fetch, cwd: cliRepo(t, jira({ project: 'ABC' })) })
+    assert.equal(result.code, 0, result.stderr)
+    assert.deepEqual(printed(result), { project: 'ABC', keys: ['ABC-9'] })
+  })
+
+  it('should print no keys for an empty messages file', async (t) => {
+    const dir = cliRepo(t)
+    writeFileSync(path.join(dir, 'none.txt'), '')
+    const result = await runCli(['keys', '--messages-file', 'none.txt'], { env: {}, fetch: stubFetch().fetch, cwd: dir })
+    assert.equal(result.code, 0, result.stderr)
+    assert.deepEqual(printed(result), { project: 'ESP', keys: [] })
+  })
+
+  it('should exit 2 when --messages-file is missing or cannot be read', async (t) => {
+    const dir = cliRepo(t)
+    const missing = await runCli(['keys'], { env: {}, fetch: stubFetch().fetch, cwd: dir })
+    assert.equal(missing.code, 2)
+    assert.match(missing.stderr, /--messages-file is required/)
+    const absent = await runCli(['keys', '--messages-file', 'nope.txt'], { env: {}, fetch: stubFetch().fetch, cwd: dir })
+    assert.equal(absent.code, 2)
+    assert.match(absent.stderr, /cannot read --messages-file nope\.txt/)
+    assert.equal(absent.stdout, '')
+  })
+
+  it('should exit 2 when the tracker is not Jira', async (t) => {
+    const result = await runCli(['keys', '--messages-file', 'messages.txt'], { env: {}, fetch: stubFetch().fetch, cwd: cliRepo(t, { tracker: 'github' }) })
+    assert.equal(result.code, 2)
+    assert.match(result.stderr, /"tickets\.tracker" is "github"/)
   })
 })
 
@@ -572,8 +653,9 @@ describe('runCli token handling (R2; AC2)', () => {
     const before = filesIn(dir)
     for (const { args } of CLI_COMMANDS) {
       const run = spawnSync(process.execPath, [SCRIPT, ...args], { cwd: dir, env: { ...process.env, ...CLI_ENV, JIRA_SITE: '' }, encoding: 'utf8' })
-      assert.equal(run.status, args[0] === 'check' ? 0 : 1, `${args[0]}: ${run.stderr}`)
+      assert.equal(run.status, LOCAL_COMMANDS.includes(args[0]) ? 0 : 1, `${args[0]}: ${run.stderr}`)
       if (args[0] === 'check') assert.equal(printed(run).jira.site, 'https://jira.example.test')
+      else if (args[0] === 'keys') assert.deepEqual(printed(run), { project: 'ESP', keys: ['ESP-30', 'ESP-27'] })
       else assert.match(run.stderr, /site host "jira\.example\.test" is not trusted/)
       for (const secret of [CLI_TOKEN, CLI_BASIC]) assert.equal((run.stdout + run.stderr).includes(secret), false, `${args[0]} printed the token`)
     }
