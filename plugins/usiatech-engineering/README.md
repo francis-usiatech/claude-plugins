@@ -54,6 +54,32 @@ Start from `templates/engineering.json` (or run the `setup-engineering` skill).
 | `reviewers` | Agents `release` runs before committing, in two stages: `governance-reviewer` first, then the rest in parallel, or both stages together on a small diff inside the plan (default adds `convention-reviewer`, `silent-failure-reviewer`, `security-reviewer`; repo-specific ones allowed). Each PR gets one full review round, and on a docs-only diff two reviewers are skipped and `convention-reviewer` runs on Sonnet (rules in the `release` skill) |
 | `decisions` | How `approve-plan` and `release` ask for decisions. `batch` (default `true`) puts every open decision at pre-flight and at release review into one question with a recommended default; `false` asks about each one on its own. `nitsNeedDecision` (default `false`) means nits listed in the PR need no decision; `true` asks about each nit. A non-boolean value is reported once as an advisory config problem (see "Config problems" below) and counts as the default. Older guards ignore the `decisions` key |
 | `governance` | `protectedBranches`, `askPaths`, `requirePlan`, extra `denyCommands` / `askCommands` (regex + reason), `allowlist` (see below), `trustedWritePaths` and `planEdits` (`"allow"`, `"ask"` or `"all"`; see "Trusted writes" below), `rulesFile` |
+| `tickets` | Ticket tracker for `to-tickets`, `approve-plan` and `release`. `tracker` is `"github"` (default when the section is missing) or `"jira"`; see "Jira tracker" below |
+
+### Jira tracker
+With `tickets.tracker` set to `"jira"`, the skills file and move tickets in Jira through `scripts/jira-tracker.mjs` (no dependencies; the decision is [ADR 0003](../../docs/adr/0003-jira-ticket-tracker.md)):
+
+```json
+"tickets": {
+  "tracker": "jira",
+  "jira": {
+    "site": "https://example.atlassian.net",
+    "project": "ESP",
+    "issueType": "Subtask",
+    "parent": "ESP-27",
+    "statuses": { "started": "In Progress", "merged": "Ready for Release", "released": "Released" }
+  }
+}
+```
+
+- **Keys.** `site` (https), `project` (upper-case key), `issueType` are required; `parent` is optional. Each `statuses` event is optional, and an event with no status is skipped. An invalid value for a known key makes the whole section unusable, and `node <plugin>/scripts/jira-tracker.mjs check`, run from the repo root, names it (it reads the config only and sends nothing). Unknown keys are ignored, so a misspelled `statuses` or `tracker` is not reported: check the printed section.
+- **Environment.** `JIRA_EMAIL` and `JIRA_API_TOKEN` (an Atlassian API token) are required and read only from the environment, never from config or files. The token is sent only to a site ending in `.atlassian.net`, or to the host of `JIRA_SITE` when that is set. Set `JIRA_SITE` to your own site to pin the host: without it, any Atlassian tenant named in the config is accepted.
+- **What the skills do.**
+  - `to-tickets` files each ticket in blocker order, links Blocks between them and writes each key to the spec's Tickets section.
+  - `approve-plan` moves the keys named by the plan's tasks to `started`.
+  - `release` moves them to `merged` with a PR-link comment when the PR merges, and moves every key in the commit messages since the previous tag to `released` after showing you the list.
+  - `clarify` and `approve-plan` accept a Jira key (e.g. `ESP-24`) as a requirement reference.
+- **Failures.** Nothing is retried. A missing credential, network error, timeout, 4xx/5xx response or a status with no matching transition exits non-zero with the issue and cause; a config or argument problem exits 2. `to-tickets` stops on the first failure and reports what was and wasn't created (a timed-out create is "unknown, may exist"). In `release`, git steps are never undone by a Jira failure; each failed transition is reported for you to fix in Jira.
 
 ## Governance model (layered)
 
@@ -232,6 +258,8 @@ Every change traces to a requirement. These are the records behind the plugin, w
 | [Spec: fake-pass checks and mutation testing](../../docs/specs/2026-09-30-fake-pass-and-mutation-test.md) | Approved; shipped v0.9.0 | A6 `fp-*` test-content checks in `verify` and CI (R1–R11), B26 `mutation-test` skill and runner (R12–R17) |
 | [ADR 0002: fake-pass checks fail the gate](../../docs/adr/0002-fake-pass-checks-fail-the-gate.md) | Accepted | The CI gate fails on heuristic test-content findings; the allowlist is the way through |
 | [Spec: workflow checks hardening](../../docs/specs/2026-10-02-workflow-checks-hardening.md) | Approved; shipped v0.10.0 | Step 4.3: the #13 workflow-check gaps. New detections (R1–R3), YAML escapes and flow forms (R4–R5), the after-Bash check (R6), Windows path variants (R7), the literal-path allowlist rule (R8), renames and unreadable old versions in CI (R9–R10), one quote rule and linear-time patterns (R11–R12) |
+| [Spec: Jira as the ticket tracker](../../docs/specs/2026-10-09-jira-ticket-tracker.md) | Approved | ESP-27: the `tickets` config, the Jira script, filing and transitions in `to-tickets`, `approve-plan` and `release` (R1–R11, AC1–AC12) |
+| [ADR 0003: Jira ticket tracker](../../docs/adr/0003-jira-ticket-tracker.md) | Accepted | Jira is opt-in; the user's API token comes only from the environment and goes only to a trusted host; Jira failures are loud and never undo git steps |
 
 Decisions recorded in the step 4.2 spec (D1–D12), made while clarifying on 2026-09-30. Shipped in 0.9.0 (A6 #20/#21, B26 #22).
 - **Where it runs (D1):** both local `verify` and the CI gate, from one shared rule module. CI loads the base-branch copy.
