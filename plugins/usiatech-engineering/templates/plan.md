@@ -4,14 +4,14 @@
 <one or two sentences>
 
 ## Requirement references
-- <intent §, capability ID (e.g. C22), FR/AC, ADR-NNNN, D-item, spec path (docs/specs/…), #issue>
+- <intent §, capability ID (e.g. C22), FR/AC, ADR-NNNN, D-item, spec path (docs/specs/…), #issue or Jira key (e.g. ESP-24)>
 
 ## Acceptance criteria
 - AC1: <measurable outcome: an observable behaviour, a command and its expected result, or a metric>
   - Evidence: <filled by verify: passing test name, command output or observed result> (shown | not shown, <UTC timestamp>)
 
 ## Tasks
-- [ ] T1: <task> (covers AC1; ticket #NN or spec T1)
+- [ ] T1: <task> (covers AC1; ticket #NN, Jira key or spec T1)
 
 ## Files
 - `<path or narrow glob>`
