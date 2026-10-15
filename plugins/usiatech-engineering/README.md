@@ -72,7 +72,7 @@ With `tickets.tracker` set to `"jira"`, the skills file and move tickets in Jira
 }
 ```
 
-- **Keys.** `site` (https), `project` (upper-case key), `issueType` are required; `parent` is optional. Each `statuses` event is optional, and an event with no status is skipped. An invalid value for a known key makes the whole section unusable, and `node <plugin>/scripts/jira-tracker.mjs check`, run from the repo root, names it (it reads the config only and sends nothing). Unknown keys are ignored, so a misspelled `statuses` or `tracker` is not reported: check the printed section.
+- **Keys.** `site` (https), `project` (upper-case key), `issueType` are required; `parent` is optional. Each `statuses` event is optional, and an event with no status is skipped. An invalid value for a known key makes the whole section unusable, and `node <plugin>/scripts/jira-tracker.mjs check`, run from the repo root, names it (it reads the config only and sends nothing). Unknown keys (other than `$comment`) in `tickets`, `tickets.jira` and `statuses` are reported the same way, so a misspelled `statuses` or `tracker` is caught.
 - **Environment.** `JIRA_EMAIL` and `JIRA_API_TOKEN` (an Atlassian API token) are required and read only from the environment, never from config or files. The token is sent only to a site ending in `.atlassian.net`, or to the host of `JIRA_SITE` when that is set. Set `JIRA_SITE` to your own site to pin the host: without it, any Atlassian tenant named in the config is accepted.
 - **What the skills do.**
   - `to-tickets` files each ticket in blocker order, links Blocks between them and writes each key to the spec's Tickets section.
