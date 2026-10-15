@@ -76,6 +76,47 @@ describe('validateTicketsConfig (R1; AC1)', () => {
   })
 })
 
+describe('validateTicketsConfig unknown keys (R1; ESP-62)', () => {
+  for (const [name, raw, key] of [
+    ['a misspelt tracker with no tracker set', { trackr: 'jira' }, 'tickets.trackr'],
+    ['an unknown key beside the GitHub tracker', { tracker: 'github', jirra: {} }, 'tickets.jirra'],
+    ['an unknown key beside the Jira tracker', { ...jira(), extra: true }, 'tickets.extra'],
+    ['a misspelt statuses', jira({ statuses: undefined, statues: { started: 'In Progress' } }), 'tickets.jira.statues'],
+    ['an unknown event', jira({ statuses: { begun: 'In Progress' } }), 'tickets.jira.statuses.begun'],
+  ]) {
+    it(`should report ${name} as a problem naming ${key}`, () => {
+      const { tickets, problems } = validateTicketsConfig(raw)
+      assert.equal(tickets, null)
+      assert.equal(problems.length, 1, problems.join('; '))
+      assert.match(problems[0], new RegExp(`"${key.replace(/\./g, '\\.')}"`))
+    })
+  }
+
+  it('should accept $comment in tickets, tickets.jira and tickets.jira.statuses', () => {
+    const raw = jira({ $comment: 'jira note', statuses: { $comment: 'status note', started: 'In Progress' } })
+    raw.$comment = 'tickets note'
+    const { tickets, problems } = validateTicketsConfig(raw)
+    assert.deepEqual(problems, [])
+    assert.deepEqual(tickets.jira.statuses, { started: 'In Progress' })
+  })
+
+  for (const [name, raw, keys] of [
+    ['a misspelt tracker beside a bad tracker', { trackr: 'jira', tracker: 'linear' }, ['tickets.trackr', 'tickets.tracker']],
+    ['an unknown tickets key beside a Jira problem', { ...jira({ statues: {} }), extra: true }, ['tickets.extra', 'tickets.jira.statues']],
+  ]) {
+    it(`should report every level in one run for ${name}`, () => {
+      const { tickets, problems } = validateTicketsConfig(raw)
+      assert.equal(tickets, null)
+      assert.equal(problems.length, keys.length, problems.join('; '))
+      keys.forEach((key, i) => assert.match(problems[i], new RegExp(`"${key.replace(/\./g, '\\.')}"`)))
+    })
+  }
+
+  it('should accept $comment beside the GitHub tracker', () => {
+    assert.deepEqual(validateTicketsConfig({ $comment: 'note', tracker: 'github' }), { tickets: { tracker: 'github' }, problems: [] })
+  })
+})
+
 // A fetch stub that records each request and answers from a queue of { status, body } replies.
 const stubFetch = (...replies) => {
   const calls = []
@@ -603,6 +644,14 @@ describe('runCli failures (R4; AC4)', () => {
     assert.match(result.stderr, /engineering\.json could not be parsed/)
   })
 
+  it('should exit 2 on check when the config has a misspelt statuses key', async (t) => {
+    const { fetch, calls } = stubFetch()
+    const result = await runCli(['check'], { env: CLI_ENV, fetch, cwd: cliRepo(t, jira({ statuses: undefined, statues: { started: 'In Progress' } })) })
+    assert.equal(result.code, 2)
+    assert.match(result.stderr, /"tickets\.jira\.statues"/)
+    assert.equal(calls.length, 0)
+  })
+
   it('should exit 2 when the tracker is GitHub and a Jira command is asked for', async (t) => {
     const { fetch, calls } = stubFetch()
     const result = await runCli(['comment', '--issue', 'ESP-28', '--body-file', 'body.txt'], { env: CLI_ENV, fetch, cwd: cliRepo(t, { tracker: 'github' }) })
@@ -638,12 +687,13 @@ describe('runCli token handling (R2; AC2)', () => {
     }
   })
 
-  it('should take the token from the environment only, never from the config file', async (t) => {
+  it('should take the token from the environment only: a token in the config file is an unknown key', async (t) => {
     const { fetch, calls } = stubFetch()
     const dir = cliRepo(t, jira({ token: CLI_TOKEN, email: 'me@example.test' }))
     const result = await runCli(['comment', '--issue', 'ESP-28', '--body-file', 'body.txt'], { env: { JIRA_EMAIL: 'me@example.test' }, fetch, cwd: dir })
-    assert.equal(result.code, 1)
-    assert.match(result.stderr, /comment on ESP-28 failed: JIRA_API_TOKEN is not set/)
+    assert.equal(result.code, 2)
+    assert.match(result.stderr, /"tickets\.jira\.token" is not a known key/)
+    assert.equal((result.stdout + result.stderr).includes(CLI_TOKEN), false, 'printed the token')
     assert.equal(calls.length, 0)
   })
 
