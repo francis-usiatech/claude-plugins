@@ -24,11 +24,22 @@ const httpsSite = (v) => {
   }
 }
 
+// "$comment" is the config's note key, allowed at every level and never treated as a setting.
+const COMMENT_KEY = '$comment'
+const TICKETS_KEYS = ['tracker', 'jira']
+const JIRA_KEYS = ['site', 'project', 'issueType', 'parent', 'statuses']
+const quoted = (keys) => keys.map((k) => `"${k}"`).join(', ')
+const settingEntries = (obj) => Object.entries(obj).filter(([key]) => key !== COMMENT_KEY)
+
+// An unknown key is reported, not ignored, so a typo such as "statues" or "trackr" can't silently change behaviour.
+const unknownKeyProblems = (obj, where, known) =>
+  settingEntries(obj).filter(([key]) => !known.includes(key)).map(([key]) => `"${where}.${key}" is not a known key; use ${quoted(known)}`)
+
 const statusProblems = (statuses) => {
   if (statuses == null) return []
   if (!isPlainObject(statuses)) return ['"tickets.jira.statuses" must be an object mapping events to status names']
-  return Object.entries(statuses).flatMap(([event, name]) =>
-    !EVENTS.includes(event) ? [`"tickets.jira.statuses.${event}" is not an event; use ${EVENTS.map((e) => `"${e}"`).join(', ')}`]
+  return settingEntries(statuses).flatMap(([event, name]) =>
+    !EVENTS.includes(event) ? [`"tickets.jira.statuses.${event}" is not an event; use ${quoted(EVENTS)}`]
       : !isNonEmptyString(name) ? [`"tickets.jira.statuses.${event}" must be a non-empty status name`]
       : [])
 }
@@ -36,6 +47,7 @@ const statusProblems = (statuses) => {
 const jiraProblems = (j) => {
   if (!isPlainObject(j)) return ['"tickets.jira" must be an object']
   return [
+    ...unknownKeyProblems(j, 'tickets.jira', JIRA_KEYS),
     !httpsSite(j.site) && '"tickets.jira.site" must be an https URL such as https://example.atlassian.net',
     !(isNonEmptyString(j.project) && PROJECT_KEY.test(j.project)) && '"tickets.jira.project" must be an upper-case project key such as "ESP"',
     !isNonEmptyString(j.issueType) && '"tickets.jira.issueType" must be a non-empty issue type name',
@@ -54,13 +66,16 @@ export const validateTicketsConfig = (raw) => {
   if (raw == null) return { tickets: { tracker: 'github' }, problems: [] }
   if (!isPlainObject(raw)) return { tickets: null, problems: ['"tickets" must be an object'] }
   const tracker = raw.tracker ?? 'github'
-  if (!TRACKERS.includes(tracker)) return { tickets: null, problems: ['"tickets.tracker" must be "github" or "jira"'] }
-  if (tracker === 'github') return { tickets: { tracker }, problems: [] }
-  const problems = jiraProblems(raw.jira)
+  // Every level is checked in one run, so fixing one typo doesn't reveal the next only on a rerun.
+  const problems = [
+    ...unknownKeyProblems(raw, 'tickets', TICKETS_KEYS),
+    ...(!TRACKERS.includes(tracker) ? ['"tickets.tracker" must be "github" or "jira"'] : tracker === 'jira' ? jiraProblems(raw.jira) : []),
+  ]
   if (problems.length) return { tickets: null, problems }
+  if (tracker === 'github') return { tickets: { tracker }, problems: [] }
   const { site, project, issueType, parent, statuses } = raw.jira
   return {
-    tickets: { tracker, jira: { site: site.replace(/\/+$/, ''), project, issueType, parent: parent ?? null, statuses: { ...statuses } } },
+    tickets: { tracker, jira: { site: site.replace(/\/+$/, ''), project, issueType, parent: parent ?? null, statuses: Object.fromEntries(settingEntries(statuses ?? {})) } },
     problems: [],
   }
 }
