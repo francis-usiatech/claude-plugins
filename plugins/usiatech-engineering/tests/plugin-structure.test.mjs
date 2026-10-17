@@ -543,6 +543,80 @@ describe('plugin structure: pre-flight reviewers (ESP-67; spec R10, R11, AC9)', 
   })
 })
 
+describe('plugin structure: pre-plan checklist (ESP-66; spec R6, R7, R8, AC6, AC7)', () => {
+  const template = () => read('templates', 'plan.md')
+  const approve = () => body(read('skills', 'approve-plan', 'SKILL.md'))
+  const reviewer = () => body(read('agents', 'governance-reviewer.md'))
+
+  it('should give the plan template a Pre-plan checklist section between Requirement references and Acceptance criteria (plan AC1 / spec AC6)', () => {
+    const text = template()
+    const at = (h) => text.indexOf(h)
+    assert.ok(at('## Requirement references') > -1, 'missing Requirement references section')
+    assert.ok(at('## Pre-plan checklist') > -1, 'missing Pre-plan checklist section')
+    assert.ok(at('## Requirement references') < at('## Pre-plan checklist'), 'checklist after requirement references')
+    assert.ok(at('## Pre-plan checklist') < at('## Acceptance criteria'), 'checklist before acceptance criteria')
+  })
+
+  it('should list items (a)–(c) in the template and allow n/a with a reason (plan AC1 / spec AC6)', () => {
+    const text = template()
+    assert.match(text, /^- \(a\) [^\n]*validation[^\n]*callers[^\n]*fixtures/im)
+    assert.match(text, /^- \(b\) [^\n]*database or infrastructure[^\n]*spike/im)
+    assert.match(text, /^- \(c\) [^\n]*docs and ADRs/im)
+    assert.match(text, /`n\/a: <reason>`/)
+  })
+
+  it('should tell Claude to fill the checklist before drafting the rest of the plan (plan AC2 / spec AC6)', () => {
+    assert.match(approve(), /\*\*Pre-plan checklist:\*\*[^\n]*before drafting the rest of the plan/)
+  })
+
+  it('should describe items (a)–(c) in approve-plan (plan AC2 / spec AC6)', () => {
+    const text = approve()
+    assert.match(text, /\(a\)[^\n]*validation rule or format check[^\n]*callers and test fixtures/)
+    assert.match(text, /\(b\)[^\n]*database or infrastructure mechanism[^\n]*throwaway spike[^\n]*why none is needed/)
+    assert.match(text, /\(c\)[^\n]*docs and ADRs/)
+  })
+
+  it('should allow n/a with a reason but not a bare n/a (plan AC2 / spec AC6)', () => {
+    assert.match(approve(), /`n\/a: <reason>`[^\n]*bare `n\/a`/)
+  })
+
+  it('should answer (c) from a search before pre-flight, then add a configured docs reviewer\'s findings (plan AC2 / spec AC6)', () => {
+    const text = approve()
+    assert.match(text, /\(c\)[^\n]*from a search[^\n]*before pre-flight/)
+    assert.match(text, /docs reviewer[^\n]*`planning\.preflightReviewers`[^\n]*description says it reviews docs[^\n]*add its findings to \(c\)/)
+    assert.match(text, /name which reviewer was treated as the docs reviewer/)
+  })
+
+  it('should keep (c) from widening scope (plan AC2 / spec AC6)', () => {
+    assert.match(approve(), /Paths named in \(c\) don't widen scope: only the \*\*Files\*\* section does/)
+  })
+
+  it('should not write active.md while a checklist item is empty, a placeholder or a bare n/a (plan AC2 / spec AC6)', () => {
+    assert.match(approve(), /^3\. [^\n]*Don't write `\.claude\/plans\/active\.md` while a Pre-plan checklist item is empty, still the template placeholder or a bare `n\/a`/m)
+  })
+
+  it('should make the governance-reviewer pre-flight FLAG a missing checklist section (plan AC3 / spec AC7)', () => {
+    assert.match(reviewer(), /\*\*Pre-plan checklist\*\* \(pre-flight only[^\n]*`FLAG`[^\n]*no `## Pre-plan checklist` section/)
+  })
+
+  it('should FLAG an item that is missing, empty, still the placeholder or a bare n/a (plan AC3 / spec AC7)', () => {
+    const text = reviewer()
+    assert.match(text, /\*\*Pre-plan checklist\*\*[^\n]*missing, empty or still the template placeholder/)
+    assert.match(text, /\*\*Pre-plan checklist\*\*[^\n]*bare `n\/a` with no reason/)
+  })
+
+  it('should not check the checklist in change reviews (plan AC3 / spec AC7)', () => {
+    assert.match(reviewer(), /\*\*Pre-plan checklist\*\*[^\n]*Change reviews don't check it/)
+  })
+
+  it('should document the pre-plan checklist in the README approve-plan row and the 0.18.0 row (plan AC4 / spec AC14)', () => {
+    const readme = read('README.md')
+    assert.match(readme, /^\| Skill \| `approve-plan` \|[^\n]*pre-plan checklist/im)
+    assert.match(readme, /^\| 0\.18\.0 \|[^\n]*pre-plan checklist/im)
+    assert.match(readme, /^\| 0\.18\.0 \|[^\n]*\*\*Upgrade:\*\*[^\n]*pre-plan checklist needs no opt-in/im)
+  })
+})
+
 describe('plugin structure: batch decisions (ESP-33; spec AC1–AC5)', () => {
   const approve = () => body(read('skills', 'approve-plan', 'SKILL.md'))
   const release = () => body(read('skills', 'release', 'SKILL.md'))
