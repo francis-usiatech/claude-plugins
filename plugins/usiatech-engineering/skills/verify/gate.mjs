@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runCommand, handleInterrupts } from '../mutation-test/mutation-runner.mjs'
+import { hasControlChar, isPathPrefix } from '../../templates/github/scripts/governance-rules.mjs'
 
 const FAKE_PASS_SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../templates/github/scripts/fake-pass-check.mjs')
 const FAKE_PASS_NAME = 'fake-pass check'
@@ -24,13 +25,9 @@ const TAIL_LINES = 40
 const DEFAULT_STEP_TIMEOUT_MS = 600000
 // Node runs a timer with a longer delay after 1 ms, which would stop the step at once.
 const MAX_STEP_TIMEOUT_MS = 2147483647
-// A control character in a name could forge a summary line: C0 controls, DEL, NEL and the two Unicode line breaks.
-const hasControlChar = (text) => [...text].some((c) => c.codePointAt(0) < 32 || [127, 133, 8232, 8233].includes(c.codePointAt(0)))
 
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 const isText = (v) => typeof v === 'string' && v.trim() !== ''
-// git lists paths relative to the repo root with forward slashes, so any other spelling could never match.
-const isPrefix = (v) => isText(v) && v === v.trim() && !hasControlChar(v) && !v.includes('\\') && !v.startsWith('/') && !v.startsWith('./') && !v.split('/').includes('..')
 
 // The two helpers below repeat what templates/github/scripts/fake-pass-check.mjs does. That file is a CI template
 // repos copy, and it keeps these two to itself, so the list is rebuilt here rather than imported.
@@ -52,7 +49,7 @@ const checkSteps = (steps, key, needsWhen) => {
     if (s.timeoutMs !== undefined && !(Number.isInteger(s.timeoutMs) && s.timeoutMs >= 1 && s.timeoutMs <= MAX_STEP_TIMEOUT_MS)) {
       throw new Error(`.claude/engineering.json "${key}": the "timeoutMs" of step "${s.name}" must be a whole number of milliseconds from 1 to ${MAX_STEP_TIMEOUT_MS}.`)
     }
-    if (needsWhen && !(Array.isArray(s.when) && s.when.length && s.when.every(isPrefix))) {
+    if (needsWhen && !(Array.isArray(s.when) && s.when.length && s.when.every(isPathPrefix))) {
       throw new Error(`.claude/engineering.json "${key}": step "${s.name}" needs a "when" list of path prefixes, relative to the repo root with forward slashes (for example "src/").`)
     }
   }

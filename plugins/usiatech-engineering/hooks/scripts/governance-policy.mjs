@@ -13,6 +13,7 @@ import {
   matchAny, isSecretEnvFile, escapeRegExp, isPlainObject, isStringArray, findSecret, DENY_COMMANDS, ASK_COMMANDS,
   DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH, parseAllowlist, allowlistWarnings,
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, applyAllowlist, blockingFindings, formatFinding, oneLine, TIER,
+  isPathPrefix,
 } from '../../templates/github/scripts/governance-rules.mjs'
 import { STATE_FOLDER, stateDir, checkedStateDir } from './governance-state.mjs'
 import { lookupTargets, runLookups, createLookups } from '../../templates/github/scripts/supply-chain-lookups.mjs'
@@ -163,6 +164,35 @@ export const loadConfig = (root) => {
 }
 
 /**
+ * ESP-67 (spec R9, R12): `planning.preflightReviewers` is read by the approve-plan skill, not by the guard, so every
+ * problem is advisory. A bad `planning` or list is dropped; a bad entry is dropped on its own.
+ */
+const checkPlanning = (cfg, advise) => {
+  if (cfg.planning == null) return
+  if (!isPlainObject(cfg.planning)) { advise('"planning" must be an object'); delete cfg.planning; return }
+  const list = cfg.planning.preflightReviewers
+  if (list == null) return
+  cfg.planning = { ...cfg.planning }
+  if (!Array.isArray(list)) {
+    advise('"planning.preflightReviewers" must be an array of { agent, when } objects')
+    delete cfg.planning.preflightReviewers
+    return
+  }
+  cfg.planning.preflightReviewers = list.filter((entry, i) => {
+    const label = `"planning.preflightReviewers[${i}]`
+    if (!isPlainObject(entry) || typeof entry.agent !== 'string' || !entry.agent.trim()) {
+      advise(`${label}" needs a non-empty string "agent"`)
+      return false
+    }
+    if (entry.when != null && !(Array.isArray(entry.when) && entry.when.length && entry.when.every(isPathPrefix))) {
+      advise(`${label}.when" must be a non-empty list of path prefixes, relative to the repo root with forward slashes (for example "src/")`)
+      return false
+    }
+    return true
+  })
+}
+
+/**
  * Checks the shape of the keys the guard reads. Invalid keys are reported and dropped (so defaults apply), or
  * replaced by their strictest value where the default would be looser; invalid command rules are dropped one by one.
  * Never throws.
@@ -196,6 +226,7 @@ export const sanitizeConfig = (raw) => {
     cfg.decisions = { ...cfg.decisions }
     delete cfg.decisions[key]
   }
+  checkPlanning(cfg, advise)
 
   for (const [obj, key, label] of [[cfg, 'protectedPaths'], [cfg, 'immutableWhenCommitted'], [gov, 'askPaths', 'governance.askPaths'], [gov, 'protectedBranches', 'governance.protectedBranches']]) {
     if (obj[key] == null) continue

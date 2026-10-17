@@ -24,6 +24,14 @@ Pick the route and tell the user which rule decided it.
 1. Draft the plan from `${CLAUDE_PLUGIN_ROOT}/templates/plan.md`:
    - **Goal:** one or two sentences.
    - **Requirement references:** the intent sections, capability IDs, FR/AC numbers, ADRs, D-items, spec path and issues (`#NN` or Jira keys) this work implements. Every plan needs at least one. If there isn't one, tell the user the work has no requirement basis and offer the large route.
+   - **Pre-plan checklist:** answer each item before drafting the rest of the plan, and record the answers in the plan's Pre-plan checklist section.
+     - (a) For any new validation rule or format check: the callers and test fixtures you searched.
+     - (b) For any database or infrastructure mechanism the design relies on: the throwaway spike that proved it, or why none is needed.
+     - (c) The docs and ADRs the work touches. List them from a search of the docs and ADRs before pre-flight, so the pre-flight reviews a real answer.
+       - When a docs reviewer (a `planning.preflightReviewers` agent whose description says it reviews docs) is configured and runs, its pre-flight output answers this: add its findings to (c), labelled with the reviewer. If it fails, keep the search list and report the failure.
+       - In the pre-flight report, name which reviewer was treated as the docs reviewer, or say that none was.
+       - Paths named in (c) don't widen scope: only the **Files** section does.
+     - Any item can be `n/a: <reason>`; a bare `n/a` with no reason is not an answer, and the pre-flight flags it.
    - **Acceptance criteria:** AC1, AC2…, at least one. Each is measurable: an observable behaviour, a command and its expected result, or a metric. Rewrite vague ones ("works well", "is fast") with the user. Leave each `Evidence:` line empty; `verify` fills it.
    - **Tasks:** a checklist. Each task names the AC it covers and its ticket (`#NN`, a Jira key, or spec `T1`). Paths mentioned in tasks don't widen scope: only the **Files** section does.
    - **Files:** every path or glob to create or change (backticked, one per bullet). Keep globs as narrow as practical.
@@ -31,8 +39,13 @@ Pick the route and tell the user which rule decided it.
    - **Out of scope:** what this plan explicitly doesn't do.
    - **Approved:** the user's name and today's date, and `Route: small` or `Route: large` with the rule that decided it.
 2. Run the `governance-reviewer` agent on the draft in pre-flight mode. On the large route it also checks the plan against the spec and tickets. Fix a `BLOCK` before going on; a `FLAG` needs the user's decision, recorded in the plan's change log.
-   - Put every open pre-flight decision (each `FLAG` and any scope question) into one question, with a recommended default for each item. When `.claude/engineering.json` sets `decisions.batch` to `false`, ask about each one on its own instead.
-3. Show the draft and the pre-flight verdict. After the user confirms, write `.claude/plans/active.md` and show it in one short message.
+   - **Pre-flight reviewers:** run each agent listed in `.claude/engineering.json` → `planning.preflightReviewers` on the draft in design mode, in parallel with `governance-reviewer`. Give each one the draft plan and ask for `PASS`, `FLAG` or `BLOCK` with findings.
+     - Each entry is `{ "agent": "<name>", "when": ["<prefix>", …] }`. An entry with `when` runs only when one of its path prefixes matches the start of a path in the plan's **Files** section; an entry without `when` always runs.
+     - An invalid entry (no non-empty string `agent`, or a bad `when`) is skipped and named in the pre-flight report. The guard has already warned about it once.
+     - A reviewer that fails or isn't installed is reported by name and does not count as a pass.
+     - A `BLOCK` from any pre-flight reviewer must be fixed before going on, as with `governance-reviewer`.
+   - Combine the `BLOCK`s and `FLAG`s from every pre-flight reviewer, each labelled with the reviewer that raised it. Fix the `BLOCK`s, then put every open pre-flight decision (each `FLAG` and any scope question) into one question, with a recommended default for each item. When `.claude/engineering.json` sets `decisions.batch` to `false`, ask about each one on its own instead.
+3. Show the draft and the pre-flight verdict. After the user confirms, write `.claude/plans/active.md` and show it in one short message. Don't write `.claude/plans/active.md` while a Pre-plan checklist item is empty, still the template placeholder or a bare `n/a`: fix the item first.
 4. **Jira tracker only:** mark the plan's tickets started.
    - When `.claude/engineering.json` exists, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root.
    - Skip this step when there's no config file, when `check` prints `"tracker":"github"`, or when `jira.statuses` in its output has no `started`. Say why you skipped it.
