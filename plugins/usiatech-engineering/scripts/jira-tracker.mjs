@@ -1,5 +1,5 @@
 // Jira ticket tracker (spec docs/specs/2026-10-09-jira-ticket-tracker.md, R1–R4), shared by the to-tickets,
-// approve-plan and release skills. Run it as `node jira-tracker.mjs <command>`; see USAGE below.
+// approve-plan, verify and release skills. Run it as `node jira-tracker.mjs <command>`; see USAGE below.
 // Exit codes: 0 done, 1 a Jira failure, 2 a problem with the arguments or the config.
 
 import { readFileSync, realpathSync } from 'node:fs'
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
 export const TRACKERS = ['github', 'jira']
-export const EVENTS = ['started', 'merged', 'released']
+export const EVENTS = ['started', 'verified', 'merged', 'released']
 const PROJECT_KEY = /^[A-Z][A-Z0-9_]+$/
 const ISSUE_KEY = /^[A-Z][A-Z0-9_]+-\d+$/
 

@@ -67,7 +67,7 @@ With `tickets.tracker` set to `"jira"`, the skills file and move tickets in Jira
     "project": "ESP",
     "issueType": "Subtask",
     "parent": "ESP-27",
-    "statuses": { "started": "In Progress", "merged": "Ready for Release", "released": "Released" }
+    "statuses": { "started": "In Progress", "verified": "In Testing", "merged": "Ready for Release", "released": "Released" }
   }
 }
 ```
@@ -77,6 +77,7 @@ With `tickets.tracker` set to `"jira"`, the skills file and move tickets in Jira
 - **What the skills do.**
   - `to-tickets` files each ticket in blocker order, links Blocks between them and writes each key to the spec's Tickets section.
   - `approve-plan` moves the keys named by the plan's tasks to `started`.
+  - `verify` moves the keys named by the plan's tasks to `verified` when the gate passes and every acceptance criterion is shown.
   - `release` moves them to `merged` with a PR-link comment when the PR merges, and moves every key in the commit messages since the previous tag to `released` after showing you the list.
   - `clarify` and `approve-plan` accept a Jira key (e.g. `ESP-24`) as a requirement reference.
 - **Failures.** Nothing is retried. A missing credential, network error, timeout, 4xx/5xx response or a status with no matching transition exits non-zero with the issue and cause; a config or argument problem exits 2. `to-tickets` stops on the first failure and reports what was and wasn't created (a timed-out create is "unknown, may exist"). In `release`, git steps are never undone by a Jira failure; each failed transition is reported for you to fix in Jira.

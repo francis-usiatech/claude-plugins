@@ -54,7 +54,7 @@
     "nitsNeedDecision": false
   },
   "tickets": {
-    "$comment": "Ticket tracker for to-tickets, approve-plan and release: \"github\" (the default) or \"jira\". For Jira set tracker to \"jira\" and add \"jira\": {\"site\": \"https://example.atlassian.net\", \"project\": \"ESP\", \"issueType\": \"Subtask\", \"parent\": \"ESP-27\" (optional), \"statuses\": {\"started\": \"In Progress\", \"merged\": \"Ready for Release\", \"released\": \"Released\"} (each optional)}. Credentials come only from the JIRA_EMAIL and JIRA_API_TOKEN environment variables; the token is sent only to an .atlassian.net site or the JIRA_SITE host. Jira failures are never retried and never undo git steps. See the README under Jira tracker and ADR 0003.",
+    "$comment": "Ticket tracker for to-tickets, approve-plan, verify and release: \"github\" (the default) or \"jira\". For Jira set tracker to \"jira\" and add \"jira\": {\"site\": \"https://example.atlassian.net\", \"project\": \"ESP\", \"issueType\": \"Subtask\", \"parent\": \"ESP-27\" (optional), \"statuses\": {\"started\": \"In Progress\", \"verified\": \"In Testing\", \"merged\": \"Ready for Release\", \"released\": \"Released\"} (each optional)}. Credentials come only from the JIRA_EMAIL and JIRA_API_TOKEN environment variables; the token is sent only to an .atlassian.net site or the JIRA_SITE host. Jira failures are never retried and never undo git steps. See the README under Jira tracker and ADR 0003.",
     "tracker": "github"
   },
   "governance": {
