@@ -25,6 +25,7 @@
       "parent": "ESP-27",
       "statuses": {
         "started": "In Progress",
+        "verified": "In Testing",
         "merged": "Ready for Release",
         "released": "Released"
       }
