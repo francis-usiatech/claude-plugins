@@ -31,7 +31,12 @@ Pick the route and tell the user which rule decided it.
    - **Out of scope:** what this plan explicitly doesn't do.
    - **Approved:** the user's name and today's date, and `Route: small` or `Route: large` with the rule that decided it.
 2. Run the `governance-reviewer` agent on the draft in pre-flight mode. On the large route it also checks the plan against the spec and tickets. Fix a `BLOCK` before going on; a `FLAG` needs the user's decision, recorded in the plan's change log.
-   - Put every open pre-flight decision (each `FLAG` and any scope question) into one question, with a recommended default for each item. When `.claude/engineering.json` sets `decisions.batch` to `false`, ask about each one on its own instead.
+   - **Pre-flight reviewers:** run each agent listed in `.claude/engineering.json` → `planning.preflightReviewers` on the draft in design mode, in parallel with `governance-reviewer`. Give each one the draft plan and ask for `PASS`, `FLAG` or `BLOCK` with findings.
+     - Each entry is `{ "agent": "<name>", "when": ["<prefix>", …] }`. An entry with `when` runs only when one of its path prefixes matches the start of a path in the plan's **Files** section; an entry without `when` always runs.
+     - An invalid entry (no non-empty string `agent`, or a bad `when`) is skipped and named in the pre-flight report. The guard has already warned about it once.
+     - A reviewer that fails or isn't installed is reported by name and does not count as a pass.
+     - A `BLOCK` from any pre-flight reviewer must be fixed before going on, as with `governance-reviewer`.
+   - Combine the `BLOCK`s and `FLAG`s from every pre-flight reviewer, each labelled with the reviewer that raised it. Fix the `BLOCK`s, then put every open pre-flight decision (each `FLAG` and any scope question) into one question, with a recommended default for each item. When `.claude/engineering.json` sets `decisions.batch` to `false`, ask about each one on its own instead.
 3. Show the draft and the pre-flight verdict. After the user confirms, write `.claude/plans/active.md` and show it in one short message.
 4. **Jira tracker only:** mark the plan's tickets started.
    - When `.claude/engineering.json` exists, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root.
