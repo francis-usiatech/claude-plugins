@@ -514,6 +514,35 @@ describe('plugin structure: step-4.2 mutation-test (#22, AC14, R18)', () => {
   })
 })
 
+describe('plugin structure: pre-flight reviewers (ESP-67; spec R10, R11, AC9)', () => {
+  const approve = () => body(read('skills', 'approve-plan', 'SKILL.md'))
+
+  it('should run each planning.preflightReviewers entry on the draft in design mode, in parallel with governance-reviewer (a)', () => {
+    assert.match(approve(), /`planning\.preflightReviewers`[^\n]*design mode[^\n]*in parallel with `governance-reviewer`/)
+  })
+
+  it('should match a reviewer\'s when prefixes against the plan\'s Files section, and always run one without when (b)', () => {
+    assert.match(approve(), /`when`[^\n]*prefix[^\n]*\*\*Files\*\*/)
+    assert.match(approve(), /without `when` always runs/)
+  })
+
+  it('should merge every BLOCK and FLAG into the one batched decision, labelled with the reviewer that raised it (c)', () => {
+    assert.match(approve(), /BLOCK[^\n]*FLAG[^\n]*every pre-flight reviewer, each labelled with the reviewer that raised it[^\n]*one question/i)
+  })
+
+  it('should require a BLOCK from any pre-flight reviewer to be fixed (d)', () => {
+    assert.match(approve(), /`BLOCK` from any pre-flight reviewer must be fixed/)
+  })
+
+  it('should report a reviewer that fails or is not installed by name, not as a pass (e)', () => {
+    assert.match(approve(), /fails or isn't installed[^\n]*by name[^\n]*not (count as )?a pass/)
+  })
+
+  it('should skip an invalid entry and name it in the pre-flight report (f)', () => {
+    assert.match(approve(), /invalid entry[^\n]*skip[^\n]*pre-flight report/i)
+  })
+})
+
 describe('plugin structure: batch decisions (ESP-33; spec AC1–AC5)', () => {
   const approve = () => body(read('skills', 'approve-plan', 'SKILL.md'))
   const release = () => body(read('skills', 'release', 'SKILL.md'))

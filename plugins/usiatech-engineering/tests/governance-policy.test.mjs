@@ -1212,6 +1212,59 @@ describe('evaluate: decisions keys (ESP-32; spec AC6)', () => {
   })
 })
 
+describe('evaluate: planning.preflightReviewers (ESP-67; spec R9, R12, AC8)', () => {
+  const run = (cfg, markerFile) => evaluate({ tool_name: 'Write', tool_input: { file_path: 'src/a.ts', content: 'x' } }, { root: tempDir(), git: fakeGit(), cfg, markerFile })
+  const reviewers = (list) => ({ planning: { preflightReviewers: list } })
+
+  it('should report no config problem for a missing planning, an empty list or valid entries', async () => {
+    for (const cfg of [{}, { planning: {} }, reviewers([]), reviewers([{ agent: 'docs-sync' }, { agent: 'security-tenancy-auditor', when: ['src/auth/', 'prisma/'] }])]) {
+      assert.equal(await run(cfg), null)
+      assert.deepEqual(sanitizeConfig(cfg).problems, [])
+    }
+  })
+
+  for (const [what, cfg, problem] of [
+    ['a non-object planning', { planning: ['x'] }, /^"planning" must be an object$/],
+    ['a non-array preflightReviewers', reviewers({ agent: 'x' }), /^"planning\.preflightReviewers" must be an array/],
+    ['a string entry', reviewers(['docs-sync']), /^"planning\.preflightReviewers\[0\]" needs a non-empty string "agent"$/],
+    ['an entry with no agent', reviewers([{ when: ['src/'] }]), /^"planning\.preflightReviewers\[0\]" needs a non-empty string "agent"$/],
+    ['an entry with a blank agent', reviewers([{ agent: '  ' }]), /^"planning\.preflightReviewers\[0\]" needs/],
+    ['a when that is not a list', reviewers([{ agent: 'a', when: 'src/' }]), /^"planning\.preflightReviewers\[0\]\.when" must be a non-empty list of path prefixes/],
+    ['an empty when', reviewers([{ agent: 'a', when: [] }]), /^"planning\.preflightReviewers\[0\]\.when"/],
+    ['a when prefix with a backslash', reviewers([{ agent: 'a', when: ['src\\auth'] }]), /\.when"/],
+    ['a when prefix with a leading slash', reviewers([{ agent: 'a', when: ['/src/'] }]), /\.when"/],
+    ['a when prefix with a leading ./', reviewers([{ agent: 'a', when: ['./src/'] }]), /\.when"/],
+    ['a when prefix with a .. segment', reviewers([{ agent: 'a', when: ['src/../x'] }]), /\.when"/],
+    ['a when prefix with a control character', reviewers([{ agent: 'a', when: ['src/\u0007x/'] }]), /\.when"/],
+    ['a when prefix with a space at an end', reviewers([{ agent: 'a', when: [' src/'] }]), /\.when"/],
+  ]) {
+    it(`should report ${what} as one advisory problem with no ask`, async () => {
+      assert.equal(await run(cfg), null)
+      const safe = sanitizeConfig(cfg)
+      assert.equal(safe.escalating.length, 0)
+      assert.equal(safe.advisory.length, 1)
+      assert.match(safe.advisory[0], problem)
+    })
+  }
+
+  it('should drop only the bad entry and keep the valid ones', () => {
+    const safe = sanitizeConfig(reviewers([{ agent: 'a' }, { when: ['src/'] }, { agent: 'b', when: ['docs/'] }]))
+    assert.deepEqual(safe.problems, ['"planning.preflightReviewers[1]" needs a non-empty string "agent"'])
+    assert.deepEqual(safe.cfg.planning.preflightReviewers, [{ agent: 'a' }, { agent: 'b', when: ['docs/'] }])
+  })
+
+  it('should warn once for a bad entry and stay quiet on an unchanged repeat', async () => {
+    const marker = path.join(tempDir(), 'state', 'config-warned')
+    const cfg = reviewers([{ agent: '' }])
+    const first = await run(cfg, marker)
+    assert.equal(first.decision ?? null, null)
+    assert.match(first.configWarning, /"planning\.preflightReviewers\[0\]" needs/)
+    assert.deepEqual(logEntries(first, 'Write').map((e) => e.decision), ['warn'])
+    recordAdvice(marker, first.configHash)
+    assert.equal(await run(cfg, marker), null)
+  })
+})
+
 describe('evaluate: advisory and escalating config problems (ESP-47; spec R1–R3, AC3–AC5)', () => {
   const run = (cfg, opts = {}) => evaluate({ tool_name: 'Write', tool_input: { file_path: 'src/a.ts', content: 'x' } }, { root: tempDir(), git: fakeGit(), cfg, ...opts })
 

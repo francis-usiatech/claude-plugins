@@ -25,6 +25,11 @@ export const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 // Config shape checks shared by the guard and CI.
 export const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
 export const isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === 'string')
+// A control character in a name could forge a summary line: C0 controls, DEL, NEL and the two Unicode line breaks.
+export const hasControlChar = (text) => [...text].some((c) => c.codePointAt(0) < 32 || [127, 133, 8232, 8233].includes(c.codePointAt(0)))
+// A `when` path prefix (verifyConditional, planning.preflightReviewers). git lists paths relative to the repo root
+// with forward slashes, so any other spelling could never match.
+export const isPathPrefix = (v) => typeof v === 'string' && v.trim() !== '' && v === v.trim() && !hasControlChar(v) && !v.includes('\\') && !v.startsWith('/') && !v.startsWith('./') && !v.split('/').includes('..')
 
 // Command rules: [reason, regex source], matched case-insensitively against the full Bash command.
 export const DENY_COMMANDS = [
