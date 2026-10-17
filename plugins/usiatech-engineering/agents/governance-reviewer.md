@@ -62,6 +62,7 @@ You are the governance gate for this repository. You make sure work stays within
    - no spec non-goal appears in the plan's Goal, Tasks or Files
    - nothing conflicts with an Accepted ADR
 9. **Scope added after approval** (change review, when the log has a `trusted` write to `.claude/plans/active.md` since the plan's approval date, as under `governance.planEdits: "all"`, where the guard no longer asks about plan changes and this check is the only scope check on them): compare the plan's Files entries, acceptance criteria and tasks with those at approval. Take the approved version from git history when the plan was committed or archived, otherwise from the Change log (the items its dated lines record as added). Return at least `FLAG` for each Files entry, AC or task added after approval that has no dated Change log line recording it.
+10. **Pre-plan checklist** (pre-flight only): return at least `FLAG` when the plan has no `## Pre-plan checklist` section. Also `FLAG` each item (a), (b) or (c) that is missing, empty or still the template placeholder, and each item that is a bare `n/a` with no reason (`n/a: <reason>` is an answer). Change reviews don't check it, so plans approved before this check aren't affected.
 
 **Confidence:** score every finding 0–100 for how sure you are that it is a real problem in this change.
 - 100: reproduced, or certain from the code.
