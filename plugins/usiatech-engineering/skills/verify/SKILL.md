@@ -33,7 +33,13 @@ description: Runs the repository's verification gate (typecheck, tests, build an
    - Rewrite every evidence line under its AC in the plan, even ones an earlier run filled, as `- Evidence: <evidence> (shown, <UTC timestamp>)` or `(not shown, <UTC timestamp>)`, e.g. `2026-09-28T17:50Z`. The stamp lets `governance-reviewer` spot evidence older than the latest change.
    - Tick (`- [x]`) each task whose ACs are all `shown`.
    - Collect everything first, then write all evidence lines and ticks in one edit. The guard asks before each edit to the plan, so one edit means one prompt.
-8. **Report:**
+8. **Jira tracker only:** move the plan's tickets to verified, only when step 3's result is **Gate: PASS** (commands and fake-pass check) and step 7 marked every AC `shown`.
+   - Skip this step, and say why, when there's no `.claude/engineering.json`, when `check` prints `"tracker":"github"`, when `jira.statuses` in its output has no `verified`, when there's no `.claude/plans/active.md`, when the plan has no `## Acceptance criteria` section, or when any AC is `not shown`.
+   - Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root. A non-zero exit (2 is a config problem) is a failure to report, not a reason to skip.
+   - The keys are the Jira tickets the plan's tasks name. A parent or blocker key that appears only in the requirement references is not moved. If the tasks name no Jira key, say so.
+   - For each key: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" transition --issue <KEY> --event verified`.
+   - A non-zero exit doesn't change the gate verdict and undoes nothing. Report each failed key with the script's message as one the user must fix, and go on with the other keys. Don't retry silently.
+9. **Report:**
 
 | Check | Command | Result | Notes |
 |---|---|---|---|
@@ -42,5 +48,7 @@ description: Runs the repository's verification gate (typecheck, tests, build an
 
 | AC | Criterion | Evidence | Status |
 |---|---|---|---|
+
+   If step 8 ran or was skipped on a passing gate, add a line: the keys moved to `verified`, the failed keys with the script's message, or the reason it was skipped.
 
    End with **Gate: PASS** or **Gate: FAIL**, decided by the commands and the fake-pass check only. If any criterion is `not shown`, end with `Gate: PASS (N of M criteria not shown)` and list them. Never state that work is done unless the gate passed in this session.

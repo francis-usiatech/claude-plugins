@@ -65,6 +65,18 @@ describe('validateTicketsConfig (R1; AC1)', () => {
     })
   }
 
+  it('should accept a verified status and keep it in the loaded statuses (ESP-64)', () => {
+    const { tickets, problems } = validateTicketsConfig(jira({ statuses: { started: 'In Progress', verified: 'In Testing', merged: 'Ready for Release' } }))
+    assert.deepEqual(problems, [])
+    assert.equal(tickets.jira.statuses.verified, 'In Testing')
+  })
+
+  it('should list verified among the events when an event name is unknown (ESP-64)', () => {
+    const { problems } = validateTicketsConfig(jira({ statuses: { shipped: 'Released' } }))
+    assert.equal(problems.length, 1, problems.join('; '))
+    assert.match(problems[0], /verified/)
+  })
+
   it('should report an unknown tracker and a non-object section', () => {
     assert.match(validateTicketsConfig({ tracker: 'linear' }).problems[0], /"tickets\.tracker" must be "github" or "jira"/)
     assert.match(validateTicketsConfig('jira').problems[0], /"tickets" must be an object/)
@@ -518,6 +530,25 @@ describe('runCli commands (R3)', () => {
     const result = await runCli(['transition', '--issue', 'ESP-28', '--event', 'released'], { env: CLI_ENV, fetch, cwd: cliRepo(t, jira({ statuses: { started: 'In Progress' } })) })
     assert.equal(result.code, 0, result.stderr)
     assert.deepEqual(printed(result), { issue: 'ESP-28', event: 'released', transitioned: false, reason: 'no status is configured for "released"' })
+    assert.equal(calls.length, 0)
+  })
+
+  it('should move an issue to the verified status through the matching transition (ESP-64)', async (t) => {
+    const transitions = { transitions: [{ id: '51', name: 'Test it', to: { name: 'In Testing' } }] }
+    const { fetch, calls } = stubFetch({ body: transitions }, { status: 204 })
+    const config = jira({ statuses: { started: 'In Progress', verified: 'In Testing' } })
+    const result = await runCli(['transition', '--issue', 'ESP-64', '--event', 'verified'], { env: CLI_ENV, fetch, cwd: cliRepo(t, config) })
+    assert.equal(result.code, 0, result.stderr)
+    assert.deepEqual(printed(result), { issue: 'ESP-64', status: 'In Testing', transitioned: true })
+    assert.deepEqual(calls.map((c) => c.method), ['GET', 'POST'])
+    assert.deepEqual(calls[1].body, { transition: { id: '51' } })
+  })
+
+  it('should skip a transition to verified when no verified status is configured, sending nothing (ESP-64)', async (t) => {
+    const { fetch, calls } = stubFetch()
+    const result = await runCli(['transition', '--issue', 'ESP-64', '--event', 'verified'], { env: CLI_ENV, fetch, cwd: cliRepo(t, jira({ statuses: { started: 'In Progress' } })) })
+    assert.equal(result.code, 0, result.stderr)
+    assert.deepEqual(printed(result), { issue: 'ESP-64', event: 'verified', transitioned: false, reason: 'no status is configured for "verified"' })
     assert.equal(calls.length, 0)
   })
 })
