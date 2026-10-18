@@ -16,9 +16,6 @@ concurrency:
   group: pr-governance-${{ github.event.pull_request.number }}-${{ contains(fromJSON('["labeled","unlabeled","edited"]'), github.event.action) }}
   cancel-in-progress: true
 
-env:
-  APPROVAL_LABEL: governance-approved
-
 jobs:
   governance-checks:
     runs-on: ubuntu-latest
@@ -201,6 +198,10 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_TOKEN: ${{ github.token }}
+          # The opt-outs that let the gate accept a skipped AI review without a verdict (same as the review's `if:`).
+          GOVERNANCE_AI_REVIEW: ${{ vars.GOVERNANCE_AI_REVIEW }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          PR_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
           S=_gov/.github/scripts; [ -f "$S/governance-gate.mjs" ] || S=_pr/.github/scripts
           node "$S/governance-gate.mjs"

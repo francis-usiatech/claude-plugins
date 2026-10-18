@@ -13,7 +13,7 @@ import {
   matchAny, isSecretEnvFile, escapeRegExp, isPlainObject, isStringArray, findSecret, DENY_COMMANDS, ASK_COMMANDS,
   DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH, parseAllowlist, allowlistWarnings,
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, applyAllowlist, blockingFindings, formatFinding, oneLine, TIER,
-  isPathPrefix,
+  isPathPrefix, hasControlChar,
 } from '../../templates/github/scripts/governance-rules.mjs'
 import { STATE_FOLDER, stateDir, checkedStateDir } from './governance-state.mjs'
 import { lookupTargets, runLookups, createLookups } from '../../templates/github/scripts/supply-chain-lookups.mjs'
@@ -166,7 +166,15 @@ export const loadConfig = (root) => {
 /**
  * ESP-67 (spec R9, R12): `planning.preflightReviewers` is read by the approve-plan skill, not by the guard, so every
  * problem is advisory. A bad `planning` or list is dropped; a bad entry is dropped on its own.
+ * ESP-72: the skill names the agent in its pre-flight report, so a name with a control character or surrounding spaces
+ * is a bad entry. A null `when` and an unknown key are reported, and the entry is kept (it then runs on every plan).
  */
+const ENTRY_KEYS = ['agent', 'when', '$comment']
+// JSON.stringify leaves U+0085, U+2028 and U+2029 raw, and oneLine keeps them, so they are escaped here.
+const quoteKey = (key) => [...JSON.stringify(key)]
+  .map((c) => ([133, 8232, 8233].includes(c.codePointAt(0)) ? `\\u${c.codePointAt(0).toString(16).padStart(4, '0')}` : c))
+  .join('')
+
 const checkPlanning = (cfg, advise) => {
   if (cfg.planning == null) return
   if (!isPlainObject(cfg.planning)) { advise('"planning" must be an object'); delete cfg.planning; return }
@@ -178,17 +186,31 @@ const checkPlanning = (cfg, advise) => {
     delete cfg.planning.preflightReviewers
     return
   }
-  cfg.planning.preflightReviewers = list.filter((entry, i) => {
+  cfg.planning.preflightReviewers = list.flatMap((entry, i) => {
     const label = `"planning.preflightReviewers[${i}]`
+    if (isPlainObject(entry)) {
+      for (const key of Object.keys(entry).filter((k) => !ENTRY_KEYS.includes(k))) {
+        advise(`${label}" has an unknown key ${quoteKey(key)} (allowed: "agent", "when", "$comment")`)
+      }
+    }
     if (!isPlainObject(entry) || typeof entry.agent !== 'string' || !entry.agent.trim()) {
       advise(`${label}" needs a non-empty string "agent"`)
-      return false
+      return []
     }
-    if (entry.when != null && !(Array.isArray(entry.when) && entry.when.length && entry.when.every(isPathPrefix))) {
+    if (hasControlChar(entry.agent) || entry.agent !== entry.agent.trim()) {
+      advise(`${label}.agent" must have no control characters and no spaces at either end`)
+      return []
+    }
+    if (entry.when === null) {
+      advise(`${label}.when" is null, so the reviewer runs on every plan; remove it or list path prefixes`)
+      const { when, ...rest } = entry
+      return [rest]
+    }
+    if (entry.when !== undefined && !(Array.isArray(entry.when) && entry.when.length && entry.when.every(isPathPrefix))) {
       advise(`${label}.when" must be a non-empty list of path prefixes, relative to the repo root with forward slashes (for example "src/")`)
-      return false
+      return []
     }
-    return true
+    return [entry]
   })
 }
 

@@ -119,6 +119,26 @@ describe('governance-checks', () => {
       assert.equal((await runChecks({ repo, config, labels: ['governance-approved'] })).code, 1)
       assert.equal((await runChecks({ repo, config, labels: ['owner-ok'] })).code, 0)
     })
+
+    it('should require the approval label when a governance file is renamed out of its folder (F5)', async () => {
+      const repo = makeRepo({ baseFiles: { '.github/workflows/sec.yml': 'name: sec\n' } })
+      git(repo, 'mv', '.github/workflows/sec.yml', 'old-sec.yml')
+      git(repo, 'commit', '-q', '-m', 'move')
+      const r = await runChecks({ repo })
+      assert.equal(r.code, 1, r.stdout)
+      assert.match(r.stdout, /Governance\/CI\/dependency files changed: .*\.github\/workflows\/sec\.yml/)
+    })
+
+    it('should reject a committed immutable file turned into a symlink (F7)', async () => {
+      const repo = makeRepo({ baseFiles: { 'migrations/002.sql': 'a' } })
+      // Stage a symlink entry directly (any blob works as its target text), so the test needs no OS symlink support.
+      const blob = git(repo, 'hash-object', '-w', 'migrations/002.sql')
+      git(repo, 'update-index', '--cacheinfo', `120000,${blob},migrations/002.sql`)
+      git(repo, 'commit', '-q', '-m', 'link')
+      const r = await runChecks({ repo, config: { immutableWhenCommitted: ['migrations/*.sql'] } })
+      assert.equal(r.code, 1, r.stdout)
+      assert.match(r.stdout, /Committed immutable file changed \(T\): migrations\/002\.sql/)
+    })
   })
 
   it('should read rules from the base-branch copy, not the PR working tree', async () => {
