@@ -13,7 +13,7 @@ import {
   matchAny, isSecretEnvFile, escapeRegExp, isPlainObject, isStringArray, findSecret, DENY_COMMANDS, ASK_COMMANDS,
   DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH, parseAllowlist, allowlistWarnings,
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, applyAllowlist, blockingFindings, formatFinding, oneLine, TIER,
-  isPathPrefix, hasControlChar,
+  isPathPrefix, hasControlChar, GIT_PREFIX,
 } from '../../templates/github/scripts/governance-rules.mjs'
 import { STATE_FOLDER, stateDir, checkedStateDir } from './governance-state.mjs'
 import { lookupTargets, runLookups, createLookups } from '../../templates/github/scripts/supply-chain-lookups.mjs'
@@ -458,7 +458,7 @@ const editedText = (tool, ti) => {
 // optionally quoted (`"main"`, `HEAD:"main"`). Forced refspecs (`+main`) fall through to the force-push ask rule.
 // A quoted push option that equals the branch name (`-m "main"`) also matches; that only adds a prompt.
 const pushTargets = (cmd, branch) =>
-  new RegExp(String.raw`\bgit\s+push\b[^;&|]*(\s["']?|:["']?|refs/heads/)${escapeRegExp(branch)}["']?(?=\s|$|[;&|])`).test(cmd)
+  new RegExp(String.raw`${GIT_PREFIX}push\b[^;&|]*(\s["']?|:["']?|refs/heads/)${escapeRegExp(branch)}["']?(?=\s|$|[;&|])`).test(cmd)
 
 const SNAPSHOT_COMMAND = /usiatech-governance|bash-wf-/i
 
@@ -467,7 +467,7 @@ const decideBash = (cmd, { cfg, gov, repoRules }, git, root) => {
     if (new RegExp(re, 'i').test(cmd)) return decision('deny', `Blocked: ${why}.`, cmd)
   }
   const protectedBranches = gov.protectedBranches || [cfg.git?.releaseBranch || 'main', 'master']
-  const gitAction = cmd.match(/\bgit\s+(commit|merge|push)\b/)
+  const gitAction = cmd.match(new RegExp(String.raw`${GIT_PREFIX}(commit|merge|push)\b`))
   if (gitAction) {
     const branch = git.currentBranch(root)
     if (branch && protectedBranches.includes(branch)) return decision('ask', `Git ${gitAction[1]} while on protected branch "${branch}". Work should happen on a feature branch.`, cmd)

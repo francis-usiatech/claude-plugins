@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, existsSync, appendFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isMainModule } from './main-module.mjs'
 import {
   matchAny, isSecretEnvFile, isPlainObject, isStringArray, DEFAULT_ASK_PATHS,
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, checkFakePasses, isJsTsFile,
@@ -235,7 +236,7 @@ export const runGovernanceChecks = async ({ env, lookups, govRoot = SCRIPT_GOV_R
 }
 
 // Entry point: the real npm lookups, each request with its own CI timeout (D5).
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   const { exitCode, report } = await runGovernanceChecks({ env: process.env, lookups: createLookups({ timeoutMs: CI_TIMEOUT_MS }) })
   console.log(report)
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, report)

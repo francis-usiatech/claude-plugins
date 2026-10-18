@@ -873,6 +873,9 @@ describe('checkWorkflow: git clone and pull of the PR head (ESP-4, R2; AC2)', ()
     'git -c http.extraheader="AUTHORIZATION: basic $T" fetch origin pull/1/head:pr',
     "git -c user.name='a b' fetch origin ${{ github.event.pull_request.head.sha }}",
     'git -C "$(dirname "$x")" fetch origin pull/1/head',
+    // A value option git knows that GIT_PREFIX doesn't list must still fail closed (F3).
+    'git --attr-source HEAD fetch origin refs/pull/1/head',
+    'git --config-env k=HOME fetch origin pull/1/head',
   ]
   for (const command of OPTION_STEPS) {
     it(`should give wf-privileged-checkout when global options come before the subcommand: "${command}"`, () => {

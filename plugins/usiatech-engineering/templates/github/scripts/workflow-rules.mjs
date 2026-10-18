@@ -39,12 +39,17 @@ const WHOLE_EVENT_EXPR = /\bgithub(?:\.event(?:\.(?:pull_request(?:\.head(?:\.re
 const PR_REF_EXPR = /\bgithub\.(?:head_ref\b|event\.(?:pull_request\.(?:head\.(?:sha|ref|repo\.\w+)|merge_commit_sha)|workflow_run\.head_(?:sha|branch|repository)|number\b))|refs\/pull\//i
 // A run script checks out PR code with "gh pr checkout", or with a git fetch/checkout/switch/clone/pull followed,
 // starting on the same line, by a pull ref or a PR head expression.
-// Up to 8 global options may come before the subcommand (git -C dir fetch, git -c k="a b" pull). An option value is a
-// run of quoted and unquoted chunks whose first character picks the branch, so each value is read only one way, and the
-// bound keeps a long run of options from being rescanned from every "git" in it (quadratic). A line continuation or a
-// 9th option still hides the subcommand.
 const GH_PR_CHECKOUT = /\bgh\s+pr\s+checkout\b/i
-const GIT_CHECKOUT_CMD = /\bgit(?:\s+-[\w-]+(?:=(?:"[^"\n]*"|'[^'\n]*'|[^\s"'])*|\s+(?!-)(?:"[^"\n]*"|'[^'\n]*'|[^\s"'])+)?){0,8}?\s+(?:fetch|checkout|switch|clone|pull)\b/gi
+// Regex source for "git" plus up to 8 global options, ending where the subcommand starts (git -C dir fetch,
+// git -c k="a b" pull). Shared by every git rule (F3). Any option may take a separate value, so a value option this
+// list doesn't know (--attr-source HEAD) still fails closed, except git's options that never take one, so
+// "git --no-pager log -S commit" is a log. An option value is a run of quoted and unquoted chunks whose first character
+// picks the branch, so each value is read only one way, and the bound keeps a long run of options from being rescanned
+// from every "git" in it (quadratic). A line continuation or a 9th option still hides the subcommand.
+const GIT_VALUE = String.raw`(?:"[^"\n]*"|'[^'\n]*'|[^\s"'])`
+const GIT_NO_VALUE = String.raw`(?:-p|-P|--paginate|--no-pager|--bare|--no-replace-objects|--no-lazy-fetch|--no-optional-locks|--no-advice|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--exec-path)`
+export const GIT_PREFIX = String.raw`\bgit(?:\s+(?:(?!${GIT_NO_VALUE}\s)-[\w-]+\s+(?!-)${GIT_VALUE}+|-[\w-]+(?:=${GIT_VALUE}*)?)){0,8}?\s+`
+const GIT_CHECKOUT_CMD = new RegExp(String.raw`${GIT_PREFIX}(?:fetch|checkout|switch|clone|pull)\b`, 'gi')
 const PULL_REF_AT = /(?:refs\/|[\s:])pull\//iy
 const PR_HEAD_EXPR_AT = /\$\{\{[^}]*\bgithub\.(?:head_ref|event\.pull_request\.head|event\.workflow_run\.head_|event\.(?:pull_request\.)?number\b)/iy
 const matchesAt = (re, s, at) => { re.lastIndex = at; return re.test(s) }
