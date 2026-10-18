@@ -10,7 +10,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { isMainModule } from '../../templates/github/scripts/main-module.mjs'
 
 export const DEFAULT_TIMEOUT_MS = 120000
 const STDERR_TAIL = 2000
@@ -303,7 +303,7 @@ const main = async () => {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   main().then((code) => { process.exitCode = code }, (e) => {
     console.error(`mutation-runner: ${e.stack || e.message}`)
     process.exitCode = 2

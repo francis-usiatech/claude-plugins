@@ -2,10 +2,10 @@
 // approve-plan, verify and release skills. Run it as `node jira-tracker.mjs <command>`; see USAGE below.
 // Exit codes: 0 done, 1 a Jira failure, 2 a problem with the arguments or the config.
 
-import { readFileSync, realpathSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
+import { isMainModule } from '../templates/github/scripts/main-module.mjs'
 
 export const TRACKERS = ['github', 'jira']
 export const EVENTS = ['started', 'verified', 'merged', 'released']
@@ -425,18 +425,7 @@ export const runCli = async (argv, { env = process.env, fetch: doFetch = globalT
   }
 }
 
-// Real paths on both sides: a plugin reached through a link has the link in argv and the target in import.meta.url,
-// and comparing them as written would make the script do nothing, without a word.
-const isMainModule = () => {
-  if (!process.argv[1]) return false
-  try {
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
-  } catch {
-    return false
-  }
-}
-
-if (isMainModule()) {
+if (isMainModule(import.meta.url)) {
   runCli(process.argv.slice(2)).then(({ code, stdout, stderr }) => {
     if (stdout) process.stdout.write(stdout)
     if (stderr) process.stderr.write(stderr)

@@ -3,6 +3,8 @@
 // setup-engineering copies this folder into .github/scripts/, so CI reads the base-branch copy.
 // Repos extend these defaults in .claude/engineering.json → governance.{denyCommands, askCommands, askPaths}.
 
+import { GIT_PREFIX } from './workflow-rules.mjs'
+
 // ignoreCase: set on case-insensitive file systems (Windows, macOS), where `.ENV` and `.env` are the same file.
 export const globToRegExp = (g, ignoreCase = false) => new RegExp('^' + g
   .replace(/[.+^${}()|[\]\\]/g, '\\$&')
@@ -36,16 +38,19 @@ export const DENY_COMMANDS = [
   ['destructive delete of root/home/workspace', String.raw`\brm\s+-[a-z]*(rf|fr)[a-z]*\s+(\/(\s|$)|~|\$HOME|\*|\.\/?(\s|$))`],
   ['piping a download into a shell', String.raw`\b(curl|wget)\b[^|;&]*\|\s*(sudo\s+)?(ba|z|da)?sh\b`],
   ['bypassing git hooks', String.raw`--no-verify\b`],
+  // -n is --no-verify for commit. It fails closed: any cluster where n follows only commit's no-value flags is denied,
+  // whatever comes after it (-pn, -nam x, -nSkey, -n;), so a quoted word such as "-Note" in a message is denied too.
+  ['bypassing git hooks', String.raw`${GIT_PREFIX}commit\b[^;&|]*\s-[aeiopqsvz]*n`],
   ['disk/filesystem destruction', String.raw`\b(mkfs(\.\w+)?|dd\s+[^|]*of=\/dev\/|:\(\)\s*\{\s*:\|:&\s*\};:)`],
   ['dropping a database or schema', String.raw`\bdrop\s+(database|schema)\b`],
   ['machine shutdown/reboot', String.raw`\b(shutdown|reboot|halt|poweroff)\b`],
   ['world-writable recursive permissions', String.raw`\bchmod\s+-R\s+0?777\b`],
 ]
 export const ASK_COMMANDS = [
-  ['force push', String.raw`\bgit\s+push\b.*(\s--force(-with-lease)?\b|\s-f\b|\s["']?\+\S)`],
-  ['discarding work (reset/clean/restore/checkout)', String.raw`\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|restore\s+\.|checkout\s+--\s+\.|stash\s+(drop|clear))`],
-  ['deleting a branch', String.raw`\bgit\s+(branch\s+-D|push\s+\S+\s+--delete|push\s+\S+\s+:\S)`],
-  ['rewriting history', String.raw`\bgit\s+(rebase|filter-branch|filter-repo|commit\s+--amend)\b`],
+  ['force push', String.raw`${GIT_PREFIX}push\b.*(\s--force(-with-lease)?\b|\s-f\b|\s["']?\+\S)`],
+  ['discarding work (reset/clean/restore/checkout)', String.raw`${GIT_PREFIX}(reset\s+--hard|clean\s+-[a-z]*f|restore\s+\.|checkout\s+--\s+\.|stash\s+(drop|clear))`],
+  ['deleting a branch', String.raw`${GIT_PREFIX}(branch\s+-D|push\s+\S+\s+--delete|push\s+\S+\s+:\S)`],
+  ['rewriting history', String.raw`${GIT_PREFIX}(rebase|filter-branch|filter-repo|commit\s+--amend)\b`],
   ['recursive delete', String.raw`\brm\s+-[a-z]*r`],
   ['destructive SQL', String.raw`\b(drop\s+table|truncate\s+|delete\s+from\s+\w+\s*(;|$|"|'))`],
   ['weakening row-level security', String.raw`(disable\s+row\s+level\s+security|no\s+force\s+row\s+level\s+security|bypassrls)`],
@@ -69,7 +74,7 @@ export const GUARD_EXEMPT_PATHS = ['.claude/plans/**', '.claude/governance-log.j
 
 // Content rules for workflow (B10) files. Findings are { rule, tier, file, line, detail, package? }; tier is 'high'
 // (the guard asks, CI fails unless labelled) or 'warning' (reported only).
-export { checkWorkflow, isWorkflowPath, TIER } from './workflow-rules.mjs'
+export { checkWorkflow, isWorkflowPath, TIER, GIT_PREFIX } from './workflow-rules.mjs'
 // Content rules for npm manifests and lockfiles (B9), in the same finding shape; network lookups live in
 // supply-chain-lookups.mjs.
 export { checkDependencies, dependencyKind } from './supply-chain-rules.mjs'

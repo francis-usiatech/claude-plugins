@@ -7,10 +7,10 @@
 // Internal errors fail open (exit 0) and are logged as decision "error", like the guard.
 import { existsSync, readdirSync, readFileSync, writeFileSync, rmSync, statSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { appendGovernanceLog } from './governance-log.mjs'
 import { stateDir, stateFolderProblem, checkedStateDir } from './governance-state.mjs'
+import { isMainModule } from '../../templates/github/scripts/main-module.mjs'
 
 const WORKFLOW_DIR = '.github/workflows'
 // Not workflow-rules' isWorkflowPath: importing it would load the rules module on the no-change path (AC6).
@@ -348,7 +348,7 @@ export const checkAfterBash = async (input, root) => {
 }
 
 // Run as a hook only when executed directly; the guard and the tests import the exports above.
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   let root = process.env.CLAUDE_PROJECT_DIR || process.cwd()
   let target = ''
   try {
