@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Final required check: combines deterministic checks, verify gate and the AI verdict for the current head commit.
-// Env: NEEDS_JSON, PR_LABELS, HEAD_SHA, PR_NUMBER, GITHUB_REPOSITORY, GITHUB_TOKEN, GITHUB_API_URL, GITHUB_STEP_SUMMARY, APPROVAL_LABEL
+// Env: NEEDS_JSON, PR_LABELS, HEAD_SHA, PR_NUMBER, GITHUB_REPOSITORY, GITHUB_TOKEN, GITHUB_API_URL, GITHUB_STEP_SUMMARY,
+//      GOVERNANCE_AI_REVIEW, PR_DRAFT, PR_FORK
 import { appendFileSync } from 'node:fs'
+import { readApprovalLabel } from './governance-checks.mjs'
 
 const api = process.env.GITHUB_API_URL || 'https://api.github.com'
 const repo = process.env.GITHUB_REPOSITORY
@@ -9,7 +11,7 @@ const pr = process.env.PR_NUMBER
 const sha = process.env.HEAD_SHA
 const needs = JSON.parse(process.env.NEEDS_JSON || '{}')
 const labels = JSON.parse(process.env.PR_LABELS || '[]')
-const approvalLabel = process.env.APPROVAL_LABEL || 'governance-approved'
+const approvalLabel = readApprovalLabel()
 const headers = { Authorization: `Bearer ${process.env.GITHUB_TOKEN}`, Accept: 'application/vnd.github+json' }
 const problems = []
 const notes = []
@@ -19,9 +21,10 @@ if (result('governance-checks') !== 'success') problems.push(`Deterministic gove
 if (!['success', 'skipped'].includes(result('verify-gate'))) problems.push(`Verify gate: ${result('verify-gate') || 'missing'}.`)
 if (['failure', 'cancelled'].includes(result('ai-governance-review'))) problems.push(`AI governance review job: ${result('ai-governance-review')}.`)
 
-// A skipped review is a deliberate opt-out (GOVERNANCE_AI_REVIEW=off, draft or fork PR),
-// so it must not demand a verdict, and there is no point scanning for one.
-const aiSkipped = result('ai-governance-review') === 'skipped'
+// A review skipped by an opt-out (GOVERNANCE_AI_REVIEW=off, draft or fork PR) needs no verdict.
+// One skipped by an edit or label event still needs the head commit's verdict from an earlier run.
+const optedOut = process.env.GOVERNANCE_AI_REVIEW === 'off' || process.env.PR_DRAFT === 'true' || process.env.PR_FORK === 'true'
+const aiSkipped = result('ai-governance-review') === 'skipped' && optedOut
 
 let verdict = null
 let page = 1
@@ -32,7 +35,8 @@ for (; !aiSkipped;) {
   if (!Array.isArray(list) || !list.length) break
   for (const c of list) {
     if (c.user?.login !== 'github-actions[bot]') continue
-    const m = c.body?.match(/<!-- governance-verdict (\{.*?\}) -->/)
+    // The real marker is the comment's last; post-verdict writes the AI text before it.
+    const m = [...(c.body || '').matchAll(/<!-- governance-verdict (\{.*?\}) -->/g)].at(-1)
     if (!m) continue
     try { const v = JSON.parse(m[1]); if (v.sha === sha) verdict = v.verdict } catch { /* ignore */ }
   }
