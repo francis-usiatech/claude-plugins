@@ -1237,6 +1237,14 @@ describe('evaluate: planning.preflightReviewers (ESP-67; spec R9, R12, AC8)', ()
     ['a when prefix with a .. segment', reviewers([{ agent: 'a', when: ['src/../x'] }]), /\.when"/],
     ['a when prefix with a control character', reviewers([{ agent: 'a', when: ['src/\u0007x/'] }]), /\.when"/],
     ['a when prefix with a space at an end', reviewers([{ agent: 'a', when: [' src/'] }]), /\.when"/],
+    // ESP-72: approve-plan names the agent in its pre-flight report, so a line break could forge a report line.
+    ['an agent with a line break', reviewers([{ agent: 'a\nb' }]), /^"planning\.preflightReviewers\[0\]\.agent" must have no control characters/],
+    ['an agent with a line separator', reviewers([{ agent: 'a\u2028b' }]), /^"planning\.preflightReviewers\[0\]\.agent" must have no control characters/],
+    ['an agent with a leading space', reviewers([{ agent: ' docs-sync' }]), /\.agent" must have no control characters and no spaces at either end$/],
+    ['an agent with a trailing space', reviewers([{ agent: 'docs-sync ' }]), /\.agent" must have no control characters and no spaces at either end$/],
+    ['a null when', reviewers([{ agent: 'a', when: null }]), /^"planning\.preflightReviewers\[0\]\.when" is null/],
+    ['a misspelled When key', reviewers([{ agent: 'a', When: ['src/'] }]), /^"planning\.preflightReviewers\[0\]" has an unknown key "When"/],
+    ['an unknown paths key', reviewers([{ agent: 'a', paths: ['src/'] }]), /^"planning\.preflightReviewers\[0\]" has an unknown key "paths"/],
   ]) {
     it(`should report ${what} as one advisory problem with no ask`, async () => {
       assert.equal(await run(cfg), null)
@@ -1251,6 +1259,41 @@ describe('evaluate: planning.preflightReviewers (ESP-67; spec R9, R12, AC8)', ()
     const safe = sanitizeConfig(reviewers([{ agent: 'a' }, { when: ['src/'] }, { agent: 'b', when: ['docs/'] }]))
     assert.deepEqual(safe.problems, ['"planning.preflightReviewers[1]" needs a non-empty string "agent"'])
     assert.deepEqual(safe.cfg.planning.preflightReviewers, [{ agent: 'a' }, { agent: 'b', when: ['docs/'] }])
+  })
+
+  it('should drop an agent with surrounding spaces and keep the other entries (ESP-72)', () => {
+    const safe = sanitizeConfig(reviewers([{ agent: ' a' }, { agent: 'b' }]))
+    assert.deepEqual(safe.cfg.planning.preflightReviewers, [{ agent: 'b' }])
+  })
+
+  it('should keep an entry with a null when, without the when, so it runs on every plan (ESP-72)', () => {
+    const raw = { agent: 'a', when: null }
+    const safe = sanitizeConfig(reviewers([raw]))
+    assert.deepEqual(safe.cfg.planning.preflightReviewers, [{ agent: 'a' }])
+    assert.deepEqual(raw, { agent: 'a', when: null })
+  })
+
+  it('should keep an entry with an unknown key (ESP-72)', () => {
+    const safe = sanitizeConfig(reviewers([{ agent: 'a', When: ['src/'] }]))
+    assert.deepEqual(safe.cfg.planning.preflightReviewers, [{ agent: 'a', When: ['src/'] }])
+  })
+
+  it('should allow a $comment key in an entry (ESP-72; the ESP-62 note key)', () => {
+    assert.deepEqual(sanitizeConfig(reviewers([{ agent: 'a', when: ['src/'], $comment: 'auth changes' }])).problems, [])
+  })
+
+  it('should report an unknown key on an entry that has no agent as well (ESP-72)', () => {
+    assert.deepEqual(sanitizeConfig(reviewers([{ agnet: 'a' }])).problems, [
+      '"planning.preflightReviewers[0]" has an unknown key "agnet" (allowed: "agent", "when", "$comment")',
+      '"planning.preflightReviewers[0]" needs a non-empty string "agent"',
+    ])
+  })
+
+  it('should escape U+0085, U+2028 and U+2029 in an unknown key so the warning stays on one line (ESP-72)', async () => {
+    const cfg = reviewers([{ agent: 'a', 'x\u2028y\u0085z\u2029': 1 }])
+    assert.deepEqual(sanitizeConfig(cfg).advisory, ['"planning.preflightReviewers[0]" has an unknown key "x\\u2028y\\u0085z\\u2029" (allowed: "agent", "when", "$comment")'])
+    const result = await run(cfg, path.join(tempDir(), 'state', 'config-warned'))
+    assert.doesNotMatch(result.configWarning, /[\u0085\u2028\u2029]/)
   })
 
   it('should warn once for a bad entry and stay quiet on an unchanged repeat', async () => {
