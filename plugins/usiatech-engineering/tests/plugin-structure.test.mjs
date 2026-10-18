@@ -541,6 +541,15 @@ describe('plugin structure: pre-flight reviewers (ESP-67; spec R10, R11, AC9)', 
   it('should skip an invalid entry and name it in the pre-flight report (f)', () => {
     assert.match(approve(), /invalid entry[^\n]*skip[^\n]*pre-flight report/i)
   })
+
+  it('should treat a padded or control-character agent as invalid and name a skipped entry by its index, not its name (ESP-72)', () => {
+    assert.match(approve(), /invalid entry[^\n]*`agent` with a control character or a space at either end/)
+    assert.match(approve(), /by its index, `planning\.preflightReviewers\[i\]`, never by its `agent` value/)
+  })
+
+  it('should give each pre-flight reviewer only the draft plan (ESP-72)', () => {
+    assert.match(approve(), /Give each one only the draft plan/)
+  })
 })
 
 describe('plugin structure: pre-plan checklist (ESP-66; spec R6, R7, R8, AC6, AC7)', () => {
