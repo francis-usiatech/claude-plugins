@@ -2,6 +2,7 @@
 // Posts/updates the single governance-review comment on the PR from the AI reviewer's structured output.
 // Env: VERDICT_JSON, HEAD_SHA, PR_NUMBER, GITHUB_REPOSITORY, GITHUB_TOKEN, GITHUB_API_URL, GITHUB_STEP_SUMMARY
 import { appendFileSync } from 'node:fs'
+import { readApprovalLabel } from './governance-checks.mjs'
 
 const api = process.env.GITHUB_API_URL || 'https://api.github.com'
 const repo = process.env.GITHUB_REPOSITORY
@@ -15,7 +16,8 @@ try { v = JSON.parse(process.env.VERDICT_JSON || '') } catch { v = null }
 if (!v || !['PASS', 'FLAG', 'BLOCK'].includes(v.verdict)) {
   v = { verdict: 'ERROR', summary: 'The AI governance review did not return a valid result. Re-run the ai-governance-review job.', findings: [], traceability: [] }
 }
-const esc = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
+// `<` is escaped so AI text can't open an HTML comment that poses as the verdict marker.
+const esc = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ').replace(/</g, '&lt;')
 const icon = { PASS: '✅', FLAG: '🟡', BLOCK: '⛔', ERROR: '⚠️' }[v.verdict]
 const lines = [
   `## ${icon} Governance review: ${v.verdict}`, '',
@@ -32,7 +34,7 @@ if (v.traceability?.length) {
   v.traceability.forEach((t) => lines.push(`| ${esc(t.area)} | ${esc(t.requirement)} |`))
   lines.push('', '</details>', '')
 }
-lines.push(v.verdict === 'FLAG' ? '_FLAG needs the Document Owner\'s decision: fix the findings, or add the `governance-approved` label to accept them._' : '')
+lines.push(v.verdict === 'FLAG' ? `_FLAG needs the Document Owner's decision: fix the findings, or add the \`${readApprovalLabel()}\` label to accept them._` : '')
 lines.push(`${MARK} ${JSON.stringify({ verdict: v.verdict, sha })} -->`)
 const body = lines.join('\n')
 

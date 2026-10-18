@@ -60,6 +60,19 @@ const baseConfig = (govRoot, configError) => {
   return { cfg, objectKey, stringValue, stringList }
 }
 
+const DEFAULT_APPROVAL_LABEL = 'governance-approved'
+
+/**
+ * The approval label from the base-branch config, for the gate and post-verdict scripts.
+ * Config problems are ignored here because runGovernanceChecks reports them and fails the PR.
+ * @param {string} [govRoot]  tree holding the base-branch .claude/engineering.json (this script's own by default)
+ * @returns {string}
+ */
+export const readApprovalLabel = (govRoot = SCRIPT_GOV_ROOT) => {
+  const { cfg, objectKey, stringValue } = baseConfig(govRoot, () => {})
+  return stringValue(objectKey(cfg, 'governance'), 'approvalLabel', '', DEFAULT_APPROVAL_LABEL)
+}
+
 // -z gives raw, unquoted paths (git otherwise quotes non-ASCII names, which would slip past every path check).
 // Records are NUL-separated: status, path, and a second path for renames and copies.
 const changedFiles = (base, cwd) => {
@@ -98,7 +111,7 @@ export const runGovernanceChecks = async ({ env, lookups, govRoot = SCRIPT_GOV_R
   const git = objectKey(cfg, 'git')
   const baseBranch = stringValue(git, 'baseBranch', 'git.baseBranch', 'develop')
   const releaseBranch = stringValue(git, 'releaseBranch', 'git.releaseBranch', 'main')
-  const approvalLabel = stringValue(gov, 'approvalLabel', 'governance.approvalLabel', 'governance-approved')
+  const approvalLabel = stringValue(gov, 'approvalLabel', 'governance.approvalLabel', DEFAULT_APPROVAL_LABEL)
 
   const body = (env.PR_BODY || '').replace(/<!--[\s\S]*?-->/g, '')
   const labels = JSON.parse(env.PR_LABELS || '[]')
@@ -129,13 +142,12 @@ export const runGovernanceChecks = async ({ env, lookups, govRoot = SCRIPT_GOV_R
   const immutable = stringList(cfg, 'immutableWhenCommitted', 'immutableWhenCommitted', [])
   const govTouched = []
   for (const [status, p1, p2] of changes) {
-    const target = p2 || p1
+    // A rename counts at both ends, so moving a governance file out of its folder still needs the label.
     for (const p of [p1, p2].filter(Boolean)) {
       if (isSecretEnvFile(path.posix.basename(p), cfg.allowEnvExample !== false, IGNORE_CASE) && status !== 'D') errors.push(`Env file committed: ${p}`)
+      if (matchAny(p, govPaths, IGNORE_CASE)) govTouched.push(p)
     }
-    if (/^(M|D|R)/.test(status) && matchAny(p1, immutable, IGNORE_CASE)) errors.push(`Committed immutable file changed (${status}): ${p1}. Create a new file (e.g. a new migration) instead.`)
-    const hit = matchAny(target, govPaths, IGNORE_CASE)
-    if (hit) govTouched.push(target)
+    if (/^[MDRT]/.test(status) && matchAny(p1, immutable, IGNORE_CASE)) errors.push(`Committed immutable file changed (${status}): ${p1}. Create a new file (e.g. a new migration) instead.`)
   }
   if (govTouched.length) {
     const msg = `Governance/CI/dependency files changed: ${govTouched.join(', ')}.`
