@@ -2,26 +2,31 @@
 // approve-plan, verify and release skills. Run it as `node jira-tracker.mjs <command>`; see USAGE below.
 // Exit codes: 0 done, 1 a Jira failure, 2 a problem with the arguments or the config.
 
-import { readFileSync, realpathSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
+import { isMainModule } from '../templates/github/scripts/main-module.mjs'
+import { isPlainObject, isNonEmptyString } from '../templates/github/scripts/workflow-rules.mjs'
 
-export const TRACKERS = ['github', 'jira']
-export const EVENTS = ['started', 'verified', 'merged', 'released']
+const TRACKERS = ['github', 'jira']
+const EVENTS = ['started', 'verified', 'merged', 'released']
 const PROJECT_KEY = /^[A-Z][A-Z0-9_]+$/
 const ISSUE_KEY = /^[A-Z][A-Z0-9_]+-\d+$/
 
-const isPlainObject = (v) => v != null && typeof v === 'object' && !Array.isArray(v)
-const isNonEmptyString = (v) => typeof v === 'string' && v.trim() !== ''
-
-const httpsSite = (v) => {
-  if (!isNonEmptyString(v)) return false
+// Why a site URL can't be used as a Jira base (not a URL, not https, or more than a host), or null.
+// `check` and the client both use it, so a site `check` accepts never fails later as a Jira error.
+const siteShapeProblem = (site) => {
+  let url
   try {
-    return new URL(v).protocol === 'https:'
+    url = new URL(site)
   } catch {
-    return false
+    return 'is not a URL'
   }
+  if (url.protocol !== 'https:') return 'must use https'
+  if (url.username || url.password || url.port || url.pathname.replace(/\/+$/, '') || url.search || url.hash) {
+    return 'must not have a user name, password, port, path, query or fragment'
+  }
+  return null
 }
 
 // "$comment" is the config's note key, allowed at every level and never treated as a setting.
@@ -46,9 +51,11 @@ const statusProblems = (statuses) => {
 
 const jiraProblems = (j) => {
   if (!isPlainObject(j)) return ['"tickets.jira" must be an object']
+  const siteProblem = isNonEmptyString(j.site) && siteShapeProblem(j.site)
   return [
     ...unknownKeyProblems(j, 'tickets.jira', JIRA_KEYS),
-    !httpsSite(j.site) && '"tickets.jira.site" must be an https URL such as https://example.atlassian.net',
+    !isNonEmptyString(j.site) ? '"tickets.jira.site" must be an https URL such as https://example.atlassian.net'
+      : siteProblem && `"tickets.jira.site" ${siteProblem}; use an https URL such as https://example.atlassian.net`,
     !(isNonEmptyString(j.project) && PROJECT_KEY.test(j.project)) && '"tickets.jira.project" must be an upper-case project key such as "ESP"',
     !isNonEmptyString(j.issueType) && '"tickets.jira.issueType" must be a non-empty issue type name',
     j.parent != null && !(typeof j.parent === 'string' && ISSUE_KEY.test(j.parent)) && '"tickets.jira.parent" must be an issue key such as "ESP-27"',
@@ -108,17 +115,9 @@ const hostOf = (url) => url.hostname.toLowerCase().replace(/\.$/, '')
 // The site comes from the repo's own config, so the token goes only to an Atlassian host or the host the user
 // set in JIRA_SITE (R11). Returns the API base URL, or throws the reason the site isn't trusted.
 const trustedApiBase = (site, trustedSite) => {
-  let url
-  try {
-    url = new URL(site)
-  } catch {
-    throw new Error(`site "${site}" is not a URL`)
-  }
-  if (url.protocol !== 'https:') throw new Error(`site "${site}" must use https`)
-  if (url.username || url.password || url.port || url.pathname.replace(/\/+$/, '') || url.search || url.hash) {
-    throw new Error(`site "${site}" must not have a user name, password, port, path, query or fragment`)
-  }
-  const host = hostOf(url)
+  const problem = siteShapeProblem(site)
+  if (problem) throw new Error(`site "${site}" ${problem}`)
+  const host = hostOf(new URL(site))
   if (trustedSite != null && trustedSite !== '') {
     let trusted
     try {
@@ -305,11 +304,15 @@ const requireIssueKey = (values, name) => {
 // The text of the file a required option names, relative to cwd.
 const readOptionFile = (cwd, values, name) => {
   const file = requireOption(values, name)
+  let text
   try {
-    return { file, text: readFileSync(path.resolve(cwd, file), 'utf8') }
+    text = readFileSync(path.resolve(cwd, file), 'utf8')
   } catch (err) {
     throw new UsageError(`cannot read --${name} ${file}: ${err.message}`)
   }
+  // UTF-8 text has no NUL; a PowerShell 5.1 redirect writes UTF-16, which would silently match nothing.
+  if (text.includes('\0')) throw new UsageError(`--${name} ${file} is not UTF-8; regenerate from a POSIX shell`)
+  return { file, text }
 }
 
 const readBodyFile = (cwd, values) => {
@@ -401,9 +404,11 @@ const runCommand = async (argv, { email, token, trustedSite, doFetch, cwd }) => 
 }
 
 // Replaces the token and the Basic credential built from it, in case Jira or a proxy echoes them back (R2).
+// A raw token under 16 characters isn't a real API token, and replacing it would corrupt ordinary output.
+const MIN_REDACTED_TOKEN = 16
 const redactor = (email, token) => {
   if (!isNonEmptyString(token)) return (text) => text
-  const secrets = [Buffer.from(`${email}:${token}`).toString('base64'), token]
+  const secrets = [Buffer.from(`${email}:${token}`).toString('base64'), ...(token.length >= MIN_REDACTED_TOKEN ? [token] : [])]
   return (text) => secrets.reduce((out, secret) => out.split(secret).join('***'), text)
 }
 
@@ -425,18 +430,7 @@ export const runCli = async (argv, { env = process.env, fetch: doFetch = globalT
   }
 }
 
-// Real paths on both sides: a plugin reached through a link has the link in argv and the target in import.meta.url,
-// and comparing them as written would make the script do nothing, without a word.
-const isMainModule = () => {
-  if (!process.argv[1]) return false
-  try {
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
-  } catch {
-    return false
-  }
-}
-
-if (isMainModule()) {
+if (isMainModule(import.meta.url)) {
   runCli(process.argv.slice(2)).then(({ code, stdout, stderr }) => {
     if (stdout) process.stdout.write(stdout)
     if (stderr) process.stderr.write(stderr)

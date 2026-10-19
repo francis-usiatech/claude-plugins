@@ -1,7 +1,7 @@
 import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { makeRepo, makeGovTree, runNode, cleanupTempDirs } from './helpers.mjs'
+import { makeRepo, makeGovTree, runNode, git, cleanupTempDirs } from './helpers.mjs'
 
 after(cleanupTempDirs)
 
@@ -46,6 +46,21 @@ describe('run-verify', () => {
     const r = await runVerify({ repo: touched, config })
     assert.equal(r.code, 1)
     assert.match(r.summary, /\| rls \|/)
+  })
+
+  it('should run a conditional step for a changed non-ASCII path (F6)', async () => {
+    const config = { verify: [ok('base')], verifyConditional: [{ ...fail('tools'), when: ['tools/'] }] }
+    const r = await runVerify({ repo: makeRepo({ headFiles: { 'tools/café.py': 'x' } }), config })
+    assert.equal(r.code, 1)
+    assert.match(r.summary, /\| tools \|/)
+    // git quotes a name with a double quote even with core.quotePath=false; only -z gives it raw. Staged directly,
+    // since Windows can't create such a file (and core.protectNTFS refuses it there by default).
+    const quoted = makeRepo()
+    git(quoted, '-c', 'core.protectNTFS=false', 'update-index', '--add', '--cacheinfo', `100644,${git(quoted, 'hash-object', '-w', 'README.md')},tools/a"b.py`)
+    git(quoted, 'commit', '-q', '-m', 'quoted name')
+    const q = await runVerify({ repo: quoted, config })
+    assert.equal(q.code, 1)
+    assert.match(q.summary, /\| tools \|/)
   })
 
   it('should skip package-manager steps when the repo has no package.json yet', async () => {

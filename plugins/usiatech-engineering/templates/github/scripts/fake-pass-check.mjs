@@ -6,7 +6,7 @@
 import { execFileSync } from 'node:child_process'
 import { readFileSync, existsSync, lstatSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { isMainModule } from './main-module.mjs'
 import { checkFakePasses, parseAllowlist, applyAllowlist, blockingFindings, formatFinding, isPlainObject } from './governance-rules.mjs'
 
 // Same as the CI checks: developers check out on case-insensitive file systems.
@@ -59,7 +59,7 @@ const readChangedFile = (full) => {
  * same files. Throws when git or the repo config can't be read.
  * @returns {{ exitCode: number, findings: object[], lines: string[] }}
  */
-export const runFakePassCheck = ({ cwd = process.cwd() } = {}) => {
+const runFakePassCheck = ({ cwd = process.cwd() } = {}) => {
   const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   const allow = loadAllowlist(root)
   const findings = applyAllowlist([...changedFiles(root)].flatMap(([file, status]) => status === 'deleted'
@@ -69,7 +69,7 @@ export const runFakePassCheck = ({ cwd = process.cwd() } = {}) => {
   return { exitCode: blocking.length ? 1 : 0, findings, lines: findings.map(formatFinding) }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   try {
     const { exitCode, lines } = runFakePassCheck()
     for (const l of lines) console.log(l)

@@ -383,3 +383,32 @@ describe('mutation-runner runCommand for the gate runner (ESP-52 AC6)', () => {
     assert.equal(r.startError, undefined)
   })
 })
+
+describe('mutation-runner audit fixes (ESP-78)', () => {
+  it('should reject a timeoutMs of 2 ** 31 or more, which Node would run after 1 ms (F12)', async () => {
+    const { validateList, ListError } = await importRunner()
+    const repo = fixtureRepo()
+    assert.throws(() => validateList({ timeoutMs: 2 ** 31, mutations: [mutation()] }, repo), (e) => e instanceof ListError && /2147483647/.test(e.message))
+    assert.throws(() => validateList({ mutations: [mutation({ timeoutMs: 2 ** 31 })] }, repo), (e) => e instanceof ListError && /2147483647/.test(e.message))
+    assert.equal(validateList({ timeoutMs: 2147483647, mutations: [mutation()] }, repo)[0].timeoutMs, 2147483647)
+  })
+
+  it('should keep a non-UTF-8 byte intact while the mutation runs, and replace literally (F18)', async () => {
+    const { runMutations } = await importRunner()
+    // The check passes only while the Latin-1 byte 0xE9 is intact and any MARK is followed by a literal "$&".
+    const check = "import { readFileSync } from 'node:fs'\nconst b = readFileSync('latin1.txt')\nconst s = b.toString('latin1')\nprocess.exit(b.includes(0xe9) && (!s.includes('MARK') || s.includes('MARK$&')) ? 0 : 1)\n"
+    const repo = makeRepo({ headFiles: { 'check-latin1.mjs': check } })
+    const original = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a, 0x61, 0x61, 0x61, 0x0a])
+    writeFileSync(path.join(repo, 'latin1.txt'), original)
+    const out = await runMutations({ root: repo, mutations: [{ label: 'latin1', file: 'latin1.txt', find: 'aaa', replace: 'MARK$&', command: `${NODE} check-latin1.mjs` }] })
+    assert.equal(out.results[0]?.status, 'SURVIVED', JSON.stringify(out))
+    assert.ok(readFileSync(path.join(repo, 'latin1.txt')).equals(original), 'latin1.txt was not restored byte for byte')
+  })
+
+  it('should count matches without overlap, as before the byte matching (F18)', async () => {
+    const { runMutations } = await importRunner()
+    const repo = makeRepo({ headFiles: { 'triple.txt': 'aaa\n' } })
+    const out = await runMutations({ root: repo, mutations: [{ label: 'aa', file: 'triple.txt', find: 'aa', replace: 'b', command: `${NODE} -e "process.exit(0)"` }] })
+    assert.equal(out.results[0]?.status, 'SURVIVED', JSON.stringify(out))
+  })
+})

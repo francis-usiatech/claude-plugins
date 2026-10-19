@@ -10,18 +10,20 @@ import { execFileSync, spawn } from 'node:child_process'
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { isMainModule } from '../../templates/github/scripts/main-module.mjs'
 
-export const DEFAULT_TIMEOUT_MS = 120000
+const DEFAULT_TIMEOUT_MS = 120000
+// Node runs a timer with a longer delay after 1 ms, which would stop the command at once.
+export const MAX_TIMEOUT_MS = 2147483647
 const STDERR_TAIL = 2000
 const KILL_GRACE_MS = 2000
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP']
 
 export class ListError extends Error {}
-export class RestoreError extends Error {}
+class RestoreError extends Error {}
 
 const isText = (v) => typeof v === 'string' && v.length > 0
-const isTimeout = (v) => v === undefined || (Number.isInteger(v) && v > 0)
+const isTimeout = (v) => v === undefined || (Number.isInteger(v) && v > 0 && v <= MAX_TIMEOUT_MS)
 
 // Real path of the file, or of its folder when the file doesn't exist (reading it then reports ERROR).
 const realPathOf = (resolved, where) => {
@@ -58,7 +60,7 @@ const checkFile = (file, root, where) => {
 export const validateList = (list, root) => {
   if (!list || typeof list !== 'object' || !Array.isArray(list.mutations)) throw new ListError('mutation list must be an object with a "mutations" array')
   if (list.mutations.length === 0) throw new ListError('mutation list has no mutations')
-  if (!isTimeout(list.timeoutMs)) throw new ListError('mutation list "timeoutMs" must be a positive integer')
+  if (!isTimeout(list.timeoutMs)) throw new ListError(`mutation list "timeoutMs" must be a whole number from 1 to ${MAX_TIMEOUT_MS}`)
   return list.mutations.map((m, i) => {
     const where = `mutation list entry ${i + 1}`
     if (!m || typeof m !== 'object') throw new ListError(`${where} must be an object`)
@@ -66,7 +68,7 @@ export const validateList = (list, root) => {
       if (!isText(m[key])) throw new ListError(`${where}: "${key}" must be a non-empty string`)
     }
     if (typeof m.replace !== 'string') throw new ListError(`${where}: "replace" must be a string`)
-    if (!isTimeout(m.timeoutMs)) throw new ListError(`${where}: "timeoutMs" must be a positive integer`)
+    if (!isTimeout(m.timeoutMs)) throw new ListError(`${where}: "timeoutMs" must be a whole number from 1 to ${MAX_TIMEOUT_MS}`)
     return { ...m, path: checkFile(m.file, root, where), timeoutMs: m.timeoutMs ?? list.timeoutMs ?? DEFAULT_TIMEOUT_MS }
   })
 }
@@ -143,7 +145,12 @@ export const runCommand = (command, { root, timeoutMs, signal, kill = killTree, 
   }))
 })
 
-const countMatches = (text, find) => text.split(find).length - 1
+// Non-overlapping matches, counted on bytes so a file that isn't UTF-8 is never re-encoded.
+const countMatches = (buf, find) => {
+  let n = 0
+  for (let i = buf.indexOf(find); i !== -1; i = buf.indexOf(find, i + find.length)) n++
+  return n
+}
 
 // Called when the original bytes can't be written back: keep a copy and say exactly what was left.
 const restoreFailed = (m, original, e) => {
@@ -170,11 +177,12 @@ const runOne = async (m, { root, signal }) => {
   } catch (e) {
     return { ...base, status: 'ERROR', detail: `cannot read file: ${e.message}` }
   }
-  const text = original.toString('utf8')
-  const matches = countMatches(text, m.find)
+  const find = Buffer.from(m.find)
+  const matches = countMatches(original, find)
   if (matches !== 1) return { ...base, status: 'NOT-FOUND', detail: `${matches} matches (needs exactly 1)` }
   try {
-    writeFileSync(m.path, text.replace(m.find, () => m.replace))
+    const at = original.indexOf(find)
+    writeFileSync(m.path, Buffer.concat([original.subarray(0, at), Buffer.from(m.replace), original.subarray(at + find.length)]))
     const r = await runCommand(m.command, { root, timeoutMs: m.timeoutMs, signal })
     if (r.outcome === 'pass') return { ...base, status: 'SURVIVED', detail: 'tests passed with the mutation applied' }
     if (r.outcome === 'fail') return { ...base, status: 'CAUGHT', detail: `exit ${r.code}` }
@@ -238,7 +246,7 @@ export const handleInterrupts = (controller, notify = (msg) => console.error(msg
 
 const STATUSES = ['CAUGHT', 'SURVIVED', 'NOT-FOUND', 'TIMEOUT', 'ERROR']
 
-export const formatReport = ({ results, interrupted }) => {
+const formatReport = ({ results, interrupted }) => {
   const lines = results.map((r) => `${r.status.padEnd(9)} ${r.label} (${r.file}): ${r.detail}`)
   const counts = STATUSES.map((s) => `${results.filter((r) => r.status === s).length} ${s}`).join(', ')
   lines.push(`${interrupted ? 'Interrupted after' : 'Ran'} ${results.length} mutation(s): ${counts}`)
@@ -303,7 +311,7 @@ const main = async () => {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   main().then((code) => { process.exitCode = code }, (e) => {
     console.error(`mutation-runner: ${e.stack || e.message}`)
     process.exitCode = 2

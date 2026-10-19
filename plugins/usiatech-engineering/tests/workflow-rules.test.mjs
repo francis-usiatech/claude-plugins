@@ -269,6 +269,15 @@ describe('checkWorkflow: privileged trigger with PR checkout (R7, R9; AC6)', () 
     assert.deepEqual(checkWorkflow({ file: '.github/workflows/x.yml', content }), [])
   })
 
+  it('should flag issue_comment checking out the commented PR, and its secrets (F9)', () => {
+    const job = '      - uses: actions/checkout@v4\n        with:\n          ref: refs/pull/${{ github.event.issue.number }}/head\n      - run: make\n        env:\n          TOKEN: ${{ secrets.DEPLOY }}\n'
+    const content = `on: issue_comment\njobs:\n  a:\n    steps:\n${job}`
+    const f = checkWorkflow({ file: '.github/workflows/x.yml', content })
+    assert.deepEqual(rules(f), ['wf-privileged-checkout:high', 'wf-privileged-secrets:high'])
+    assert.match(f.find((x) => x.rule === 'wf-privileged-checkout').detail, /issue_comment/)
+    assert.deepEqual(checkWorkflow({ file: '.github/workflows/x.yml', content: content.replace('issue_comment', 'pull_request') }), [])
+  })
+
   it('should give no finding for pull_request_target that checks out the base code', () => {
     const content = 'on: pull_request_target\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n      - run: echo ${{ secrets.X }}\n'
     assert.deepEqual(checkWorkflow({ file: '.github/workflows/x.yml', content }), [])
@@ -357,6 +366,62 @@ describe('checkWorkflow: untrusted input (R8; AC7)', () => {
   it('should not flag safe fields of event objects', () => {
     const content = 'on: pull_request\njobs:\n  a:\n    steps:\n      - run: echo ${{ github.event.pull_request.number }} ${{ github.event_name }} ${{ github.event.issue.number }} ${{ github.repository }}\n'
     assert.deepEqual(checkWorkflow({ file: '.github/workflows/x.yml', content }), [])
+  })
+
+  describe('untrusted input passed through env (F10)', () => {
+    const TITLE = '${{ github.event.pull_request.title }}'
+    const wf = ({ top = '', job = '', step = '', use = '      - run: echo "${{ env.T }}"\n' } = {}) =>
+      `on: pull_request\n${top}jobs:\n  a:\n${job}    steps:\n${use}${step}`
+    const found = (content) => rules(checkWorkflow({ file: '.github/workflows/x.yml', content }))
+
+    it('should flag ${{ env.NAME }} set from untrusted text at workflow, job or step level', () => {
+      assert.deepEqual(found(wf({ top: `env:\n  T: ${TITLE}\n` })), ['wf-untrusted-input:high'])
+      assert.deepEqual(found(wf({ job: `    env:\n      T: ${TITLE}\n` })), ['wf-untrusted-input:high'])
+      assert.deepEqual(found(wf({ step: `        env:\n          T: ${TITLE}\n` })), ['wf-untrusted-input:high'])
+    })
+
+    it('should name the env reference and where it came from', () => {
+      const f = checkWorkflow({ file: '.github/workflows/x.yml', content: wf({ top: `env:\n  T: ${TITLE}\n` }) })
+      assert.match(f[0].detail, /env\.t/)
+      assert.match(f[0].detail, /github\.event\.pull_request\.title/)
+    })
+
+    it('should flag other spellings of the env reference', () => {
+      for (const ref of ["env['T']", 'ENV.t', 'env . T']) {
+        const use = `      - run: echo "\${{ ${ref} }}"\n`
+        assert.deepEqual(found(wf({ top: `env:\n  T: ${TITLE}\n`, use })), ['wf-untrusted-input:high'], ref)
+      }
+    })
+
+    it('should flag the whole env object, env.* and a computed env index when a name is untrusted (fail closed)', () => {
+      for (const ref of ['toJSON(env)', "join(env.*, ' ')", 'env[inputs.k]']) {
+        const use = `      - run: echo '\${{ ${ref} }}'\n`
+        assert.deepEqual(found(wf({ top: `env:\n  T: ${TITLE}\n`, use })), ['wf-untrusted-input:high'], ref)
+        assert.deepEqual(found(wf({ top: 'env:\n  T: fixed\n', use })), [], ref)
+      }
+    })
+
+    it('should flag it in an actions/github-script script and an AI action input', () => {
+      const script = '      - uses: actions/github-script@0123456789abcdef0123456789abcdef01234567\n        with:\n          script: console.log("${{ env.T }}")\n'
+      assert.deepEqual(found(wf({ top: `env:\n  T: ${TITLE}\n`, use: script })), ['wf-untrusted-input:high'])
+      const ai = '      - uses: anthropics/claude-code-action@0123456789abcdef0123456789abcdef01234567\n        with:\n          prompt: Review ${{ env.T }}\n'
+      assert.deepEqual(found(wf({ top: `env:\n  T: ${TITLE}\n`, use: ai })), ['wf-untrusted-input:high'])
+    })
+
+    it('should not flag $NAME read in the shell, or an env name set from trusted text', () => {
+      assert.deepEqual(found(wf({ top: `env:\n  T: ${TITLE}\n`, use: '      - run: echo "$T"\n' })), [])
+      assert.deepEqual(found(wf({ top: 'env:\n  T: ${{ github.sha }}\n' })), [])
+      assert.deepEqual(found(wf({ top: `env:\n  U: ${TITLE}\n` })), [])
+    })
+
+    it('should let a lower level shadow an untrusted name with a safe value', () => {
+      assert.deepEqual(found(wf({ top: `env:\n  T: ${TITLE}\n`, step: '        env:\n          T: fixed\n' })), [])
+      assert.deepEqual(found(wf({ top: `env:\n  T: ${TITLE}\n`, job: '    env:\n      T: fixed\n' })), [])
+    })
+
+    it('should treat a name set from another untrusted env name as untrusted', () => {
+      assert.deepEqual(found(wf({ top: `env:\n  U: ${TITLE}\n`, step: '        env:\n          T: ${{ env.U }}\n' })), ['wf-untrusted-input:high'])
+    })
   })
 
   it('should list known AI actions', () => {
@@ -873,6 +938,9 @@ describe('checkWorkflow: git clone and pull of the PR head (ESP-4, R2; AC2)', ()
     'git -c http.extraheader="AUTHORIZATION: basic $T" fetch origin pull/1/head:pr',
     "git -c user.name='a b' fetch origin ${{ github.event.pull_request.head.sha }}",
     'git -C "$(dirname "$x")" fetch origin pull/1/head',
+    // A value option git knows that GIT_PREFIX doesn't list must still fail closed (F3).
+    'git --attr-source HEAD fetch origin refs/pull/1/head',
+    'git --config-env k=HOME fetch origin pull/1/head',
   ]
   for (const command of OPTION_STEPS) {
     it(`should give wf-privileged-checkout when global options come before the subcommand: "${command}"`, () => {

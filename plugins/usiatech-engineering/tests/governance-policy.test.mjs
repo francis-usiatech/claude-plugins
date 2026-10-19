@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync, mkdirSync, symlinkSync, linkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { evaluate, loadConfig, sanitizeConfig, planFiles, gitProbe, logEntries, pendingAdvice, recordAdvice, configMarkerPath } from '../hooks/scripts/governance-policy.mjs'
-import { snapshotDir } from '../hooks/scripts/bash-workflow-check.mjs'
+import { stateDir } from '../hooks/scripts/governance-state.mjs'
 import { GUARD_DEADLINE_MS } from '../templates/github/scripts/supply-chain-lookups.mjs'
 import { tempDir, cleanupTempDirs, writeFiles, makeRepo, git, PLUGIN_ROOT } from './helpers.mjs'
 
@@ -23,8 +23,30 @@ describe('evaluate: Bash deny rules', () => {
     'psql -c "DROP DATABASE app"',
     'sudo shutdown now',
     'chmod -R 777 .',
+    // F3: -n skips hooks like --no-verify, also after a git global option.
+    'git commit -n -m x',
+    'git commit -nm x',
+    'git -C . commit -n',
+    'git commit -pn',
+    'git commit -nmwip',
+    'git --attr-source HEAD commit -n',
+    'git commit -n;',
+    'git commit -m x -n&& git push',
+    'git commit -n|cat',
+    '(git commit -n)',
+    'git commit -nC HEAD',
+    'git commit -nuno -m x',
+    'git commit -nam x',
+    'git commit -nSkey',
+    // Fail closed: a quoted word that reads as such a cluster is denied too; the user rewords the message.
+    'git commit -m "fix -Note"',
+    'git commit -m "x -sanitize"',
   ]) {
     it(`should deny: ${cmd}`, async () => assert.equal((await bash(cmd))?.decision, 'deny'))
+  }
+
+  for (const cmd of ['git commit -m x', 'git commit --no-edit', 'git commit -am x', 'git push -n', 'git commit -m new', 'git --no-pager log -S commit -n 3', 'git -p log -S commit -n 3']) {
+    it(`should not deny: ${cmd}`, async () => assert.notEqual((await bash(cmd))?.decision, 'deny'))
   }
 })
 
@@ -46,6 +68,10 @@ describe('evaluate: Bash ask rules', () => {
     'cat .env',
     'cat .env.local',
     'sudo apt update',
+    // F3: a git global option before the command.
+    'git -C . push --force origin x',
+    'git -C . reset --hard',
+    'git -C . rebase main',
   ]) {
     it(`should ask: ${cmd}`, async () => assert.equal((await bash(cmd))?.decision, 'ask'))
   }
@@ -81,6 +107,13 @@ describe('evaluate: protected branches', () => {
 
   it('should ask for a push that targets main from a feature branch', async () => {
     assert.match((await bash('git push origin main')).reason, /Push to protected branch "main"/)
+  })
+
+  it('should see the git command after git global options (F3)', async () => {
+    for (const cmd of ['git -C . push origin main', 'git -c core.x=1 push origin main', 'git -C "my dir" push origin main', 'git --git-dir /x push origin main', 'git --attr-source HEAD push origin main', 'git --config-env a=HOME push origin main']) {
+      assert.match((await bash(cmd))?.reason ?? '', /Push to protected branch "main"/, cmd)
+    }
+    assert.match((await bash('git --no-pager commit -m x', { branch: 'main' }))?.reason ?? '', /Git commit while on protected branch "main"/)
   })
 
   it('should ask for a push that targets main with a quoted refspec', async () => {
@@ -1564,7 +1597,7 @@ describe('evaluate: advisory warning, once per change (ESP-48; spec R4, R5, R7, 
 
   it('should keep the marker in the after-Bash snapshot folder, which no trusted write path may name (ESP-21)', () => {
     const root = tempDir()
-    assert.equal(configMarkerPath(root), path.join(snapshotDir(root), 'config-warned'))
+    assert.equal(configMarkerPath(root), path.join(stateDir(root), 'config-warned'))
   })
 
   it('should not track warnings when no marker is given', async () => {

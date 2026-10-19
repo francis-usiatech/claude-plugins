@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, existsSync, appendFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isMainModule } from './main-module.mjs'
 import {
   matchAny, isSecretEnvFile, isPlainObject, isStringArray, DEFAULT_ASK_PATHS,
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, checkFakePasses, isJsTsFile,
@@ -70,7 +71,7 @@ const DEFAULT_APPROVAL_LABEL = 'governance-approved'
  */
 export const readApprovalLabel = (govRoot = SCRIPT_GOV_ROOT) => {
   const { cfg, objectKey, stringValue } = baseConfig(govRoot, () => {})
-  return stringValue(objectKey(cfg, 'governance'), 'approvalLabel', '', DEFAULT_APPROVAL_LABEL)
+  return stringValue(objectKey(cfg, 'governance'), 'approvalLabel', 'governance.approvalLabel', DEFAULT_APPROVAL_LABEL)
 }
 
 // -z gives raw, unquoted paths (git otherwise quotes non-ASCII names, which would slip past every path check).
@@ -214,7 +215,10 @@ export const runGovernanceChecks = async ({ env, lookups, govRoot = SCRIPT_GOV_R
     let content = null
     let readError = ''
     try {
-      content = show('HEAD', file)
+      // git show prints a symlink's target path as if it were the file, so a link is unreadable, as locally (F19).
+      const mode = execFileSync('git', ['-c', 'core.quotePath=false', '--literal-pathspecs', 'ls-tree', '-z', 'HEAD', '--', file], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).split(' ')[0]
+      if (mode === '120000') readError = 'is a symbolic link'
+      else content = show('HEAD', file)
     } catch (e) {
       // A test file becomes fp-unreadable with git's reason; other JS/TS files only get fp-placeholder, which needs text.
       // git's own reason is on stderr; e.message starts with node's "Command failed: …" line.
@@ -235,7 +239,7 @@ export const runGovernanceChecks = async ({ env, lookups, govRoot = SCRIPT_GOV_R
 }
 
 // Entry point: the real npm lookups, each request with its own CI timeout (D5).
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   const { exitCode, report } = await runGovernanceChecks({ env: process.env, lookups: createLookups({ timeoutMs: CI_TIMEOUT_MS }) })
   console.log(report)
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, report)

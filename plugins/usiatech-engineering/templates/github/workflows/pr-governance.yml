@@ -179,15 +179,18 @@ jobs:
       pull-requests: read
       issues: read
     steps:
+      # The gate reads the API with GITHUB_TOKEN from env and runs no git commands, so no checkout keeps a token.
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.base_ref }}
           path: _gov
           fetch-depth: 1
+          persist-credentials: false
       - uses: actions/checkout@v6
         with:
           path: _pr
           fetch-depth: 1
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22

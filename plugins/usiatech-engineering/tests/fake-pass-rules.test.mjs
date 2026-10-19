@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { checkFakePasses, isTestFile, isJsTsFile, TIER } from '../templates/github/scripts/fake-pass-rules.mjs'
+import { checkFakePasses, isTestFile, isJsTsFile } from '../templates/github/scripts/fake-pass-rules.mjs'
+import { TIER } from '../templates/github/scripts/workflow-rules.mjs'
 
 // Fixtures are .txt so `node --test` never runs their focused or skipped tests; each is checked under a test-file path.
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-pass')
@@ -76,6 +77,13 @@ describe('checkFakePasses: focused and skipped tests (AC2)', () => {
     ['fp-skip', "it('x', { skip: true }, () => { assert.ok(true) })"],
     ['fp-skip', "it('x', { skip: 'flaky on CI' }, () => { assert.ok(true) })"],
     ['fp-skip', "test('x', { todo: true }, () => { assert.ok(true) })"],
+    // F8: modifier chains
+    ['fp-only', `it.only.each([[1]])${body}`], ['fp-only', `test.concurrent.only${body}`],
+    ['fp-only', `describe.only.each([[1]])('s', () => { it${body} })`],
+    ['fp-skip', `it.skip.each([[1]])${body}`], ['fp-skip', `test.concurrent.skip${body}`],
+    ['fp-skip', `it.todo.each([[1]])('later')`], ['fp-skip', `test.concurrent.fixme${body}`],
+    ['fp-only', `test.only.failing${body}`], ['fp-skip', `test.skip.failing${body}`],
+    ['fp-only', 'it.only.each`a\n${1}`' + body],
   ]
   for (const [rule, code] of cases) {
     it(`should give one ${rule} high finding for ${code.slice(0, 40)}`, () => {
@@ -97,6 +105,11 @@ describe('checkFakePasses: focused and skipped tests (AC2)', () => {
       '  assert.ok(msg && skipped)',
       '})',
     ].join('\n')
+    assert.deepEqual(check(inFile(code)), [])
+  })
+
+  it('should not flag run-modifier chains without only or skip (F8)', () => {
+    const code = "it.each([[1]])('x', (n) => { assert.ok(n) })\ntest.concurrent('y', () => { assert.ok(1) })\nobj.only(1)\n"
     assert.deepEqual(check(inFile(code)), [])
   })
 })
@@ -217,6 +230,10 @@ describe('checkFakePasses: review fix set 1', () => {
     ['20k unclosed test calls', 'it(\n'.repeat(20000)],
     ['20k valid one-line tests', "it('x', () => { assert.ok(1) })\n".repeat(20000)],
     ['20k unclosed option objects', "it('', {\n".repeat(20000)],
+    // A long modifier chain with no call after it must not backtrack (round-2 ReDoS).
+    ['a 320 KB .it.only chain', '.it.only'.repeat(40000)],
+    ['a 320 KB .it.skip chain', '.it.skip'.repeat(40000)],
+    ['one it with 20k .only segments', 'it' + '.only'.repeat(20000) + ' x'],
   ]) {
     it(`should check ${label} in under 2 s`, () => {
       const start = performance.now()

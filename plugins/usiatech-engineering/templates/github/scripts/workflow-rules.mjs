@@ -4,6 +4,12 @@
 
 export const TIER = { HIGH: 'high', WARNING: 'warning' }
 
+// Shared helpers. They live here because this module imports nothing, so the other rules modules can import them
+// without a cycle through governance-rules.mjs (which re-exports isPlainObject and escapeRegExp).
+export const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
+export const isNonEmptyString = (v) => typeof v === 'string' && v.trim() !== ''
+export const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
 // AI or agent actions whose inputs become a model prompt (R8). Matched on owner/repo, case-insensitively.
 export const AI_ACTIONS = [
   'anthropics/claude-code-action',
@@ -13,7 +19,7 @@ export const AI_ACTIONS = [
   'actions/ai-inference',
 ]
 
-const PRIVILEGED_TRIGGERS = ['pull_request_target', 'workflow_run']
+const PRIVILEGED_TRIGGERS = ['pull_request_target', 'workflow_run', 'issue_comment']
 const FIRST_PARTY_OWNERS = ['actions', 'github']
 
 // Event fields an outside contributor controls (GitHub's "untrusted input" list).
@@ -39,12 +45,17 @@ const WHOLE_EVENT_EXPR = /\bgithub(?:\.event(?:\.(?:pull_request(?:\.head(?:\.re
 const PR_REF_EXPR = /\bgithub\.(?:head_ref\b|event\.(?:pull_request\.(?:head\.(?:sha|ref|repo\.\w+)|merge_commit_sha)|workflow_run\.head_(?:sha|branch|repository)|number\b))|refs\/pull\//i
 // A run script checks out PR code with "gh pr checkout", or with a git fetch/checkout/switch/clone/pull followed,
 // starting on the same line, by a pull ref or a PR head expression.
-// Up to 8 global options may come before the subcommand (git -C dir fetch, git -c k="a b" pull). An option value is a
-// run of quoted and unquoted chunks whose first character picks the branch, so each value is read only one way, and the
-// bound keeps a long run of options from being rescanned from every "git" in it (quadratic). A line continuation or a
-// 9th option still hides the subcommand.
 const GH_PR_CHECKOUT = /\bgh\s+pr\s+checkout\b/i
-const GIT_CHECKOUT_CMD = /\bgit(?:\s+-[\w-]+(?:=(?:"[^"\n]*"|'[^'\n]*'|[^\s"'])*|\s+(?!-)(?:"[^"\n]*"|'[^'\n]*'|[^\s"'])+)?){0,8}?\s+(?:fetch|checkout|switch|clone|pull)\b/gi
+// Regex source for "git" plus up to 8 global options, ending where the subcommand starts (git -C dir fetch,
+// git -c k="a b" pull). Shared by every git rule (F3). Any option may take a separate value, so a value option this
+// list doesn't know (--attr-source HEAD) still fails closed, except git's options that never take one, so
+// "git --no-pager log -S commit" is a log. An option value is a run of quoted and unquoted chunks whose first character
+// picks the branch, so each value is read only one way, and the bound keeps a long run of options from being rescanned
+// from every "git" in it (quadratic). A line continuation or a 9th option still hides the subcommand.
+const GIT_VALUE = String.raw`(?:"[^"\n]*"|'[^'\n]*'|[^\s"'])`
+const GIT_NO_VALUE = String.raw`(?:-p|-P|--paginate|--no-pager|--bare|--no-replace-objects|--no-lazy-fetch|--no-optional-locks|--no-advice|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--exec-path)`
+export const GIT_PREFIX = String.raw`\bgit(?:\s+(?:(?!${GIT_NO_VALUE}\s)-[\w-]+\s+(?!-)${GIT_VALUE}+|-[\w-]+(?:=${GIT_VALUE}*)?)){0,8}?\s+`
+const GIT_CHECKOUT_CMD = new RegExp(String.raw`${GIT_PREFIX}(?:fetch|checkout|switch|clone|pull)\b`, 'gi')
 const PULL_REF_AT = /(?:refs\/|[\s:])pull\//iy
 const PR_HEAD_EXPR_AT = /\$\{\{[^}]*\bgithub\.(?:head_ref|event\.pull_request\.head|event\.workflow_run\.head_|event\.(?:pull_request\.)?number\b)/iy
 const matchesAt = (re, s, at) => { re.lastIndex = at; return re.test(s) }
@@ -354,11 +365,10 @@ export const parseYamlSubset = (text) => parseWorkflowYaml(text).doc
 // ---------------------------------------------------------------------------------------------------------------
 // Rules
 // ---------------------------------------------------------------------------------------------------------------
-const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
 const strings = (v, out = []) => {
   if (typeof v === 'string') out.push(v)
   else if (Array.isArray(v)) v.forEach((x) => strings(x, out))
-  else if (isObj(v)) Object.values(v).forEach((x) => strings(x, out))
+  else if (isPlainObject(v)) Object.values(v).forEach((x) => strings(x, out))
   return out
 }
 // Expressions are case-insensitive and accept obj['key'] and spaces around dots; rewrite them to one lowercase
@@ -414,25 +424,50 @@ const computedIndex = (inner) => {
   }
   return undefined
 }
-const untrustedIn = (s) => exprSpans(s)
+// normalizeExpr has already turned env['T'] and ENV . T into env.t. The whole object (toJSON(env)), env.* and a
+// computed index (env[x]) may reach any name, so they count as the first untrusted one (fail closed).
+const ENV_REF = /(?<![\w.-])env(?:\.([\w-]+)|(?![\w-]))/g
+const untrustedEnvRef = (e, env) => {
+  for (const [ref, name] of e.matchAll(ENV_REF)) {
+    const hit = name === undefined ? env.keys().next().value : env.has(name) ? name : undefined
+    if (hit !== undefined) return `\${{ ${name === undefined ? `${ref}…` : ref} }} (env.${hit} is set from ${env.get(hit)})`
+  }
+  return undefined
+}
+// Each untrusted ${{ … }} in s, as shown in a finding. env maps a lowercased env name set from untrusted text to
+// where it came from (F10).
+const untrustedIn = (s, env = new Map()) => exprSpans(s)
   .map(({ inner }) => {
     const e = normalizeExpr(inner)
-    return e.match(UNTRUSTED_EXPR)?.[0] ?? e.match(WHOLE_EVENT_EXPR)?.[0] ?? unreadableIndex(e) ?? computedIndex(inner)
+    const found = e.match(UNTRUSTED_EXPR)?.[0] ?? e.match(WHOLE_EVENT_EXPR)?.[0] ?? unreadableIndex(e) ?? computedIndex(inner)
+    return found ? `\${{ ${found} }}` : untrustedEnvRef(e, env)
   })
   .filter(Boolean)
+// The env names untrusted after one level's env: block. A name it sets replaces the outer one (step over job over
+// workflow), and a value that reads an untrusted outer name is untrusted too. Names are read case-insensitively.
+const untrustedEnv = (block, outer) => {
+  if (!isPlainObject(block)) return outer
+  const env = new Map(outer)
+  for (const [name, value] of Object.entries(block)) {
+    const from = typeof value === 'string' ? untrustedIn(value, outer)[0] : undefined
+    if (from) env.set(name.toLowerCase(), from)
+    else env.delete(name.toLowerCase())
+  }
+  return env
+}
 
 const triggersOf = (doc) => {
   const on = doc.on
   if (typeof on === 'string') return [on]
   if (Array.isArray(on)) return on.filter((t) => typeof t === 'string')
-  return isObj(on) ? Object.keys(on) : []
+  return isPlainObject(on) ? Object.keys(on) : []
 }
 
 const actionName = (uses) => String(uses).split('@')[0].toLowerCase()
 const isAiAction = (uses) => AI_ACTIONS.some((a) => actionName(uses) === a || actionName(uses).startsWith(a + '/'))
 
-const stepsOf = (job) => (Array.isArray(job?.steps) ? job.steps.filter(isObj) : [])
-const jobsOf = (doc) => (isObj(doc.jobs) ? Object.entries(doc.jobs).filter(([, j]) => isObj(j)) : [])
+const stepsOf = (job) => (Array.isArray(job?.steps) ? job.steps.filter(isPlainObject) : [])
+const jobsOf = (doc) => (isPlainObject(doc.jobs) ? Object.entries(doc.jobs).filter(([, j]) => isPlainObject(j)) : [])
 
 // Places where the rules expect a mapping or a list but the file has something else; jobsOf/stepsOf would skip them.
 const shapeProblems = (doc) => {
@@ -444,20 +479,20 @@ const shapeProblems = (doc) => {
     })
   }
   if (doc.jobs === undefined) return out
-  if (!isObj(doc.jobs)) return [...out, { line: lineOf(doc, 'jobs'), reason: '"jobs" is not a mapping' }]
+  if (!isPlainObject(doc.jobs)) return [...out, { line: lineOf(doc, 'jobs'), reason: '"jobs" is not a mapping' }]
   for (const [id, job] of Object.entries(doc.jobs)) {
-    if (!isObj(job)) { out.push({ line: lineOf(doc.jobs, id), reason: `job "${id}" is not a mapping` }); continue }
+    if (!isPlainObject(job)) { out.push({ line: lineOf(doc.jobs, id), reason: `job "${id}" is not a mapping` }); continue }
     if (job.steps === undefined) continue
     if (!Array.isArray(job.steps)) { out.push({ line: lineOf(job, 'steps'), reason: `the steps of job "${id}" are not a list` }); continue }
     job.steps.forEach((step, n) => {
-      if (!isObj(step)) out.push({ line: lineOf(job.steps, n), reason: `step ${n + 1} of job "${id}" is not a mapping` })
+      if (!isPlainObject(step)) out.push({ line: lineOf(job.steps, n), reason: `step ${n + 1} of job "${id}" is not a mapping` })
     })
   }
   return out
 }
 
 const checksOutPrCode = (step) => {
-  if (typeof step.uses === 'string' && actionName(step.uses) === 'actions/checkout' && isObj(step.with)) {
+  if (typeof step.uses === 'string' && actionName(step.uses) === 'actions/checkout' && isPlainObject(step.with)) {
     return ['ref', 'repository'].some((k) => typeof step.with[k] === 'string' && PR_REF_EXPR.test(normalizeExprs(step.with[k])))
   }
   return typeof step.run === 'string' && runChecksOutPr(normalizeExprs(step.run))
@@ -496,26 +531,29 @@ const privilegedRules = (doc, file, findings) => {
 }
 
 const untrustedInputRules = (doc, file, findings) => {
+  const workflowEnv = untrustedEnv(doc.env, new Map())
   for (const [id, job] of jobsOf(doc)) {
+    const jobEnv = untrustedEnv(job.env, workflowEnv)
     for (const step of stepsOf(job)) {
+      const env = untrustedEnv(step.env, jobEnv)
       const line = lineOf(step, 'run') || lineOf(step, 'with') || lineOf(job.steps, job.steps.indexOf(step))
       if (typeof step.run === 'string') {
-        for (const expr of untrustedIn(step.run)) {
+        for (const expr of untrustedIn(step.run, env)) {
           findings.push({
             rule: 'wf-untrusted-input', tier: TIER.HIGH, file, line,
-            detail: `Job "${id}" puts \${{ ${expr} }} directly into a run script (shell injection). Pass it through env: and quote it.`,
+            detail: `Job "${id}" puts ${expr} directly into a run script (shell injection). Pass it through env: and quote it.`,
           })
         }
       }
-      if (typeof step.uses !== 'string' || !isObj(step.with)) continue
+      if (typeof step.uses !== 'string' || !isPlainObject(step.with)) continue
       const isScript = actionName(step.uses) === 'actions/github-script'
       const inputs = isScript ? [step.with.script].filter((s) => typeof s === 'string') : isAiAction(step.uses) ? strings(step.with) : []
-      for (const expr of inputs.flatMap(untrustedIn)) {
+      for (const expr of inputs.flatMap((s) => untrustedIn(s, env))) {
         findings.push({
           rule: 'wf-untrusted-input', tier: TIER.HIGH, file, line,
           detail: isScript
-            ? `Job "${id}" puts \${{ ${expr} }} into an actions/github-script script (code injection). Pass it through env: and read process.env.`
-            : `Job "${id}" passes \${{ ${expr} }} into ${actionName(step.uses)} (prompt injection into an agent with repo access).`,
+            ? `Job "${id}" puts ${expr} into an actions/github-script script (code injection). Pass it through env: and read process.env.`
+            : `Job "${id}" passes ${expr} into ${actionName(step.uses)} (prompt injection into an agent with repo access).`,
         })
       }
     }
@@ -544,7 +582,7 @@ const permsOf = (v) => {
   if (v === undefined || v === null) return null
   if (v === 'write-all') return { '*': 'write' }
   if (v === 'read-all') return { '*': 'read' }
-  if (isObj(v)) return Object.fromEntries(Object.entries(v).filter(([, l]) => Object.hasOwn(RANK, l)))
+  if (isPlainObject(v)) return Object.fromEntries(Object.entries(v).filter(([, l]) => Object.hasOwn(RANK, l)))
   return v === '' || v === '{}' ? {} : null
 }
 const levelOf = (perms, scope) => (Object.hasOwn(perms, scope) ? perms[scope] : perms['*']) ?? 'none'
@@ -558,7 +596,7 @@ const UNREADABLE_BASE_DROPPED_NOTE = ' The old version could not be fully parsed
 const permissionRules = (doc, base, baseUnreadable, file, findings) => {
   const levels = [{ where: 'workflow', node: doc, baseNode: base, fallbackLine: 1 }]
   for (const [id, job] of jobsOf(doc)) {
-    levels.push({ where: `job "${id}"`, node: job, baseNode: isObj(base?.jobs?.[id]) ? base.jobs[id] : null, fallbackLine: lineOf(doc.jobs, id) })
+    levels.push({ where: `job "${id}"`, node: job, baseNode: isPlainObject(base?.jobs?.[id]) ? base.jobs[id] : null, fallbackLine: lineOf(doc.jobs, id) })
   }
   for (const { where, node, baseNode, fallbackLine } of levels) {
     const line = lineOf(node, 'permissions') || fallbackLine

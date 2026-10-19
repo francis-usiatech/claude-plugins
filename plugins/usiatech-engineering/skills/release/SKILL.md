@@ -46,7 +46,7 @@ Repo `AGENTS.md` rules win on conflict.
    - **Jira tracker only:** before creating the tag, find the previous one with `git describe --tags --abbrev=0`. If git says "No names found", there's no earlier tag, and step 4 below scans the whole history. Any other error is a failure: report it, and don't guess a tag.
 3. Push the branch and tag. Follow the repo's deploy runbook: migrations as a separate step before switching; smoke-test staging, then production; check the status page and health endpoints.
 4. **Jira tracker only:** mark the released tickets. Skip this step when `jira.statuses` in the `check` output has no `released`, and say so.
-   - From a POSIX shell (Git Bash on Windows; a PowerShell 5.1 redirect writes UTF-16, which `keys` can't read), run `git log "<previous tag>..<new tag>" --format=%B > "<file>"`, or `git log "<new tag>" --format=%B > "<file>"` with no previous tag. The file goes in the session scratchpad.
+   - From a POSIX shell (Git Bash on Windows; a PowerShell 5.1 redirect writes UTF-16, which `keys` refuses with exit 2), run `git log "<previous tag>..<new tag>" --format=%B > "<file>"`, or `git log "<new tag>" --format=%B > "<file>"` with no previous tag. The file goes in the session scratchpad.
    - Check that `git log` exited 0. If it didn't, stop this step and report the failure; an empty file from a failed `git log` would read as "no tickets".
    - Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" keys --messages-file "<file>"`. It prints the project's keys found in the commit subjects and bodies.
    - Show the list and ask the user once to confirm it. The user may drop keys that are only mentioned, such as a "Follow-up: ESP-61" line.

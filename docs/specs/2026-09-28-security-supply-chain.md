@@ -29,6 +29,7 @@ Dependency and CI workflow changes are the easiest way to compromise a repo: a t
 
 **B10: GitHub Actions workflows**
 - R7: Flag a workflow triggered by `pull_request_target` or `workflow_run` that checks out PR-controlled code (the PR head ref or SHA). **High risk.**
+  - Note (2026-10-18, ESP-77, audit F9): `issue_comment` runs with the base-repo token and secrets too, so it is treated as privileged here and in R9.
 - R8: Flag untrusted event text (`github.event.*` title, body, head ref or branch name, comment body, commit message, and `github.head_ref`) placed inside a `run:` step or passed as input to an AI or agent action. **High risk.**
 - R9: Flag secrets available to a job that runs PR-controlled code under `pull_request_target` or `workflow_run`. **High risk.**
 - R10: Flag third-party actions not pinned to a full 40-character commit SHA (actions under `actions/*` and `github/*` are exempt), and `permissions` that are `write-all` or that widen compared with the base branch. **Warning.**

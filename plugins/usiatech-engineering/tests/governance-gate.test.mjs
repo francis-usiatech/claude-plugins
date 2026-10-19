@@ -56,6 +56,9 @@ describe('governance-gate', () => {
     const r = await runGate({ pages: [[verdictComment('PASS', 'oldsha999')]] })
     assert.equal(r.code, 1)
     assert.match(r.stdout, /No AI governance verdict for commit abc1234/)
+    // Draft and fork PRs are opt-outs now, so the hint must not name them as causes.
+    assert.doesNotMatch(r.stdout, /draft PR|fork PR|Mark ready for review/)
+    assert.match(r.stdout, /has not run or posted a verdict for this commit\. Re-run the workflow\./)
   })
 
   it('should ignore verdict markers posted by other users', async () => {
