@@ -94,6 +94,79 @@ describe('evaluate: Bash ask rules', () => {
   }
 })
 
+describe('evaluate: re-audit guard bypasses (ESP-106; R1–R5)', () => {
+  const ps = (command, opts = {}) => evaluate({ tool_name: 'PowerShell', tool_input: { command } }, { root: tempDir(), git: fakeGit(), ...opts })
+
+  it('should apply the command rules to the PowerShell tool (R1)', async () => {
+    assert.equal((await ps('git push --force origin main'))?.decision, 'ask')
+    assert.equal((await ps('git commit --no-verify -m x'))?.decision, 'deny')
+    assert.equal(await ps('git status'), null)
+  })
+
+  for (const cmd of [
+    // R3: any unique prefix of --no-verify, and a hooks folder override.
+    'git commit --no-verif -m x',
+    'git push --no-veri origin x',
+    'git -c core.hooksPath=/dev/null commit -m x',
+    'git config core.hooksPath /dev/null',
+    // R4: separate, long or quoted forms, and the PowerShell cmdlet.
+    'rm -f -r $HOME',
+    'rm --recursive --force ~',
+    'rm -rf -- ~',
+    'rm -rf "$HOME"',
+    'Remove-Item -Recurse -Force ~',
+    'cd x; ri -r -fo ~',
+  ]) {
+    it(`should deny: ${cmd}`, async () => assert.equal((await bash(cmd))?.decision, 'deny'))
+  }
+
+  for (const cmd of ['git commit --no-verbose -m x', 'rm -r build/']) {
+    it(`should not deny: ${cmd}`, async () => assert.notEqual((await bash(cmd))?.decision, 'deny'))
+  }
+
+  for (const cmd of [
+    'rm -r build/',
+    'rm --recursive build/',
+    'Remove-Item -Recurse build',
+    'rd -r build',
+    // R5: destructive git spellings.
+    'git push --delete origin x',
+    'git push -d origin x',
+    'git push --mirror',
+    'git branch --delete --force x',
+    'git reset --har HEAD~1',
+    'git clean --force',
+    'git checkout -f main',
+  ]) {
+    it(`should ask: ${cmd}`, async () => assert.equal((await bash(cmd))?.decision, 'ask'))
+  }
+
+  for (const cmd of ['git push origin x', 'git push --dry-run origin x', 'git reset --soft HEAD~1', 'git checkout main', 'docker run --rm img pytest -rA', 'Remove-Item -Force x.txt', 'git branch --merged', 'ls src/rd -R']) {
+    it(`should allow: ${cmd}`, async () => assert.equal(await bash(cmd), null))
+  }
+
+  describe('a ::$DATA stream suffix on Windows (R2)', () => {
+    const win = (file_path, root = String.raw`C:\repo`) =>
+      evaluate({ tool_name: 'Write', tool_input: { file_path, content: 'x' } }, { root, git: fakeGit(), pathApi: path.win32, caseInsensitive: true })
+
+    for (const file of ['.env', 'AGENTS.md', 'CLAUDE.md', '.claude/plans/active.md']) {
+      it(`should decide ${file}::$DATA like ${file}, logging the suffixed name`, async () => {
+        const plain = await win(file)
+        const stream = await win(`${file}::$DATA`)
+        assert.ok(plain?.decision, `${file} gets a decision`)
+        assert.equal(stream?.decision, plain.decision)
+        assert.equal(stream.target, `${file}::$DATA`)
+      })
+    }
+
+    it('should ask for the plan file under its stream name while a plan is active', async () => {
+      const root = tempDir()
+      writeFiles(root, { '.claude/plans/active.md': '# Plan\n\n## Files\n- `src/**`\n' })
+      assert.equal((await win('.claude/plans/active.md::$DATA', root))?.decision, 'ask')
+    })
+  })
+})
+
 describe('evaluate: protected branches', () => {
   it('should ask for a commit while on main', async () => {
     const r = (await bash('git commit -m "x"', { branch: 'main' }))

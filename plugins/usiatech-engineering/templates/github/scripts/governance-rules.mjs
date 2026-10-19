@@ -30,11 +30,21 @@ export const hasControlChar = (text) => [...text].some((c) => c.codePointAt(0) <
 // with forward slashes, so any other spelling could never match.
 export const isPathPrefix = (v) => typeof v === 'string' && v.trim() !== '' && v === v.trim() && !hasControlChar(v) && !v.includes('\\') && !v.startsWith('/') && !v.startsWith('./') && !v.split('/').includes('..')
 
-// Command rules: [reason, regex source], matched case-insensitively against the full Bash command.
+// ESP-106 R4: rm and the PowerShell delete cmdlet and aliases (not `--rm`). Flags may be separate, long or clustered;
+// the cluster letters are rm's own (d, f, i, v, r) so `-Force` doesn't read as recursive; `-Recurse` and `-r` do.
+// The short aliases ri and rd count only where a command starts, so a folder named rd isn't one.
+const RM = String.raw`(?:(?<!-)\b(?:rm|remove-item|rmdir)|(?:^|[\n;&|({])\s*(?:ri|rd))\b`
+const RM_RECURSIVE = String.raw`[^;&|]*\s(?:-[dfiv]*r[a-z]*|--recursive\b)`
+const RM_FORCE = String.raw`[^;&|]*\s(?:-[dirv]*f[a-z]*|--force\b)`
+
+// Command rules: [reason, regex source], matched case-insensitively against the full Bash or PowerShell command.
 export const DENY_COMMANDS = [
-  ['destructive delete of root/home/workspace', String.raw`\brm\s+-[a-z]*(rf|fr)[a-z]*\s+(\/(\s|$)|~|\$HOME|\*|\.\/?(\s|$))`],
+  ['destructive delete of root/home/workspace', String.raw`${RM}(?=${RM_RECURSIVE})(?=${RM_FORCE})[^;&|]*\s["']?(\/["']?(\s|$)|~|\$HOME|\$\{HOME\}|\$env:userprofile|\*|\.\/?["']?(\s|$))`],
   ['piping a download into a shell', String.raw`\b(curl|wget)\b[^|;&]*\|\s*(sudo\s+)?(ba|z|da)?sh\b`],
-  ['bypassing git hooks', String.raw`--no-verify\b`],
+  // R3: git takes any unique prefix of a long option, and --no-veri is the shortest that isn't --no-verbose.
+  ['bypassing git hooks', String.raw`--no-veri(fy?)?\b`],
+  // A hooks folder override in any form (-c, git config, --config-env, GIT_CONFIG_* variables); reads are denied too.
+  ['bypassing git hooks', String.raw`\bcore\.hooksPath\b`],
   // -n is --no-verify for commit. It fails closed: any cluster where n follows only commit's no-value flags is denied,
   // whatever comes after it (-pn, -nam x, -nSkey, -n;), so a quoted word such as "-Note" in a message is denied too.
   ['bypassing git hooks', String.raw`${GIT_PREFIX}commit\b[^;&|]*\s-[aeiopqsvz]*n`],
@@ -45,10 +55,11 @@ export const DENY_COMMANDS = [
 ]
 export const ASK_COMMANDS = [
   ['force push', String.raw`${GIT_PREFIX}push\b.*(\s--force(-with-lease)?\b|\s-f\b|\s["']?\+\S)`],
-  ['discarding work (reset/clean/restore/checkout)', String.raw`${GIT_PREFIX}(reset\s+--hard|clean\s+-[a-z]*f|restore\s+\.|checkout\s+--\s+\.|stash\s+(drop|clear))`],
-  ['deleting a branch', String.raw`${GIT_PREFIX}(branch\s+-D|push\s+\S+\s+--delete|push\s+\S+\s+:\S)`],
+  // R5: separate or abbreviated flags too. A short cluster can't start with "--", so --merged or --exclude isn't one.
+  ['discarding work (reset/clean/restore/checkout)', String.raw`${GIT_PREFIX}(reset\b[^;&|]*\s--h(a(rd?)?)?\b|clean\b[^;&|]*\s(-[a-z]*f|--f[a-z]*\b)|restore\s+\.|checkout\s+--\s+\.|(checkout|switch)\b[^;&|]*\s(-f\b|--fo[a-z]*\b|--discard-changes\b)|stash\s+(drop|clear))`],
+  ['deleting a branch', String.raw`${GIT_PREFIX}(branch\b[^;&|]*\s(-[a-z]*d|--del[a-z]*\b)|push\b[^;&|]*\s(-d\b|--de[a-z]*\b|--mi[a-z]*\b)|push\s+\S+\s+:\S)`],
   ['rewriting history', String.raw`${GIT_PREFIX}(rebase|filter-branch|filter-repo|commit\s+--amend)\b`],
-  ['recursive delete', String.raw`\brm\s+-[a-z]*r`],
+  ['recursive delete', `${RM}${RM_RECURSIVE}`],
   ['destructive SQL', String.raw`\b(drop\s+table|truncate\s+|delete\s+from\s+\w+\s*(;|$|"|'))`],
   ['weakening row-level security', String.raw`(disable\s+row\s+level\s+security|no\s+force\s+row\s+level\s+security|bypassrls)`],
   ['resetting/dropping a database', String.raw`\b(prisma\s+migrate\s+reset|drizzle-kit\s+drop|db:reset|db:drop)\b`],

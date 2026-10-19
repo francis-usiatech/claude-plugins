@@ -5,6 +5,9 @@ import { lstatSync, mkdirSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+/** The shell tools whose command the guard checks and the after-Bash check follows (ESP-106 R1: PowerShell on Windows). */
+export const SHELL_TOOLS = ['Bash', 'PowerShell']
+
 /** The folder under $TMP that holds every project's state. No trusted write path may name it (ESP-21). */
 export const STATE_FOLDER = 'usiatech-governance'
 
