@@ -15,7 +15,7 @@ import {
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, applyAllowlist, blockingFindings, formatFinding, oneLine, TIER,
   isPathPrefix, hasControlChar, GIT_PREFIX,
 } from '../../templates/github/scripts/governance-rules.mjs'
-import { STATE_FOLDER, stateDir, checkedStateDir } from './governance-state.mjs'
+import { STATE_FOLDER, stateDir, checkedStateDir, SHELL_TOOLS } from './governance-state.mjs'
 import { lookupTargets, runLookups, createLookups } from '../../templates/github/scripts/supply-chain-lookups.mjs'
 
 const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit']
@@ -24,8 +24,8 @@ const PLAN_ARCHIVE_PATH = '.claude/plans/archive/**'
 export const CASE_INSENSITIVE_FS = ['win32', 'darwin'].includes(process.platform)
 
 // R7: Windows reads "name:stream" and "name::$DATA" as a stream of "name" and drops trailing dots and spaces from
-// every folder and file name, so `.github./workflows/x.yml::$DATA` writes `.github/workflows/x.yml`. Used only to
-// decide whether an edit lands on a workflow or dependency file (and to read that file); other path checks keep the raw name.
+// every folder and file name, so `.github./workflows/x.yml::$DATA` writes `.github/workflows/x.yml`. decideEdit
+// runs every in-project path check on this name (ESP-106 R2); paths outside the project keep the raw name.
 const windowsCanonical = (rel) => rel.split('/').map((seg) => seg.replace(/:.*$/, '').replace(/[. ]+$/, '')).join('/')
 
 // ESP-9: writes outside the project that need no prompt (still logged, as decision "trusted"). $TMP is the OS temp
@@ -507,6 +507,11 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
   // On Windows a path on another drive comes back absolute rather than starting with "..".
   if (relNative.startsWith('..') || p.isAbsolute(relNative)) return decideOutsideEdit(file, gov, root, p, ic, tool, ti, places, cfg)
   const rel = relNative.split(p.sep).join('/')
+  // R2 (ESP-106): decide a variant as the file it writes; the decision keeps the name as written, so the log shows it.
+  if (p.sep === '\\' && windowsCanonical(rel) !== rel) {
+    const result = await decideEdit(windowsCanonical(rel), { cfg, gov }, git, root, p, ic, tool, ti, net, places)
+    return result && { ...result, target: rel }
+  }
 
   if (isSecretEnvFile(path.posix.basename(rel), cfg.allowEnvExample !== false, ic)) return decision('deny', 'Env files hold secrets.', rel)
   const prot = matchAny(rel, cfg.protectedPaths || DEFAULT_PROTECTED_PATHS, ic)
@@ -520,10 +525,9 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
   // Before the plan/exempt/ask checks: a secret is never fine, wherever it is written.
   const secret = findSecret(editedText(tool, ti))
   if (secret?.decision === 'deny') return decision('deny', `The edit writes what looks like a ${secret.why}. Keep secrets in env files or a secret manager.`, rel)
-  const contentRel = p.sep === '\\' ? windowsCanonical(rel) : rel
-  const kind = isWorkflowPath(contentRel) ? 'workflow' : dependencyKind(contentRel) ? 'dependency' : null
-  const { findings, failures } = kind === 'workflow' ? { findings: workflowFindings(contentRel, tool, ti, gov, root, p, ic), failures: [] }
-    : kind === 'dependency' ? await dependencyFindings(contentRel, tool, ti, gov, root, p, ic, net)
+  const kind = isWorkflowPath(rel) ? 'workflow' : dependencyKind(rel) ? 'dependency' : null
+  const { findings, failures } = kind === 'workflow' ? { findings: workflowFindings(rel, tool, ti, gov, root, p, ic), failures: [] }
+    : kind === 'dependency' ? await dependencyFindings(rel, tool, ti, gov, root, p, ic, net)
     : { findings: [], failures: [] }
   const blocking = blockingFindings(findings)
   // ESP-24: under "all" every plan and archive write is trusted; the secret ask above and the denies before it still win.
@@ -639,7 +643,7 @@ export const evaluate = async (input, { root, cfg = {}, configError = null, git 
 
   let result = null
   let target = ''
-  if (tool === 'Bash') {
+  if (SHELL_TOOLS.includes(tool)) {
     target = String(ti.command || '')
     result = decideBash(target, safe, git, root)
   } else if (EDIT_TOOLS.includes(tool)) {

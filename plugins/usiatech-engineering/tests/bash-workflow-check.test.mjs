@@ -23,14 +23,14 @@ const sh = (root, command) => {
 }
 
 // Runs one Bash call the way Claude Code does: guard (PreToolUse), the command, then the after-Bash hook.
-const bashCall = async (root, command, { id = 'toolu_test1', expectFail = false } = {}) => {
+const bashCall = async (root, command, { id = 'toolu_test1', expectFail = false, tool = 'Bash' } = {}) => {
   const ids = id ? { tool_use_id: id } : {}
-  const pre = await hook(GUARD_SCRIPT, root, { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, ...ids })
+  const pre = await hook(GUARD_SCRIPT, root, { hook_event_name: 'PreToolUse', tool_name: tool, tool_input: { command }, ...ids })
   assert.equal(pre.code, 0, pre.stderr)
   const status = sh(root, command)
   assert.equal(status !== 0, expectFail, `exit status ${status} for ${command}`)
   const event = status === 0 ? 'PostToolUse' : 'PostToolUseFailure'
-  const post = await hook(BASH_WF_SCRIPT, root, { hook_event_name: event, tool_name: 'Bash', tool_input: { command }, ...ids })
+  const post = await hook(BASH_WF_SCRIPT, root, { hook_event_name: event, tool_name: tool, tool_input: { command }, ...ids })
   assert.equal(post.code, 0, post.stderr)
   return { event, out: post.stdout ? JSON.parse(post.stdout) : null, stderr: post.stderr }
 }
@@ -50,13 +50,16 @@ const assertShown = (r, file) => {
 }
 
 describe('after-Bash workflow check (R6; AC6)', () => {
-  it('should be registered for Bash on both PostToolUse and PostToolUseFailure', () => {
+  it('should be registered for Bash and PowerShell on both PostToolUse and PostToolUseFailure (ESP-106 R1)', () => {
     const hooks = JSON.parse(readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks
     for (const event of ['PostToolUse', 'PostToolUseFailure']) {
       const entry = (hooks[event] || []).find((m) => m.hooks.some((h) => /bash-workflow-check\.mjs/.test(h.command)))
       assert.ok(entry, `${event} has no bash-workflow-check hook`)
-      assert.equal(entry.matcher, 'Bash')
+      assert.equal(entry.matcher, 'Bash|PowerShell')
     }
+    // The guard takes the snapshot this check reads, so it must fire on the same tools.
+    const guard = hooks.PreToolUse.find((m) => m.hooks.some((h) => /governance-guard\.mjs/.test(h.command)))
+    assert.deepEqual(guard.matcher.split('|').filter((t) => ['Bash', 'PowerShell'].includes(t)), ['Bash', 'PowerShell'])
   })
 
   it('should report and log a high-risk workflow written by a heredoc', async () => {
@@ -428,6 +431,15 @@ describe('after-Bash workflow check (R6; AC6)', () => {
       assert.equal(readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8'), CLEAN)
       assertShown(r, '.github/workflows/ci.yml')
       assert.match(r.out.systemMessage, /commit on refs\/heads\/other/)
+    })
+
+    // ESP-106 R1: the guard snapshots before a PowerShell call too, so a commit on a branch switched away from is seen.
+    it('should report a workflow committed through the PowerShell tool, logged as PowerShell', async () => {
+      const root = repo()
+      const r = await bashCall(root, `git checkout -q -b other && cp "${FIXTURE}" .github/workflows/ci.yml && git commit -q -am x && git checkout -q feature/x`, { tool: 'PowerShell' })
+      assertShown(r, '.github/workflows/ci.yml')
+      assert.match(r.out.systemMessage, /commit on refs\/heads\/other/)
+      assert.deepEqual(readLog(root).filter((e) => e.decision === 'finding').map((e) => [e.rule, e.tool]), [['wf-untrusted-input', 'PowerShell']])
     })
 
     it('should report a workflow that is only staged', async () => {
