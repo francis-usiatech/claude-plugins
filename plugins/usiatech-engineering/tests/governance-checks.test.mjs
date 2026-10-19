@@ -385,6 +385,23 @@ describe('governance-checks: test content (R10; AC9, D12)', () => {
     assert.equal((await runChecks({ repo, labels: ['governance-approved'] })).code, 0)
   })
 
+  it('should report a test file that is a symlink at HEAD as fp-unreadable, as locally (F19)', async () => {
+    // A mode 120000 entry staged directly, so the test needs no OS symlink support. git show would print its target text.
+    const linked = (file, target) => {
+      const repo = makeRepo({ baseFiles: { 'README.md': 'base\n', 'target.txt': target } })
+      git(repo, 'update-index', '--add', '--cacheinfo', `120000,${git(repo, 'hash-object', '-w', 'target.txt')},${file}`)
+      git(repo, 'commit', '-q', '-m', 'link')
+      return repo
+    }
+    const r = await runChecks({ repo: linked(TEST, focused) })
+    assert.equal(r.code, 1, r.stdout)
+    assert.match(r.stdout, /\[fp-unreadable, high\] tests\/math\.test\.mjs:1 changed test file could not be read, so it was not checked \(git: is a symbolic link\)/)
+    // A linked source file gets no finding, as locally, even when its target text has a placeholder.
+    const src = await runChecks({ repo: linked('src/a.mjs', `// ${'TO' + 'DO'}: later\n`) })
+    assert.equal(src.code, 0, src.stdout)
+    assert.doesNotMatch(src.stdout + src.summary, /fp-/)
+  })
+
   it('should check a test file over 1 MiB of multibyte text the same way as locally, not as unreadable', async () => {
     const big = `${focused}// ${'é'.repeat(600_000)}\n`
     const repo = makeRepo({ headFiles: { [TEST]: big } })

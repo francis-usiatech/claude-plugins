@@ -44,7 +44,7 @@ for (; !aiSkipped;) {
   page++
 }
 if (aiSkipped) notes.push('AI governance review skipped; deterministic checks and the verify gate still applied.')
-else if (!verdict) problems.push(`No AI governance verdict for commit ${sha.slice(0, 7)} (draft PR, fork PR, or the review has not run). Mark ready for review or re-run the workflow.`)
+else if (!verdict) problems.push(`No AI governance verdict for commit ${sha.slice(0, 7)}: the review has not run or posted a verdict for this commit. Re-run the workflow.`)
 else if (verdict === 'BLOCK') problems.push('AI governance verdict is BLOCK. Fix the findings and push.')
 else if (verdict === 'ERROR') problems.push('AI governance review errored. Re-run the ai-governance-review job.')
 else if (verdict === 'FLAG' && !labels.includes(approvalLabel)) problems.push(`AI governance verdict is FLAG. Fix the findings or have the Document Owner add the "${approvalLabel}" label.`)

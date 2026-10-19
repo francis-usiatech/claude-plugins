@@ -14,7 +14,8 @@ const configPath = path.join(govRoot, '.claude/engineering.json')
 
 const cfg = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : {}
 const base = process.env.BASE_REF
-const changed = base ? execFileSync('git', ['diff', '--name-only', `origin/${base}...HEAD`], { encoding: 'utf8' }).split('\n').filter(Boolean) : []
+// -z gives raw paths; without it git quotes non-ASCII names and no `when` prefix matches them.
+const changed = base ? execFileSync('git', ['-c', 'core.quotePath=false', 'diff', '--name-only', '-z', `origin/${base}...HEAD`], { encoding: 'utf8' }).split('\0').filter(Boolean) : []
 const hasPkg = existsSync('package.json')
 const steps = [...(cfg.verify || []), ...(cfg.verifyConditional || []).filter((s) => (s.when || []).some((w) => changed.some((f) => f.startsWith(w))))]
 

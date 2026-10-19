@@ -71,7 +71,7 @@ const DEFAULT_APPROVAL_LABEL = 'governance-approved'
  */
 export const readApprovalLabel = (govRoot = SCRIPT_GOV_ROOT) => {
   const { cfg, objectKey, stringValue } = baseConfig(govRoot, () => {})
-  return stringValue(objectKey(cfg, 'governance'), 'approvalLabel', '', DEFAULT_APPROVAL_LABEL)
+  return stringValue(objectKey(cfg, 'governance'), 'approvalLabel', 'governance.approvalLabel', DEFAULT_APPROVAL_LABEL)
 }
 
 // -z gives raw, unquoted paths (git otherwise quotes non-ASCII names, which would slip past every path check).
@@ -215,7 +215,10 @@ export const runGovernanceChecks = async ({ env, lookups, govRoot = SCRIPT_GOV_R
     let content = null
     let readError = ''
     try {
-      content = show('HEAD', file)
+      // git show prints a symlink's target path as if it were the file, so a link is unreadable, as locally (F19).
+      const mode = execFileSync('git', ['-c', 'core.quotePath=false', '--literal-pathspecs', 'ls-tree', '-z', 'HEAD', '--', file], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).split(' ')[0]
+      if (mode === '120000') readError = 'is a symbolic link'
+      else content = show('HEAD', file)
     } catch (e) {
       // A test file becomes fp-unreadable with git's reason; other JS/TS files only get fp-placeholder, which needs text.
       // git's own reason is on stderr; e.message starts with node's "Command failed: …" line.

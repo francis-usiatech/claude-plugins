@@ -26,7 +26,7 @@ const lines = [
 ]
 if (v.findings?.length) {
   lines.push('| # | Severity | Finding | Location | Rule / requirement | Action |', '|---|---|---|---|---|---|')
-  v.findings.forEach((f, i) => lines.push(`| ${i + 1} | ${esc(f.severity)} | ${esc(f.finding)} | ${esc(f.file)}${f.line ? `:${f.line}` : ''} | ${esc(f.rule)} | ${esc(f.action)} |`))
+  v.findings.forEach((f, i) => lines.push(`| ${i + 1} | ${esc(f.severity)} | ${esc(f.finding)} | ${esc(f.file)}${f.line ? `:${esc(f.line)}` : ''} | ${esc(f.rule)} | ${esc(f.action)} |`))
   lines.push('')
 }
 if (v.traceability?.length) {

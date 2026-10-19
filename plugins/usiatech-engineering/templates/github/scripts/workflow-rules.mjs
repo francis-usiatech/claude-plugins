@@ -13,7 +13,7 @@ export const AI_ACTIONS = [
   'actions/ai-inference',
 ]
 
-const PRIVILEGED_TRIGGERS = ['pull_request_target', 'workflow_run']
+const PRIVILEGED_TRIGGERS = ['pull_request_target', 'workflow_run', 'issue_comment']
 const FIRST_PARTY_OWNERS = ['actions', 'github']
 
 // Event fields an outside contributor controls (GitHub's "untrusted input" list).
@@ -419,12 +419,37 @@ const computedIndex = (inner) => {
   }
   return undefined
 }
-const untrustedIn = (s) => exprSpans(s)
+// normalizeExpr has already turned env['T'] and ENV . T into env.t. The whole object (toJSON(env)), env.* and a
+// computed index (env[x]) may reach any name, so they count as the first untrusted one (fail closed).
+const ENV_REF = /(?<![\w.-])env(?:\.([\w-]+)|(?![\w-]))/g
+const untrustedEnvRef = (e, env) => {
+  for (const [ref, name] of e.matchAll(ENV_REF)) {
+    const hit = name === undefined ? env.keys().next().value : env.has(name) ? name : undefined
+    if (hit !== undefined) return `\${{ ${name === undefined ? `${ref}…` : ref} }} (env.${hit} is set from ${env.get(hit)})`
+  }
+  return undefined
+}
+// Each untrusted ${{ … }} in s, as shown in a finding. env maps a lowercased env name set from untrusted text to
+// where it came from (F10).
+const untrustedIn = (s, env = new Map()) => exprSpans(s)
   .map(({ inner }) => {
     const e = normalizeExpr(inner)
-    return e.match(UNTRUSTED_EXPR)?.[0] ?? e.match(WHOLE_EVENT_EXPR)?.[0] ?? unreadableIndex(e) ?? computedIndex(inner)
+    const found = e.match(UNTRUSTED_EXPR)?.[0] ?? e.match(WHOLE_EVENT_EXPR)?.[0] ?? unreadableIndex(e) ?? computedIndex(inner)
+    return found ? `\${{ ${found} }}` : untrustedEnvRef(e, env)
   })
   .filter(Boolean)
+// The env names untrusted after one level's env: block. A name it sets replaces the outer one (step over job over
+// workflow), and a value that reads an untrusted outer name is untrusted too. Names are read case-insensitively.
+const untrustedEnv = (block, outer) => {
+  if (!isObj(block)) return outer
+  const env = new Map(outer)
+  for (const [name, value] of Object.entries(block)) {
+    const from = typeof value === 'string' ? untrustedIn(value, outer)[0] : undefined
+    if (from) env.set(name.toLowerCase(), from)
+    else env.delete(name.toLowerCase())
+  }
+  return env
+}
 
 const triggersOf = (doc) => {
   const on = doc.on
@@ -501,26 +526,29 @@ const privilegedRules = (doc, file, findings) => {
 }
 
 const untrustedInputRules = (doc, file, findings) => {
+  const workflowEnv = untrustedEnv(doc.env, new Map())
   for (const [id, job] of jobsOf(doc)) {
+    const jobEnv = untrustedEnv(job.env, workflowEnv)
     for (const step of stepsOf(job)) {
+      const env = untrustedEnv(step.env, jobEnv)
       const line = lineOf(step, 'run') || lineOf(step, 'with') || lineOf(job.steps, job.steps.indexOf(step))
       if (typeof step.run === 'string') {
-        for (const expr of untrustedIn(step.run)) {
+        for (const expr of untrustedIn(step.run, env)) {
           findings.push({
             rule: 'wf-untrusted-input', tier: TIER.HIGH, file, line,
-            detail: `Job "${id}" puts \${{ ${expr} }} directly into a run script (shell injection). Pass it through env: and quote it.`,
+            detail: `Job "${id}" puts ${expr} directly into a run script (shell injection). Pass it through env: and quote it.`,
           })
         }
       }
       if (typeof step.uses !== 'string' || !isObj(step.with)) continue
       const isScript = actionName(step.uses) === 'actions/github-script'
       const inputs = isScript ? [step.with.script].filter((s) => typeof s === 'string') : isAiAction(step.uses) ? strings(step.with) : []
-      for (const expr of inputs.flatMap(untrustedIn)) {
+      for (const expr of inputs.flatMap((s) => untrustedIn(s, env))) {
         findings.push({
           rule: 'wf-untrusted-input', tier: TIER.HIGH, file, line,
           detail: isScript
-            ? `Job "${id}" puts \${{ ${expr} }} into an actions/github-script script (code injection). Pass it through env: and read process.env.`
-            : `Job "${id}" passes \${{ ${expr} }} into ${actionName(step.uses)} (prompt injection into an agent with repo access).`,
+            ? `Job "${id}" puts ${expr} into an actions/github-script script (code injection). Pass it through env: and read process.env.`
+            : `Job "${id}" passes ${expr} into ${actionName(step.uses)} (prompt injection into an agent with repo access).`,
         })
       }
     }
