@@ -6,7 +6,8 @@ import assert from 'node:assert/strict'
 import { existsSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { tempDir, cleanupTempDirs, writeFiles } from './helpers.mjs'
-import { snapshotWorkflows, checkAfterBash, snapshotDir } from '../hooks/scripts/bash-workflow-check.mjs'
+import { snapshotWorkflows, checkAfterBash } from '../hooks/scripts/bash-workflow-check.mjs'
+import { stateDir } from '../hooks/scripts/governance-state.mjs'
 
 after(cleanupTempDirs)
 
@@ -42,6 +43,6 @@ describe('after-Bash workflow check timing (R6; AC6)', () => {
     if (rounds.length > 1) t.diagnostic(report)
     assert.ok(rounds.at(-1).median < BUDGET_MS, `no round under ${BUDGET_MS} ms. ${report}`)
     assert.equal(existsSync(path.join(root, '.claude', 'governance-log.jsonl')), false, 'nothing logged')
-    assert.deepEqual(readdirSync(snapshotDir(root)), [], 'no snapshot left')
+    assert.deepEqual(readdirSync(stateDir(root)), [], 'no snapshot left')
   })
 })

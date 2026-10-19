@@ -18,6 +18,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runCommand, handleInterrupts, MAX_TIMEOUT_MS as MAX_STEP_TIMEOUT_MS } from '../mutation-test/mutation-runner.mjs'
 import { hasControlChar, isPathPrefix } from '../../templates/github/scripts/governance-rules.mjs'
+import { isPlainObject, isNonEmptyString } from '../../templates/github/scripts/workflow-rules.mjs'
 
 const FAKE_PASS_SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../templates/github/scripts/fake-pass-check.mjs')
 const FAKE_PASS_NAME = 'fake-pass check'
@@ -25,9 +26,6 @@ const TAIL_LINES = 40
 // A failing step's output is read only this far back, so a huge log isn't read into memory.
 const TAIL_BYTES = 65536
 const DEFAULT_STEP_TIMEOUT_MS = 600000
-
-const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
-const isText = (v) => typeof v === 'string' && v.trim() !== ''
 
 // The two helpers below repeat what templates/github/scripts/fake-pass-check.mjs does. That file is a CI template
 // repos copy, and it keeps these two to itself, so the list is rebuilt here rather than imported.
@@ -42,7 +40,7 @@ const changedFiles = (root) => [...gitList(root, ['diff', '--name-only', '--no-r
 const checkSteps = (steps, key, needsWhen) => {
   if (!Array.isArray(steps)) throw new Error(`.claude/engineering.json "${key}" is not a list.`)
   for (const s of steps) {
-    if (!isPlainObject(s) || !isText(s.name) || !isText(s.run)) throw new Error(`.claude/engineering.json "${key}": every step needs a "name" and "run" string.`)
+    if (!isPlainObject(s) || !isNonEmptyString(s.name) || !isNonEmptyString(s.run)) throw new Error(`.claude/engineering.json "${key}": every step needs a "name" and "run" string.`)
     if (hasControlChar(s.name) || s.name.trim() === FAKE_PASS_NAME) throw new Error(`.claude/engineering.json "${key}": a step "name" can't hold control characters or be "${FAKE_PASS_NAME}".`)
     // cmd.exe runs only the first line of a command, so a second line would pass without running.
     if (hasControlChar(s.run)) throw new Error(`.claude/engineering.json "${key}": the "run" of step "${s.name}" can't hold line breaks or other control characters. Use one command per step.`)

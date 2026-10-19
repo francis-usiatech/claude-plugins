@@ -6,14 +6,12 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { isMainModule } from '../templates/github/scripts/main-module.mjs'
+import { isPlainObject, isNonEmptyString } from '../templates/github/scripts/workflow-rules.mjs'
 
-export const TRACKERS = ['github', 'jira']
-export const EVENTS = ['started', 'verified', 'merged', 'released']
+const TRACKERS = ['github', 'jira']
+const EVENTS = ['started', 'verified', 'merged', 'released']
 const PROJECT_KEY = /^[A-Z][A-Z0-9_]+$/
 const ISSUE_KEY = /^[A-Z][A-Z0-9_]+-\d+$/
-
-const isPlainObject = (v) => v != null && typeof v === 'object' && !Array.isArray(v)
-const isNonEmptyString = (v) => typeof v === 'string' && v.trim() !== ''
 
 // Why a site URL can't be used as a Jira base (not a URL, not https, or more than a host), or null.
 // `check` and the client both use it, so a site `check` accepts never fails later as a Jira error.
@@ -53,10 +51,11 @@ const statusProblems = (statuses) => {
 
 const jiraProblems = (j) => {
   if (!isPlainObject(j)) return ['"tickets.jira" must be an object']
+  const siteProblem = isNonEmptyString(j.site) && siteShapeProblem(j.site)
   return [
     ...unknownKeyProblems(j, 'tickets.jira', JIRA_KEYS),
     !isNonEmptyString(j.site) ? '"tickets.jira.site" must be an https URL such as https://example.atlassian.net'
-      : siteShapeProblem(j.site) && `"tickets.jira.site" ${siteShapeProblem(j.site)}; use an https URL such as https://example.atlassian.net`,
+      : siteProblem && `"tickets.jira.site" ${siteProblem}; use an https URL such as https://example.atlassian.net`,
     !(isNonEmptyString(j.project) && PROJECT_KEY.test(j.project)) && '"tickets.jira.project" must be an upper-case project key such as "ESP"',
     !isNonEmptyString(j.issueType) && '"tickets.jira.issueType" must be a non-empty issue type name',
     j.parent != null && !(typeof j.parent === 'string' && ISSUE_KEY.test(j.parent)) && '"tickets.jira.parent" must be an issue key such as "ESP-27"',

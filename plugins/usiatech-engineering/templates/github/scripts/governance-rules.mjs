@@ -3,7 +3,7 @@
 // setup-engineering copies this folder into .github/scripts/, so CI reads the base-branch copy.
 // Repos extend these defaults in .claude/engineering.json → governance.{denyCommands, askCommands, askPaths}.
 
-import { GIT_PREFIX } from './workflow-rules.mjs'
+import { GIT_PREFIX, isPlainObject } from './workflow-rules.mjs'
 
 // ignoreCase: set on case-insensitive file systems (Windows, macOS), where `.ENV` and `.env` are the same file.
 export const globToRegExp = (g, ignoreCase = false) => new RegExp('^' + g
@@ -22,10 +22,7 @@ export const isSecretEnvFile = (basename, allowEnvExample = true, ignoreCase = f
   return /^\.env(\..+)?$/.test(b) && !(b === '.env.example' && allowEnvExample)
 }
 
-export const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-
 // Config shape checks shared by the guard and CI.
-export const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
 export const isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === 'string')
 // A control character in a name could forge a summary line: C0 controls, DEL, NEL and the two Unicode line breaks.
 export const hasControlChar = (text) => [...text].some((c) => c.codePointAt(0) < 32 || [127, 133, 8232, 8233].includes(c.codePointAt(0)))
@@ -74,7 +71,7 @@ export const GUARD_EXEMPT_PATHS = ['.claude/plans/**', '.claude/governance-log.j
 
 // Content rules for workflow (B10) files. Findings are { rule, tier, file, line, detail, package? }; tier is 'high'
 // (the guard asks, CI fails unless labelled) or 'warning' (reported only).
-export { checkWorkflow, isWorkflowPath, TIER, GIT_PREFIX } from './workflow-rules.mjs'
+export { checkWorkflow, isWorkflowPath, TIER, GIT_PREFIX, isPlainObject, escapeRegExp } from './workflow-rules.mjs'
 // Content rules for npm manifests and lockfiles (B9), in the same finding shape; network lookups live in
 // supply-chain-lookups.mjs.
 export { checkDependencies, dependencyKind } from './supply-chain-rules.mjs'
@@ -148,7 +145,7 @@ export const formatFinding = (f) => `[${f.rule}, ${f.tier}${f.suppressed ? `, su
 
 // Secrets in edited content: [reason, regex source]. Provider formats are near-certain and denied (case-sensitive);
 // generic credential assignments are fuzzier and ask (case-insensitive).
-export const DENY_CONTENT = [
+const DENY_CONTENT = [
   // Key material must follow the header, so code and docs that only mention the header are fine.
   ['private key', String.raw`-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----\s*(?:[A-Za-z-]+:[^\n]*\n\s*)*[A-Za-z0-9+/=]{64,}`],
   // No trailing \b: a key run straight into more characters must still be caught.
@@ -160,7 +157,7 @@ export const DENY_CONTENT = [
   ['Google API key', String.raw`\bAIza[0-9A-Za-z_-]{35}`],
   ['Slack token', String.raw`\bxox[abposr]-\d{10,}-[A-Za-z0-9-]{10,}`],
 ]
-export const ASK_CONTENT = [
+const ASK_CONTENT = [
   ['hard-coded credential', String.raw`\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\b["']?\s*[:=]\s*["'][^"'\s$]{12,}["']`],
 ]
 // Documentation examples and templates use these; they are not real secrets.

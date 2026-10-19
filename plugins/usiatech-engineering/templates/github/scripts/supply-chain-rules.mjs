@@ -4,10 +4,12 @@
 // and only the structures the rules need are parsed. Anything the parser can't read is a problem, never an
 // empty list, so an unreadable file can't hide an added dependency.
 
+import { TIER, isPlainObject, escapeRegExp } from './workflow-rules.mjs'
+
 // Matched case-insensitively: a checkout on a case-insensitive file system treats `Package.JSON` as the manifest.
 const KINDS = { 'package.json': 'manifest', 'package-lock.json': 'npm-lock', 'pnpm-lock.yaml': 'pnpm-lock', 'yarn.lock': 'yarn-lock' }
 
-export const MANIFEST_SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']
+const MANIFEST_SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']
 
 /** The dependency file kind for a repo-relative path, or null. Files under node_modules/ are installed copies, not ours. */
 export const dependencyKind = (rel) => {
@@ -24,12 +26,11 @@ const OTHER_BREAKS = /[\u0085\u2028\u2029]/
 const NPM_ALIAS = /^npm:((?:@[^/@]+\/)?[^@]+)@(.+)$/
 // An exact version as lockfiles record registry packages. Anything looser is a problem, not a spelling to guess at.
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
-const isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
 
 const parseJson = (content, problems) => {
   try {
     const doc = JSON.parse(String(content).replace(/^\uFEFF/, ''))
-    if (isObject(doc)) return doc
+    if (isPlainObject(doc)) return doc
     problems.push('The file is not a JSON object.')
   } catch (e) {
     problems.push(`The file is not valid JSON: ${e.message}`)
@@ -46,7 +47,7 @@ const parseManifest = (content) => {
   for (const section of MANIFEST_SECTIONS) {
     const deps = doc[section]
     if (deps == null) continue
-    if (!isObject(deps)) {
+    if (!isPlainObject(deps)) {
       problems.push(`"${section}" is not an object.`)
       continue
     }
@@ -72,15 +73,15 @@ const parseNpmLock = (content) => {
   if (!doc) return { entries, problems }
   // A `packages` or `dependencies` that is there but not an object would otherwise drop every pin unread (fix set 7).
   for (const field of ['packages', 'dependencies']) {
-    if (Object.hasOwn(doc, field) && !isObject(doc[field])) problems.push(`"${field}" is not an object.`)
+    if (Object.hasOwn(doc, field) && !isPlainObject(doc[field])) problems.push(`"${field}" is not an object.`)
   }
   if (problems.length) return { entries, problems }
-  if (isObject(doc.packages)) {
+  if (isPlainObject(doc.packages)) {
     for (const [key, pkg] of Object.entries(doc.packages)) {
       const at = key.lastIndexOf('node_modules/')
       // "" is the root project and "packages/x" a workspace folder; links point at those and have no version.
       if (at < 0) continue
-      if (!isObject(pkg)) {
+      if (!isPlainObject(pkg)) {
         problems.push(`"packages.${key}" is not an object.`)
         continue
       }
@@ -95,10 +96,10 @@ const parseNpmLock = (content) => {
       const name = typeof pkg.name === 'string' ? pkg.name : installName
       entries.push({ name, version: pkg.version, ...source(pkg.resolved, pkg.integrity), ...(name !== installName && { installName }) })
     }
-  } else if (isObject(doc.dependencies)) {
+  } else if (isPlainObject(doc.dependencies)) {
     const walk = (deps, trail) => {
       for (const [name, dep] of Object.entries(deps)) {
-        if (!isObject(dep) || typeof dep.version !== 'string') {
+        if (!isPlainObject(dep) || typeof dep.version !== 'string') {
           problems.push(`"dependencies.${trail}${name}" has no version.`)
           continue
         }
@@ -106,7 +107,7 @@ const parseNpmLock = (content) => {
         const alias = NPM_ALIAS.exec(dep.version)
         const src = source(dep.resolved, dep.integrity)
         entries.push(alias ? { name: alias[1], version: alias[2], ...src, installName: name } : { name, version: dep.version, ...src })
-        if (isObject(dep.dependencies)) walk(dep.dependencies, `${trail}${name}.dependencies.`)
+        if (isPlainObject(dep.dependencies)) walk(dep.dependencies, `${trail}${name}.dependencies.`)
       }
     }
     walk(doc.dependencies, '')
@@ -442,12 +443,10 @@ export const diffDependencies = ({ file, content, base = null }) => {
   return { kind: after.kind, changes: changes.sort(byName), problems }
 }
 
-export const TIER = { HIGH: 'high', WARNING: 'warning' }
-
 // Widely installed npm packages (R2; D3). An added name one edit away from one of these, and not on the list itself,
 // is a likely typosquat. Near neighbours that are real packages (preact/react, semver/server) are listed so they
 // don't flag each other; anything else is handled with a governance.allowlist entry.
-export const POPULAR_PACKAGES = new Set([
+const POPULAR_PACKAGES = new Set([
   'react', 'react-dom', 'preact', 'vue', 'svelte', 'angular', 'next', 'nuxt', 'gatsby', 'astro', 'solid-js', 'lit',
   'express', 'koa', 'fastify', 'hapi', 'restify', 'connect', 'body-parser', 'cookie-parser', 'cors', 'helmet',
   'morgan', 'multer', 'compression', 'serve-static', 'express-session', 'passport', 'jsonwebtoken', 'bcrypt',
@@ -492,7 +491,7 @@ const editDistance = (a, b, max = 1) => {
 }
 
 /** The popular package an added name imitates (R2; D3), or null. Scoped names and names under 5 characters are skipped. */
-export const typosquatOf = (name) => {
+const typosquatOf = (name) => {
   const n = String(name).toLowerCase()
   if (n.startsWith('@') || n.length < 5 || POPULAR_PACKAGES.has(n)) return null
   for (const p of POPULAR_PACKAGES) if (!p.startsWith('@') && editDistance(n, p) === 1) return p
@@ -578,10 +577,9 @@ const aliasFindings = (file, content, afterEntries, baseEntries) => {
   return findings
 }
 
-const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 // The first line naming the package: `"name":` in JSON, `name@…`, `/name@…` or `/name/…` in lockfiles.
 export const lineOfName = (content, name) => {
-  const re = new RegExp(`(^|["'/\\s])${escapeRe(name)}(["'@/]|$)`)
+  const re = new RegExp(`(^|["'/\\s])${escapeRegExp(name)}(["'@/]|$)`)
   return lines(content).findIndex((l) => re.test(l)) + 1 || 1
 }
 

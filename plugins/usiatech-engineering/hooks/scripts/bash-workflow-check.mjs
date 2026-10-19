@@ -9,7 +9,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync, rmSync, statSync 
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { appendGovernanceLog } from './governance-log.mjs'
-import { stateDir, stateFolderProblem, checkedStateDir } from './governance-state.mjs'
+import { stateDir, checkedStateDir } from './governance-state.mjs'
 import { isMainModule } from '../../templates/github/scripts/main-module.mjs'
 
 const WORKFLOW_DIR = '.github/workflows'
@@ -31,15 +31,9 @@ export const gitRunner = {
   }),
 }
 
-/** Where snapshots for a project live: its state folder (governance-state.mjs). */
-export const snapshotDir = stateDir
-
-/** Why a snapshot folder can't be trusted, or null: the state-folder rule (governance-state.mjs). */
-export const snapshotFolderProblem = stateFolderProblem
-
 // The snapshot folder, created private when `create` is set; null when it doesn't exist. Throws when it, or the
 // shared folder above it, can't be trusted.
-const checkedSnapshotDir = (root, { create }) => checkedStateDir(snapshotDir(root), { create, what: 'snapshot' })
+const checkedSnapshotDir = (root, { create }) => checkedStateDir(stateDir(root), { create, what: 'snapshot' })
 
 const snapshotFile = (dir, id) => path.join(dir, `bash-wf-${id}.json`)
 

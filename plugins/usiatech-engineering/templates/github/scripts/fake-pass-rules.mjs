@@ -5,8 +5,7 @@
 // Known limits (D7): aliases (`const o = it.only`), computed access (`it['only']`) and conditional calls
 // (`(c ? it.skip : it)(…)`) aren't detected. Every lookup is linear or logarithmic, so a crafted file can't stall CI.
 
-/** Finding tiers: 'high' blocks unless allowlisted or labelled; 'warning' is reported only. */
-export const TIER = { HIGH: 'high', WARNING: 'warning' }
+import { TIER } from './workflow-rules.mjs'
 
 // Larger files aren't scanned; they fail closed as fp-unreadable.
 const MAX_CHARS = 1_000_000
@@ -31,7 +30,7 @@ const REGEX_PREFIX = new Set('(,=:[!&|?{};+-*%<>~^'.split(''))
  * string runs to the end of the file, since everything after it would otherwise go unchecked.
  * @returns {{ code: string, unterminated: boolean }}
  */
-export const blankCode = (text) => {
+const blankCode = (text) => {
   const out = text.split('')
   const blank = (from, to) => { for (let k = from; k < to; k++) if (out[k] !== '\n' && out[k] !== '\r') out[k] = ' ' }
   let unterminated = false

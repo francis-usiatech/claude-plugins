@@ -4,6 +4,7 @@ import { readFileSync, existsSync, readdirSync, mkdirSync, writeFileSync, utimes
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { GUARD_SCRIPT, BASH_WF_SCRIPT, PLUGIN_ROOT, runNode, tempDir, cleanupTempDirs, writeFiles, git } from './helpers.mjs'
+import { stateDir, stateFolderProblem } from '../hooks/scripts/governance-state.mjs'
 
 after(cleanupTempDirs)
 
@@ -35,8 +36,7 @@ const bashCall = async (root, command, { id = 'toolu_test1', expectFail = false 
 }
 
 const snapshots = async (root) => {
-  const { snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
-  const dir = snapshotDir(root)
+  const dir = stateDir(root)
   return existsSync(dir) ? readdirSync(dir) : []
 }
 
@@ -118,13 +118,13 @@ describe('after-Bash workflow check (R6; AC6)', () => {
   // ESP-50 (spec R6, AC7). The check is called directly, without the guard, so the entries are its own. Outside a git
   // repo with no snapshot every workflow file on disk counts as changed, so the config is read on each run.
   const configEntries = async (cfg, runs) => {
-    const { checkAfterBash, snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
+    const { checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
     const root = tempDir()
     writeFiles(root, { '.claude/engineering.json': JSON.stringify(cfg), '.github/workflows/ci.yml': CLEAN })
     try {
       for (let run = 0; run < runs; run++) await checkAfterBash({ tool_name: 'Bash', tool_input: { command: 'true' } }, root)
     } finally {
-      rmSync(snapshotDir(root), { recursive: true, force: true })
+      rmSync(stateDir(root), { recursive: true, force: true })
     }
     return readLog(root).filter((e) => e.target === '.claude/engineering.json')
   }
@@ -142,7 +142,7 @@ describe('after-Bash workflow check (R6; AC6)', () => {
   })
 
   it('should warn again for a problem that was fixed while an escalating one was present (ESP-35 R5, R6)', async () => {
-    const { checkAfterBash, snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
+    const { checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
     const root = tempDir()
     writeFiles(root, { '.github/workflows/ci.yml': CLEAN })
     try {
@@ -151,14 +151,14 @@ describe('after-Bash workflow check (R6; AC6)', () => {
         await checkAfterBash({ tool_name: 'Bash', tool_input: { command: 'true' } }, root)
       }
     } finally {
-      rmSync(snapshotDir(root), { recursive: true, force: true })
+      rmSync(stateDir(root), { recursive: true, force: true })
     }
     const entries = readLog(root).filter((e) => e.target === '.claude/engineering.json')
     assert.deepEqual(entries.map((e) => e.decision), ['warn', 'error', 'warn'], JSON.stringify(entries))
   })
 
   it('should show an advisory config problem it could not log, and log it on the next run (ESP-35 R5, R6)', async () => {
-    const { checkAfterBash, snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
+    const { checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
     const root = tempDir()
     writeFiles(root, { '.claude/engineering.json': JSON.stringify({ decisions: { batch: 'yes' } }), '.github/workflows/ci.yml': CLEAN })
     const logFile = path.join(root, '.claude', 'governance-log.jsonl')
@@ -169,27 +169,27 @@ describe('after-Bash workflow check (R6; AC6)', () => {
       const out = await run()
       assert.match(out.systemMessage, /could not be logged to \.claude\/governance-log\.jsonl: Config warning: "decisions\.batch"/)
       assert.equal(out.hookSpecificOutput.additionalContext, out.systemMessage)
-      assert.equal(existsSync(path.join(snapshotDir(root), 'config-warned')), false)
+      assert.equal(existsSync(path.join(stateDir(root), 'config-warned')), false)
       rmSync(logFile, { recursive: true })
       assert.equal(await run(), null)
       assert.equal(await run(), null)
       assert.deepEqual(readLog(root).filter((e) => e.target === '.claude/engineering.json').map((e) => e.decision), ['warn'])
     } finally {
-      rmSync(snapshotDir(root), { recursive: true, force: true })
+      rmSync(stateDir(root), { recursive: true, force: true })
     }
   })
 
   it('should log an error on each run while the marker cannot be written (ESP-35 R6, R7)', async () => {
-    const { checkAfterBash, snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
+    const { checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
     const root = tempDir()
     writeFiles(root, { '.claude/engineering.json': JSON.stringify({ decisions: { batch: 'yes' } }), '.github/workflows/ci.yml': CLEAN })
     try {
       // A file where the project's state folder should be makes the marker write fail.
-      mkdirSync(path.dirname(snapshotDir(root)), { recursive: true })
-      writeFileSync(snapshotDir(root), 'x')
+      mkdirSync(path.dirname(stateDir(root)), { recursive: true })
+      writeFileSync(stateDir(root), 'x')
       for (let run = 0; run < 2; run++) await checkAfterBash({ tool_name: 'Bash', tool_input: { command: 'true' } }, root)
     } finally {
-      rmSync(snapshotDir(root), { recursive: true, force: true })
+      rmSync(stateDir(root), { recursive: true, force: true })
     }
     const entries = readLog(root).filter((e) => e.target === '.claude/engineering.json')
     assert.deepEqual(entries.map((e) => e.decision), ['warn', 'error', 'warn', 'error'], JSON.stringify(entries))
@@ -197,32 +197,32 @@ describe('after-Bash workflow check (R6; AC6)', () => {
   })
 
   it('should log a marker it cannot clear as an error, beside an escalating problem too (ESP-35 R5, R7)', async () => {
-    const { checkAfterBash, snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
+    const { checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
     const root = tempDir()
     writeFiles(root, { '.github/workflows/ci.yml': CLEAN })
     try {
       // A folder with a file in it where the marker should be: removing it fails.
-      mkdirSync(path.join(snapshotDir(root), 'config-warned'), { recursive: true })
-      writeFileSync(path.join(snapshotDir(root), 'config-warned', 'x'), 'x')
+      mkdirSync(path.join(stateDir(root), 'config-warned'), { recursive: true })
+      writeFileSync(path.join(stateDir(root), 'config-warned', 'x'), 'x')
       for (const cfg of [{}, { governance: { askPaths: 'x' } }]) {
         writeFiles(root, { '.claude/engineering.json': JSON.stringify(cfg) })
         await checkAfterBash({ tool_name: 'Bash', tool_input: { command: 'true' } }, root)
       }
     } finally {
-      rmSync(snapshotDir(root), { recursive: true, force: true })
+      rmSync(stateDir(root), { recursive: true, force: true })
     }
     const entries = readLog(root).filter((e) => e.target === '.claude/engineering.json')
     assert.deepEqual(entries.map((e) => [e.decision, /could not clear the config-warning marker/.test(e.reason)]), [['error', true], ['error', false], ['error', true]], JSON.stringify(entries))
   })
 
   it('should log an unparseable config as an error on every run (ESP-50; AC7)', async () => {
-    const { checkAfterBash, snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
+    const { checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
     const root = tempDir()
     writeFiles(root, { '.claude/engineering.json': '{ nope', '.github/workflows/ci.yml': CLEAN })
     try {
       for (let run = 0; run < 2; run++) await checkAfterBash({ tool_name: 'Bash', tool_input: { command: 'true' } }, root)
     } finally {
-      rmSync(snapshotDir(root), { recursive: true, force: true })
+      rmSync(stateDir(root), { recursive: true, force: true })
     }
     assert.deepEqual(readLog(root).filter((e) => e.target === '.claude/engineering.json').map((e) => e.decision), ['error', 'error'])
   })
@@ -257,8 +257,7 @@ describe('after-Bash workflow check (R6; AC6)', () => {
 
   it('should remove snapshots older than 24 hours and keep younger ones', async () => {
     const root = tempDir()
-    const { snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
-    const dir = snapshotDir(root)
+    const dir = stateDir(root)
     mkdirSync(dir, { recursive: true })
     for (const [name, ageMs] of [['old', DAY_MS + 60 * 60 * 1000], ['waiting', 11 * 60 * 1000], ['recent', 0]]) {
       writeFileSync(path.join(dir, `bash-wf-${name}.json`), '{}')
@@ -272,10 +271,10 @@ describe('after-Bash workflow check (R6; AC6)', () => {
   it('should use its own snapshot even when it is older than the stale limit (fix set E)', async () => {
     const root = tempDir()
     writeFiles(root, { '.github/workflows/ci.yml': CLEAN })
-    const { snapshotWorkflows, snapshotDir, checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
+    const { snapshotWorkflows, checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
     assert.equal(snapshotWorkflows(root, 'toolu_slow'), true)
     const old = new Date(Date.now() - DAY_MS - 60 * 60 * 1000)
-    utimesSync(path.join(snapshotDir(root), 'bash-wf-toolu_slow.json'), old, old)
+    utimesSync(path.join(stateDir(root), 'bash-wf-toolu_slow.json'), old, old)
     writeFiles(root, { '.github/workflows/evil.yml': INJECTION })
     const out = await checkAfterBash({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'x' }, tool_use_id: 'toolu_slow' }, root)
     assert.match(out?.systemMessage ?? '', /\[wf-untrusted-input, high\] \.github\/workflows\/evil\.yml/)
@@ -285,8 +284,7 @@ describe('after-Bash workflow check (R6; AC6)', () => {
 
   it('should log a stale snapshot it cannot remove and still check the call (fix set E)', async () => {
     const root = tempDir()
-    const { snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
-    const stuck = path.join(snapshotDir(root), 'bash-wf-stuck.json')
+    const stuck = path.join(stateDir(root), 'bash-wf-stuck.json')
     mkdirSync(path.join(stuck, 'x'), { recursive: true }) // a folder, so removing it as a file fails
     const old = new Date(Date.now() - DAY_MS - 60 * 60 * 1000)
     utimesSync(stuck, old, old)
@@ -297,8 +295,8 @@ describe('after-Bash workflow check (R6; AC6)', () => {
 
   it('should still check the call when its own snapshot cannot be read or removed, and log why (fix set F)', async () => {
     const root = tempDir()
-    const { snapshotDir, checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
-    mkdirSync(path.join(snapshotDir(root), 'bash-wf-toolu_stuck.json', 'x'), { recursive: true }) // a folder: reading and removing it fail
+    const { checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
+    mkdirSync(path.join(stateDir(root), 'bash-wf-toolu_stuck.json', 'x'), { recursive: true }) // a folder: reading and removing it fail
     writeFiles(root, { '.github/workflows/evil.yml': INJECTION })
     const out = await checkAfterBash({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'x' }, tool_use_id: 'toolu_stuck' }, root)
     assert.match(out?.systemMessage ?? '', /\[wf-untrusted-input, high\] \.github\/workflows\/evil\.yml/)
@@ -309,8 +307,8 @@ describe('after-Bash workflow check (R6; AC6)', () => {
 
   it('should log a snapshot that cannot be read as unreadable, not as changed (fix set G)', async () => {
     const root = tempDir()
-    const { snapshotDir, checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
-    mkdirSync(path.join(snapshotDir(root), 'bash-wf-toolu_eisdir.json'), { recursive: true }) // a folder: reading it fails
+    const { checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
+    mkdirSync(path.join(stateDir(root), 'bash-wf-toolu_eisdir.json'), { recursive: true }) // a folder: reading it fails
     await checkAfterBash({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'x' }, tool_use_id: 'toolu_eisdir' }, root)
     const reasons = readLog(root).filter((e) => e.decision === 'error').map((e) => e.reason)
     assert.ok(reasons.some((r) => /this call's snapshot could not be read and the project has no git/.test(r)), JSON.stringify(reasons))
@@ -319,9 +317,8 @@ describe('after-Bash workflow check (R6; AC6)', () => {
 
   it('should still check the call when a stale snapshot cannot be inspected (fix set F; POSIX)', async () => {
     const root = tempDir()
-    const { snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
-    mkdirSync(snapshotDir(root), { recursive: true })
-    const loop = path.join(snapshotDir(root), 'bash-wf-loop.json')
+    mkdirSync(stateDir(root), { recursive: true })
+    const loop = path.join(stateDir(root), 'bash-wf-loop.json')
     assert.ok(!existsSync(loop))
     if (process.platform === 'win32') return // creating a symlink needs extra rights on Windows; CI covers this on Linux
     symlinkSync(loop, loop) // stat fails with ELOOP
@@ -367,10 +364,9 @@ describe('after-Bash workflow check (R6; AC6)', () => {
 
   it('should still check the call when another snapshot vanishes during cleanup', async () => {
     const root = tempDir()
-    const { snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
-    mkdirSync(snapshotDir(root), { recursive: true })
+    mkdirSync(stateDir(root), { recursive: true })
     // A dangling link is listed by readdir but stat fails with ENOENT, like a file a parallel hook just removed.
-    symlinkSync(path.join(root, 'gone'), path.join(snapshotDir(root), 'bash-wf-gone.json'), 'junction')
+    symlinkSync(path.join(root, 'gone'), path.join(stateDir(root), 'bash-wf-gone.json'), 'junction')
     const r = await bashCall(root, `mkdir -p .github/workflows && cp "${FIXTURE}" .github/workflows/evil.yml`)
     assertShown(r, '.github/workflows/evil.yml')
     assert.deepEqual(readLog(root).map((e) => [e.decision, e.rule]), [['finding', 'wf-untrusted-input']])
@@ -471,9 +467,9 @@ describe('after-Bash workflow check (R6; AC6)', () => {
     ]) {
       it(`should ignore a snapshot ${what}, log it, and check against HEAD instead`, async () => {
         const root = repo()
-        const { snapshotWorkflows, snapshotDir, checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
+        const { snapshotWorkflows, checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
         assert.equal(snapshotWorkflows(root, 'toolu_tamper'), true)
-        const f = path.join(snapshotDir(root), 'bash-wf-toolu_tamper.json')
+        const f = path.join(stateDir(root), 'bash-wf-toolu_tamper.json')
         const s = JSON.parse(readFileSync(f, 'utf8'))
         const out = path.join(root, 'pwned.txt')
         writeFileSync(f, tamper(s, out))
@@ -487,10 +483,9 @@ describe('after-Bash workflow check (R6; AC6)', () => {
 
     it('should not snapshot into, or read from, a snapshot folder that is a link, and should log why', async () => {
       const root = repo()
-      const { snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
       const elsewhere = tempDir()
-      mkdirSync(path.dirname(snapshotDir(root)), { recursive: true })
-      symlinkSync(elsewhere, snapshotDir(root), 'junction')
+      mkdirSync(path.dirname(stateDir(root)), { recursive: true })
+      symlinkSync(elsewhere, stateDir(root), 'junction')
       const r = await bashCall(root, `cp "${FIXTURE}" .github/workflows/ci.yml`)
       assert.deepEqual(readdirSync(elsewhere), [], 'nothing written through the link')
       assertShown(r, '.github/workflows/ci.yml')
@@ -640,7 +635,7 @@ describe('after-Bash workflow check (R6; AC6)', () => {
     })
   })
 
-  describe('snapshotFolderProblem (fix set D)', () => {
+  describe('stateFolderProblem (fix set D)', () => {
     const stat = ({ dir = true, link = false, uid = 1000, mode = 0o700 } = {}) => ({ isDirectory: () => dir, isSymbolicLink: () => link, uid, mode })
     const cases = [
       ['a private folder of the user', stat(), 1000, null],
@@ -653,8 +648,7 @@ describe('after-Bash workflow check (R6; AC6)', () => {
     ]
     for (const [what, st, uid, expected] of cases) {
       it(`should ${expected ? 'refuse' : 'accept'} ${what}`, async () => {
-        const { snapshotFolderProblem } = await import('../hooks/scripts/bash-workflow-check.mjs')
-        const problem = snapshotFolderProblem(st, uid)
+        const problem = stateFolderProblem(st, uid)
         if (expected) assert.match(problem, expected)
         else assert.equal(problem, null)
       })
@@ -662,13 +656,13 @@ describe('after-Bash workflow check (R6; AC6)', () => {
 
     it('should write snapshot files that only the user can read (POSIX)', async () => {
       const root = tempDir()
-      const { snapshotWorkflows, snapshotDir } = await import('../hooks/scripts/bash-workflow-check.mjs')
+      const { snapshotWorkflows } = await import('../hooks/scripts/bash-workflow-check.mjs')
       assert.equal(snapshotWorkflows(root, 'toolu_mode'), true)
-      const st = statSync(path.join(snapshotDir(root), 'bash-wf-toolu_mode.json'))
+      const st = statSync(path.join(stateDir(root), 'bash-wf-toolu_mode.json'))
       assert.ok(st.isFile())
       if (process.platform !== 'win32') {
         assert.equal(st.mode & 0o077, 0, `file mode ${(st.mode & 0o777).toString(8)}`)
-        assert.equal(statSync(snapshotDir(root)).mode & 0o077, 0, 'folder mode')
+        assert.equal(statSync(stateDir(root)).mode & 0o077, 0, 'folder mode')
       }
     })
   })
