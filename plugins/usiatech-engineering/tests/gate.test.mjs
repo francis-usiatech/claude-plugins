@@ -68,6 +68,15 @@ describe('gate runner: steps and verdict (ESP-44)', () => {
     assert.equal(lines(r).at(-1), 'Gate: FAIL')
   })
 
+  it('should read at most the last 64 KB of a failing step\'s output (ESP-78 F16)', async () => {
+    const huge = { name: 'huge', run: 'node -e "console.log(\'A\'+\'x\'.repeat(99998)+\'Z\');process.exit(3)"' }
+    const r = await runGate(repoWith({ verify: [huge] }))
+    assert.equal(r.code, 1, r.stderr)
+    const tail = lines(r).find((l) => l.endsWith('xZ'))
+    assert.ok(tail, 'the end of the output is shown')
+    assert.ok(tail.length <= 65536, `the tail line is ${tail.length} characters`)
+  })
+
   it('should run the same way when the plugin is reached through a link', async () => {
     const link = path.join(tempDir('usiatech-link-'), 'plugin')
     symlinkSync(PLUGIN_ROOT, link, 'junction')

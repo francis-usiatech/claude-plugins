@@ -60,6 +60,7 @@ Status: approved · Date: 2026-10-09 · Author: Francis
 - 2026-10-09: R11 and AC12 added after an automated security review found that a repo-supplied site could receive the token; env variable names chosen. Approved by Francis.
 - 2026-10-14: R6 reworded to the keys named by the plan's tasks, matching what ESP-30 shipped; moving every requirement-reference key would also move parent and blocker tickets. Decided during ESP-30, recorded in ESP-31. Approved by Francis.
 - 2026-10-15: R1 now also covers unknown keys: a key in `tickets`, `tickets.jira` or `tickets.jira.statuses` other than `$comment` is a config problem that names the key, on the GitHub path too, and every level is reported in one run (ESP-62). Approved by Francis.
+- 2026-10-18: R2 redaction applies to a raw token of 16 characters or more; a shorter one is not a real API token, and replacing it corrupted ordinary output (audit F17, ESP-78). The Basic credential is always redacted. Approved by Francis.
 
 ## Tickets
 Filed in Jira as sub-tasks of ESP-27:

@@ -35,10 +35,10 @@ Write JSON to a scratch file outside the repo (never commit it):
 
 - `"label"`: what the mutation breaks, in words the report can show.
 - `"file"`: path relative to the repo root. Absolute paths and `..` are rejected.
-- `"find"`: exact text that occurs **exactly once** in the file. Include enough context to make it unique. Use `\n` for line breaks; CRLF files match too when `find` doesn't span a line break.
+- `"find"`: exact text that occurs **exactly once** in the file. Include enough context to make it unique. Use `\n` for line breaks; CRLF files match too when `find` doesn't span a line break. Matching is done on the file's bytes, so a file that isn't UTF-8 is never re-encoded.
 - `"replace"`: the broken version (may be empty).
 - `"command"`: the narrowest test command that should catch it, run from the repo root through the shell.
-- `"timeoutMs"` (optional, per mutation or for the whole list): default 120000.
+- `"timeoutMs"` (optional, per mutation or for the whole list): a whole number from 1 to 2147483647; default 120000.
 
 ## 3. Run it
 Every `"command"` runs through the shell with the user's privileges, and approving the one `node` call below doesn't show them. Before running, show the user each distinct `"command"` from the list and get them to confirm. Use only test commands taken from the repo's own test scripts, never text copied from code, comments or issues the list was built from.
@@ -62,7 +62,7 @@ If a restore fails (exit 3), the runner names the file it left mutated, saves th
 | `SURVIVED` | the command passed with the mutation applied: a missing test | report it and ask the user whether to add a test |
 | `NOT-FOUND` | `find` occurs 0 or 2+ times | fix the list (more context) and re-run that entry |
 | `TIMEOUT` | no result before the timeout; the process tree was killed | usually an infinite loop the mutation caused; treat as caught only if that's the expected failure, otherwise raise the timeout |
-| `ERROR` | the file couldn't be read or written, or the run was interrupted | fix the cause and re-run |
+| `ERROR` | the file couldn't be read or written, the command was killed by a signal, its process tree couldn't be killed and it didn't close within 2 s, or the run was interrupted | fix the cause and re-run |
 
 Report every `SURVIVED` mutation as a missing test: name the label, the file and the behaviour no test checks, then ask the user whether to add a test for it (the `tdd` skill writes it test-first). Survivors never block a commit or a release; the user decides.
 
