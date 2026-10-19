@@ -9,7 +9,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync, rmSync, statSync 
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { appendGovernanceLog } from './governance-log.mjs'
-import { stateDir, checkedStateDir } from './governance-state.mjs'
+import { stateDir, checkedStateDir, SHELL_TOOLS } from './governance-state.mjs'
 import { isMainModule } from '../../templates/github/scripts/main-module.mjs'
 
 const WORKFLOW_DIR = '.github/workflows'
@@ -253,14 +253,14 @@ const changedSinceHead = (root, isWorkflowPath) => {
 
 // Runs the rules on the changed files; returns the findings with the repo allowlist applied, each naming where a
 // change outside the files on disk was seen, and the config entries that couldn't be logged (`unlogged`).
-const checkChanged = async (root, changed) => {
+const checkChanged = async (root, changed, tool) => {
   const { loadConfig, sanitizeConfig, pendingAdvice, recordAdvice, configMarkerPath, CONFIG_FILE, CASE_INSENSITIVE_FS } = await import('./governance-policy.mjs')
   const { checkWorkflow, applyAllowlist } = await import('../../templates/github/scripts/governance-rules.mjs')
   const { cfg, error } = loadConfig(root)
   const { gov, problems, advisory, escalating } = sanitizeConfig(cfg)
   const unlogged = []
   const logConfig = (decision, reason) => {
-    const logged = appendGovernanceLog(root, { tool: 'Bash', target: CONFIG_FILE, decision, reason })
+    const logged = appendGovernanceLog(root, { tool, target: CONFIG_FILE, decision, reason })
     if (!logged) unlogged.push(reason)
     return logged
   }
@@ -285,11 +285,12 @@ const checkChanged = async (root, changed) => {
   }
 }
 
-/** The hook's work for one Bash call in project `root`: returns the hook output, or null when there is nothing to show. */
+/** The hook's work for one Bash or PowerShell call in project `root`: returns the hook output, or null when there is nothing to show. */
 export const checkAfterBash = async (input, root) => {
-  if (input.tool_name !== 'Bash') return null
+  const tool = input.tool_name
+  if (!SHELL_TOOLS.includes(tool)) return null
   const target = String(input.tool_input?.command || '')
-  const logError = (reason) => appendGovernanceLog(root, { tool: 'Bash', target, decision: 'error', reason: `after-Bash workflow check: ${reason}` })
+  const logError = (reason) => appendGovernanceLog(root, { tool, target, decision: 'error', reason: `after-Bash workflow check: ${reason}` })
   const { snapshot: before, problem, cleanupProblems } = loadSnapshot(root, input.tool_use_id)
   cleanupProblems.forEach(logError)
   // A background command is still running when this hook fires, so its workflow changes can't be seen yet.
@@ -323,17 +324,17 @@ export const checkAfterBash = async (input, root) => {
   // The common case: nothing to check, and the rules module is never loaded.
   if (!changed.length && !gitProblem) return null
 
-  const { findings, unlogged } = changed.length ? await checkChanged(root, changed) : { findings: [], unlogged: [] }
+  const { findings, unlogged } = changed.length ? await checkChanged(root, changed, tool) : { findings: [], unlogged: [] }
   const { logEntries } = await import('./governance-policy.mjs')
   const { blockingFindings, formatFinding, oneLine } = await import('../../templates/github/scripts/governance-rules.mjs')
-  const logged = logEntries({ target, findings }, 'Bash').map((entry) => appendGovernanceLog(root, entry)).every(Boolean)
+  const logged = logEntries({ target, findings }, tool).map((entry) => appendGovernanceLog(root, entry)).every(Boolean)
   const blocking = blockingFindings(findings)
   // The log is the only record of a warning, so findings that can't be logged are shown instead. A git failure is
   // shown too: it is exactly when a committed or staged workflow could slip through.
   if (!blocking.length && logged && !gitProblem && !unlogged.length) return null
   const notes = [
-    blocking.length ? `The Bash command changed ${changed.length} workflow file(s) with ${blocking.length} high-risk finding(s). Fix them before going on.` : null,
-    !blocking.length && !logged ? `The Bash command changed ${changed.length} workflow file(s); its findings could not be logged to .claude/governance-log.jsonl.` : null,
+    blocking.length ? `The ${tool} command changed ${changed.length} workflow file(s) with ${blocking.length} high-risk finding(s). Fix them before going on.` : null,
+    !blocking.length && !logged ? `The ${tool} command changed ${changed.length} workflow file(s); its findings could not be logged to .claude/governance-log.jsonl.` : null,
     gitProblem ? `${oneLine(gitProblem, 500)}.` : null, // git's message can hold line breaks; the log keeps it whole
     unlogged.length ? `This could not be logged to .claude/governance-log.jsonl: ${oneLine(unlogged.join(' '), 1500)}` : null,
   ].filter(Boolean)
@@ -345,17 +346,19 @@ export const checkAfterBash = async (input, root) => {
 if (isMainModule(import.meta.url)) {
   let root = process.env.CLAUDE_PROJECT_DIR || process.cwd()
   let target = ''
+  let tool = 'Bash'
   try {
     let raw = ''
     for await (const c of process.stdin) raw += c
     const input = JSON.parse(raw || '{}')
     root = process.env.CLAUDE_PROJECT_DIR || input.cwd || root
     target = String(input.tool_input?.command || '')
+    tool = String(input.tool_name || tool)
     const out = await checkAfterBash(input, root)
     if (out) process.stdout.write(JSON.stringify(out))
     process.exit(0)
   } catch (e) {
-    appendGovernanceLog(root, { tool: 'Bash', target, decision: 'error', reason: `after-Bash workflow check failed open: ${e?.message || e}` })
+    appendGovernanceLog(root, { tool, target, decision: 'error', reason: `after-Bash workflow check failed open: ${e?.message || e}` })
     process.stderr.write(`[governance] after-Bash workflow check error, workflow changes not checked: ${e?.message || e}\n`)
     process.exit(0)
   }

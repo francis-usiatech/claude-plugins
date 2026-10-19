@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// usiatech-engineering: governance guard (PreToolUse on Bash, Edit, MultiEdit, Write, NotebookEdit).
+// usiatech-engineering: governance guard (PreToolUse on Bash, PowerShell, Edit, MultiEdit, Write, NotebookEdit).
 // Reads the hook payload, asks governance-policy.mjs for a decision and reports it to Claude Code.
 // Every deny/ask, every workflow or dependency content finding (decision "finding"), every dependency lookup
 // that failed open (decision "error"), an advisory config problem the first time it is seen (decision "warn")
@@ -7,8 +7,9 @@
 // write path or an evidence-only plan edit; decision "trusted") is appended to .claude/governance-log.jsonl.
 // Internal errors fail open (exit 0) so a bug never wedges a session, but they are logged as
 // decision "error" so the governance-reviewer can see that the guard was not enforcing.
-// Before a Bash call it doesn't deny, it snapshots the workflow files for the after-Bash check (R6).
+// Before a Bash or PowerShell call it doesn't deny, it snapshots the workflow files for the after-Bash check (R6).
 import { appendGovernanceLog as logDecision } from './governance-log.mjs'
+import { SHELL_TOOLS } from './governance-state.mjs'
 
 let root = process.env.CLAUDE_PROJECT_DIR || process.cwd()
 let tool = ''
@@ -39,7 +40,7 @@ try {
   if (!logged && !result?.decision && result?.trusted) {
     result = { ...result, decision: 'ask', reason: `${result.reason} It could not be logged to .claude/governance-log.jsonl, so it needs confirmation.` }
   }
-  if (tool === 'Bash' && result?.decision !== 'deny') {
+  if (SHELL_TOOLS.includes(tool) && result?.decision !== 'deny') {
     // A failed snapshot must not stop the command; the after-Bash check then falls back to the files changed since HEAD.
     // Imported here so a broken after-Bash module costs only the snapshot, not the guard.
     try {
