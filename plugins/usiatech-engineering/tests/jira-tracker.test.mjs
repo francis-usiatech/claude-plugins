@@ -407,7 +407,8 @@ describe('createJiraClient trusted site (R11; AC12)', () => {
 })
 
 const SCRIPT = fileURLToPath(new URL('../scripts/jira-tracker.mjs', import.meta.url))
-const CLI_TOKEN = 'tok-SECRET-123'
+// 16 characters or more: shorter tokens are not redacted (ESP-78 F17).
+const CLI_TOKEN = 'tok-SECRET-123456'
 const CLI_ENV = { JIRA_EMAIL: 'me@example.test', JIRA_API_TOKEN: CLI_TOKEN }
 const CLI_BASIC = Buffer.from(`${CLI_ENV.JIRA_EMAIL}:${CLI_TOKEN}`).toString('base64')
 
@@ -754,5 +755,38 @@ describe('runCli token handling (R2; AC2)', () => {
     } finally {
       unlinkSync(link)
     }
+  })
+})
+
+describe('runCli audit fixes (ESP-78)', () => {
+  it('should refuse in check a site with a path, port, user name, query or fragment (F13)', async (t) => {
+    for (const site of ['https://x.atlassian.net/jira', 'https://x.atlassian.net:8443', 'https://me@x.atlassian.net', 'https://x.atlassian.net?a=1', 'https://x.atlassian.net#top']) {
+      const result = await runCli(['check'], { env: {}, fetch: stubFetch().fetch, cwd: cliRepo(t, jira({ site })) })
+      assert.equal(result.code, 2, `${site}: ${result.stdout}${result.stderr}`)
+      assert.match(result.stderr, /"tickets\.jira\.site".*user name, password, port, path, query or fragment/, site)
+    }
+    for (const site of ['https://x.atlassian.net', 'https://x.atlassian.net/']) {
+      const result = await runCli(['check'], { env: {}, fetch: stubFetch().fetch, cwd: cliRepo(t, jira({ site })) })
+      assert.equal(result.code, 0, `${site}: ${result.stderr}`)
+    }
+  })
+
+  it('should refuse a UTF-16 messages or body file as a usage error, before any request (F14)', async (t) => {
+    const dir = cliRepo(t)
+    const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('feat: x (ESP-12)\n', 'utf16le')])
+    writeFileSync(path.join(dir, 'utf16.txt'), utf16)
+    const { fetch, calls } = stubFetch()
+    for (const args of [['keys', '--messages-file', 'utf16.txt'], ['comment', '--issue', 'ESP-1', '--body-file', 'utf16.txt']]) {
+      const result = await runCli(args, { env: CLI_ENV, fetch, cwd: dir })
+      assert.equal(result.code, 2, `${args[0]}: ${result.stdout}${result.stderr}`)
+      assert.match(result.stderr, /not UTF-8; regenerate from a POSIX shell/, args[0])
+    }
+    assert.equal(calls.length, 0)
+  })
+
+  it('should leave the output unchanged when the token is shorter than 16 characters (F17)', async (t) => {
+    const result = await runCli(['check'], { env: { JIRA_EMAIL: 'me@example.test', JIRA_API_TOKEN: 't' }, fetch: stubFetch().fetch, cwd: cliRepo(t) })
+    assert.equal(result.code, 0, result.stderr)
+    assert.equal(printed(result).tracker, 'jira')
   })
 })
