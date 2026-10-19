@@ -31,7 +31,7 @@ const windowsCanonical = (rel) => rel.split('/').map((seg) => seg.replace(/:.*$/
 // ESP-9: writes outside the project that need no prompt (still logged, as decision "trusted"). $TMP is the OS temp
 // folder, ~ the home folder, {project} the project folder as Claude Code names it (each character other than
 // A-Z, a-z, 0-9 becomes "-"). Memory and the scratchpad are trusted for this project only.
-export const DEFAULT_TRUSTED_WRITE_PATHS = ['$TMP/claude/{project}/**', '~/.claude/projects/{project}/memory/**', '~/.claude/session-data/**']
+const DEFAULT_TRUSTED_WRITE_PATHS = ['$TMP/claude/{project}/**', '~/.claude/projects/{project}/memory/**', '~/.claude/session-data/**']
 // A repo list may only name folders under these roots, with at least minLiteral plain folder names after the root,
 // so it can't trust Claude Code's own config (~/.claude/**), keys (~/.ssh) or the whole temp folder.
 const TRUSTED_ROOTS = [{ prefix: '$TMP/', place: 'tmpDir', minLiteral: 1 }, { prefix: '~/.claude/projects/', place: 'homeDir', minLiteral: 1 }, { prefix: '~/.claude/session-data/', place: 'homeDir', minLiteral: 0 }]

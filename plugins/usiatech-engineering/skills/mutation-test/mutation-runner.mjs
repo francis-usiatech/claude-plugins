@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { isMainModule } from '../../templates/github/scripts/main-module.mjs'
 
-export const DEFAULT_TIMEOUT_MS = 120000
+const DEFAULT_TIMEOUT_MS = 120000
 // Node runs a timer with a longer delay after 1 ms, which would stop the command at once.
 export const MAX_TIMEOUT_MS = 2147483647
 const STDERR_TAIL = 2000
@@ -20,7 +20,7 @@ const KILL_GRACE_MS = 2000
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP']
 
 export class ListError extends Error {}
-export class RestoreError extends Error {}
+class RestoreError extends Error {}
 
 const isText = (v) => typeof v === 'string' && v.length > 0
 const isTimeout = (v) => v === undefined || (Number.isInteger(v) && v > 0 && v <= MAX_TIMEOUT_MS)
@@ -246,7 +246,7 @@ export const handleInterrupts = (controller, notify = (msg) => console.error(msg
 
 const STATUSES = ['CAUGHT', 'SURVIVED', 'NOT-FOUND', 'TIMEOUT', 'ERROR']
 
-export const formatReport = ({ results, interrupted }) => {
+const formatReport = ({ results, interrupted }) => {
   const lines = results.map((r) => `${r.status.padEnd(9)} ${r.label} (${r.file}): ${r.detail}`)
   const counts = STATUSES.map((s) => `${results.filter((r) => r.status === s).length} ${s}`).join(', ')
   lines.push(`${interrupted ? 'Interrupted after' : 'Ran'} ${results.length} mutation(s): ${counts}`)

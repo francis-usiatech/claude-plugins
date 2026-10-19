@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { checkFakePasses, isTestFile, isJsTsFile, TIER } from '../templates/github/scripts/fake-pass-rules.mjs'
+import { checkFakePasses, isTestFile, isJsTsFile } from '../templates/github/scripts/fake-pass-rules.mjs'
+import { TIER } from '../templates/github/scripts/workflow-rules.mjs'
 
 // Fixtures are .txt so `node --test` never runs their focused or skipped tests; each is checked under a test-file path.
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-pass')

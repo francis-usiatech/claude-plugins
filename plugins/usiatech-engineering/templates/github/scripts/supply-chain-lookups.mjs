@@ -2,7 +2,8 @@
 // The lookups are injected, so tests pass stubs and never touch the network. A failed or timed-out lookup is
 // reported in `failures`; the guard logs it and fails open, CI fails closed (R13, R14).
 import path from 'node:path'
-import { diffDependencies, isNonRegistrySpec, lineOfName, TIER } from './supply-chain-rules.mjs'
+import { diffDependencies, isNonRegistrySpec, lineOfName } from './supply-chain-rules.mjs'
+import { TIER, isPlainObject } from './workflow-rules.mjs'
 
 export const LOOKUP = { ADVISORIES: 'advisories', REGISTRY: 'registry' }
 // The guard's lookups share one deadline inside the 10 s hook timeout; CI gives each request its own timeout (D5)
@@ -193,14 +194,13 @@ export const createLookups = ({ fetch = globalThis.fetch, timeoutMs = null } = {
       signal?.removeEventListener('abort', abort)
     }
   }
-  const isObject = (v) => v != null && typeof v === 'object' && !Array.isArray(v)
 
   return {
     /** Bulk advisories for { name: [versions] }; resolves to { name: [advisory] }. */
     advisories: async (entries, { signal } = {}) => {
       const { status, body } = await request(ADVISORY_URL, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(entries) }, signal)
       if (status < 200 || status >= 300) throw new Error(`HTTP ${status} from the npm advisory endpoint`)
-      if (!isObject(body)) throw new Error('unexpected response from the npm advisory endpoint')
+      if (!isPlainObject(body)) throw new Error('unexpected response from the npm advisory endpoint')
       return body
     },
     /** Registry data for one version (null: dist-tags.latest); { found: false } on a 404. */
@@ -210,13 +210,13 @@ export const createLookups = ({ fetch = globalThis.fetch, timeoutMs = null } = {
       if (status === 404) return { found: false }
       if (status < 200 || status >= 300) throw new Error(`HTTP ${status} from the npm registry for "${name}"`)
       const latest = body?.['dist-tags']?.latest
-      if (!isObject(body?.versions) || !latest) throw new Error(`unexpected registry response for "${name}"`)
+      if (!isPlainObject(body?.versions) || !latest) throw new Error(`unexpected registry response for "${name}"`)
       // A base version the registry never published (`^1.2` → 1.2.0) is checked at latest instead.
       // Own properties only: a version such as `__proto__` must not read from the prototype.
-      const own = (obj, key) => (isObject(obj) && Object.hasOwn(obj, key) ? obj[key] : undefined)
-      const used = version != null && isObject(own(body.versions, version)) ? version : latest
+      const own = (obj, key) => (isPlainObject(obj) && Object.hasOwn(obj, key) ? obj[key] : undefined)
+      const used = version != null && isPlainObject(own(body.versions, version)) ? version : latest
       const meta = own(body.versions, used) ?? {}
-      return { found: true, version: used, deprecated: meta.deprecated ? String(meta.deprecated) : null, latestTime: own(body.time, latest) ?? null, scripts: isObject(meta.scripts) ? meta.scripts : {} }
+      return { found: true, version: used, deprecated: meta.deprecated ? String(meta.deprecated) : null, latestTime: own(body.time, latest) ?? null, scripts: isPlainObject(meta.scripts) ? meta.scripts : {} }
     },
   }
 }

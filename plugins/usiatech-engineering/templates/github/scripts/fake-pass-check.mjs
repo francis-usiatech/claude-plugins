@@ -59,7 +59,7 @@ const readChangedFile = (full) => {
  * same files. Throws when git or the repo config can't be read.
  * @returns {{ exitCode: number, findings: object[], lines: string[] }}
  */
-export const runFakePassCheck = ({ cwd = process.cwd() } = {}) => {
+const runFakePassCheck = ({ cwd = process.cwd() } = {}) => {
   const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   const allow = loadAllowlist(root)
   const findings = applyAllowlist([...changedFiles(root)].flatMap(([file, status]) => status === 'deleted'

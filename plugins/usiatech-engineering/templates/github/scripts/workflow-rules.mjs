@@ -4,6 +4,12 @@
 
 export const TIER = { HIGH: 'high', WARNING: 'warning' }
 
+// Shared helpers. They live here because this module imports nothing, so the other rules modules can import them
+// without a cycle through governance-rules.mjs (which re-exports isPlainObject and escapeRegExp).
+export const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
+export const isNonEmptyString = (v) => typeof v === 'string' && v.trim() !== ''
+export const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
 // AI or agent actions whose inputs become a model prompt (R8). Matched on owner/repo, case-insensitively.
 export const AI_ACTIONS = [
   'anthropics/claude-code-action',
@@ -359,11 +365,10 @@ export const parseYamlSubset = (text) => parseWorkflowYaml(text).doc
 // ---------------------------------------------------------------------------------------------------------------
 // Rules
 // ---------------------------------------------------------------------------------------------------------------
-const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
 const strings = (v, out = []) => {
   if (typeof v === 'string') out.push(v)
   else if (Array.isArray(v)) v.forEach((x) => strings(x, out))
-  else if (isObj(v)) Object.values(v).forEach((x) => strings(x, out))
+  else if (isPlainObject(v)) Object.values(v).forEach((x) => strings(x, out))
   return out
 }
 // Expressions are case-insensitive and accept obj['key'] and spaces around dots; rewrite them to one lowercase
@@ -441,7 +446,7 @@ const untrustedIn = (s, env = new Map()) => exprSpans(s)
 // The env names untrusted after one level's env: block. A name it sets replaces the outer one (step over job over
 // workflow), and a value that reads an untrusted outer name is untrusted too. Names are read case-insensitively.
 const untrustedEnv = (block, outer) => {
-  if (!isObj(block)) return outer
+  if (!isPlainObject(block)) return outer
   const env = new Map(outer)
   for (const [name, value] of Object.entries(block)) {
     const from = typeof value === 'string' ? untrustedIn(value, outer)[0] : undefined
@@ -455,14 +460,14 @@ const triggersOf = (doc) => {
   const on = doc.on
   if (typeof on === 'string') return [on]
   if (Array.isArray(on)) return on.filter((t) => typeof t === 'string')
-  return isObj(on) ? Object.keys(on) : []
+  return isPlainObject(on) ? Object.keys(on) : []
 }
 
 const actionName = (uses) => String(uses).split('@')[0].toLowerCase()
 const isAiAction = (uses) => AI_ACTIONS.some((a) => actionName(uses) === a || actionName(uses).startsWith(a + '/'))
 
-const stepsOf = (job) => (Array.isArray(job?.steps) ? job.steps.filter(isObj) : [])
-const jobsOf = (doc) => (isObj(doc.jobs) ? Object.entries(doc.jobs).filter(([, j]) => isObj(j)) : [])
+const stepsOf = (job) => (Array.isArray(job?.steps) ? job.steps.filter(isPlainObject) : [])
+const jobsOf = (doc) => (isPlainObject(doc.jobs) ? Object.entries(doc.jobs).filter(([, j]) => isPlainObject(j)) : [])
 
 // Places where the rules expect a mapping or a list but the file has something else; jobsOf/stepsOf would skip them.
 const shapeProblems = (doc) => {
@@ -474,20 +479,20 @@ const shapeProblems = (doc) => {
     })
   }
   if (doc.jobs === undefined) return out
-  if (!isObj(doc.jobs)) return [...out, { line: lineOf(doc, 'jobs'), reason: '"jobs" is not a mapping' }]
+  if (!isPlainObject(doc.jobs)) return [...out, { line: lineOf(doc, 'jobs'), reason: '"jobs" is not a mapping' }]
   for (const [id, job] of Object.entries(doc.jobs)) {
-    if (!isObj(job)) { out.push({ line: lineOf(doc.jobs, id), reason: `job "${id}" is not a mapping` }); continue }
+    if (!isPlainObject(job)) { out.push({ line: lineOf(doc.jobs, id), reason: `job "${id}" is not a mapping` }); continue }
     if (job.steps === undefined) continue
     if (!Array.isArray(job.steps)) { out.push({ line: lineOf(job, 'steps'), reason: `the steps of job "${id}" are not a list` }); continue }
     job.steps.forEach((step, n) => {
-      if (!isObj(step)) out.push({ line: lineOf(job.steps, n), reason: `step ${n + 1} of job "${id}" is not a mapping` })
+      if (!isPlainObject(step)) out.push({ line: lineOf(job.steps, n), reason: `step ${n + 1} of job "${id}" is not a mapping` })
     })
   }
   return out
 }
 
 const checksOutPrCode = (step) => {
-  if (typeof step.uses === 'string' && actionName(step.uses) === 'actions/checkout' && isObj(step.with)) {
+  if (typeof step.uses === 'string' && actionName(step.uses) === 'actions/checkout' && isPlainObject(step.with)) {
     return ['ref', 'repository'].some((k) => typeof step.with[k] === 'string' && PR_REF_EXPR.test(normalizeExprs(step.with[k])))
   }
   return typeof step.run === 'string' && runChecksOutPr(normalizeExprs(step.run))
@@ -540,7 +545,7 @@ const untrustedInputRules = (doc, file, findings) => {
           })
         }
       }
-      if (typeof step.uses !== 'string' || !isObj(step.with)) continue
+      if (typeof step.uses !== 'string' || !isPlainObject(step.with)) continue
       const isScript = actionName(step.uses) === 'actions/github-script'
       const inputs = isScript ? [step.with.script].filter((s) => typeof s === 'string') : isAiAction(step.uses) ? strings(step.with) : []
       for (const expr of inputs.flatMap((s) => untrustedIn(s, env))) {
@@ -577,7 +582,7 @@ const permsOf = (v) => {
   if (v === undefined || v === null) return null
   if (v === 'write-all') return { '*': 'write' }
   if (v === 'read-all') return { '*': 'read' }
-  if (isObj(v)) return Object.fromEntries(Object.entries(v).filter(([, l]) => Object.hasOwn(RANK, l)))
+  if (isPlainObject(v)) return Object.fromEntries(Object.entries(v).filter(([, l]) => Object.hasOwn(RANK, l)))
   return v === '' || v === '{}' ? {} : null
 }
 const levelOf = (perms, scope) => (Object.hasOwn(perms, scope) ? perms[scope] : perms['*']) ?? 'none'
@@ -591,7 +596,7 @@ const UNREADABLE_BASE_DROPPED_NOTE = ' The old version could not be fully parsed
 const permissionRules = (doc, base, baseUnreadable, file, findings) => {
   const levels = [{ where: 'workflow', node: doc, baseNode: base, fallbackLine: 1 }]
   for (const [id, job] of jobsOf(doc)) {
-    levels.push({ where: `job "${id}"`, node: job, baseNode: isObj(base?.jobs?.[id]) ? base.jobs[id] : null, fallbackLine: lineOf(doc.jobs, id) })
+    levels.push({ where: `job "${id}"`, node: job, baseNode: isPlainObject(base?.jobs?.[id]) ? base.jobs[id] : null, fallbackLine: lineOf(doc.jobs, id) })
   }
   for (const { where, node, baseNode, fallbackLine } of levels) {
     const line = lineOf(node, 'permissions') || fallbackLine

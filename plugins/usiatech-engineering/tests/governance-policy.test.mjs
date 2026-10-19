@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync, mkdirSync, symlinkSync, linkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { evaluate, loadConfig, sanitizeConfig, planFiles, gitProbe, logEntries, pendingAdvice, recordAdvice, configMarkerPath } from '../hooks/scripts/governance-policy.mjs'
-import { snapshotDir } from '../hooks/scripts/bash-workflow-check.mjs'
+import { stateDir } from '../hooks/scripts/governance-state.mjs'
 import { GUARD_DEADLINE_MS } from '../templates/github/scripts/supply-chain-lookups.mjs'
 import { tempDir, cleanupTempDirs, writeFiles, makeRepo, git, PLUGIN_ROOT } from './helpers.mjs'
 
@@ -1597,7 +1597,7 @@ describe('evaluate: advisory warning, once per change (ESP-48; spec R4, R5, R7, 
 
   it('should keep the marker in the after-Bash snapshot folder, which no trusted write path may name (ESP-21)', () => {
     const root = tempDir()
-    assert.equal(configMarkerPath(root), path.join(snapshotDir(root), 'config-warned'))
+    assert.equal(configMarkerPath(root), path.join(stateDir(root), 'config-warned'))
   })
 
   it('should not track warnings when no marker is given', async () => {
