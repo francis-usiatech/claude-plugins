@@ -424,36 +424,78 @@ const computedIndex = (inner) => {
   }
   return undefined
 }
+// Stands for every env name. It is set when the untrusted names can't be read: a whole-expression env: block, a name
+// outside [\w-] (env['A.B'] reads as env.a.b), or a $GITHUB_ENV write. Then any env reference counts (fail closed).
+const ANY_ENV = '*'
 // normalizeExpr has already turned env['T'] and ENV . T into env.t. The whole object (toJSON(env)), env.* and a
 // computed index (env[x]) may reach any name, so they count as the first untrusted one (fail closed).
 const ENV_REF = /(?<![\w.-])env(?:\.([\w-]+)|(?![\w-]))/g
 const untrustedEnvRef = (e, env) => {
   for (const [ref, name] of e.matchAll(ENV_REF)) {
-    const hit = name === undefined ? env.keys().next().value : env.has(name) ? name : undefined
+    const hit = name === undefined ? env.keys().next().value : env.has(name) ? name : env.has(ANY_ENV) ? ANY_ENV : undefined
     if (hit !== undefined) return `\${{ ${name === undefined ? `${ref}…` : ref} }} (env.${hit} is set from ${env.get(hit)})`
   }
   return undefined
 }
+// The same for step outputs: outputs holds the lowercased ids of steps that wrote untrusted text to $GITHUB_OUTPUT.
+// toJSON(steps), steps.* and steps[x] may reach any of them (R8).
+const STEPS_REF = /(?<![\w.-])steps(?:\.([\w-]+)|(?![\w-]))/g
+const untrustedStepsRef = (e, outputs) => {
+  for (const [ref, id] of e.matchAll(STEPS_REF)) {
+    const hit = id === undefined ? outputs.values().next().value : outputs.has(id) ? id : undefined
+    if (hit !== undefined) return `\${{ ${id === undefined ? `${ref}…` : ref} }} (step ${hit} writes untrusted text to $GITHUB_OUTPUT)`
+  }
+  return undefined
+}
 // Each untrusted ${{ … }} in s, as shown in a finding. env maps a lowercased env name set from untrusted text to
-// where it came from (F10).
-const untrustedIn = (s, env = new Map()) => exprSpans(s)
+// where it came from (F10); outputs is as for untrustedStepsRef.
+const untrustedIn = (s, env = new Map(), outputs = new Set()) => exprSpans(s)
   .map(({ inner }) => {
     const e = normalizeExpr(inner)
     const found = e.match(UNTRUSTED_EXPR)?.[0] ?? e.match(WHOLE_EVENT_EXPR)?.[0] ?? unreadableIndex(e) ?? computedIndex(inner)
-    return found ? `\${{ ${found} }}` : untrustedEnvRef(e, env)
+    return found ? `\${{ ${found} }}` : untrustedEnvRef(e, env) ?? untrustedStepsRef(e, outputs)
   })
   .filter(Boolean)
 // The env names untrusted after one level's env: block. A name it sets replaces the outer one (step over job over
-// workflow), and a value that reads an untrusted outer name is untrusted too. Names are read case-insensitively.
-const untrustedEnv = (block, outer) => {
+// workflow), and a value that reads an untrusted outer name is untrusted too. Names are read case-insensitively, and
+// a safe value never clears a name its own block set from untrusted text (T and t in one block, ESP-102).
+const untrustedEnv = (block, outer, outputs) => {
+  if (typeof block === 'string') {
+    const from = untrustedIn(block, outer, outputs)[0]
+    return from ? new Map([...outer, [ANY_ENV, from]]) : outer
+  }
   if (!isPlainObject(block)) return outer
   const env = new Map(outer)
+  const marked = new Set()
   for (const [name, value] of Object.entries(block)) {
-    const from = typeof value === 'string' ? untrustedIn(value, outer)[0] : undefined
-    if (from) env.set(name.toLowerCase(), from)
-    else env.delete(name.toLowerCase())
+    const key = name.toLowerCase()
+    const from = typeof value === 'string' ? untrustedIn(value, outer, outputs)[0] : undefined
+    if (from) {
+      env.set(key, from)
+      marked.add(key)
+      if (/[^\w-]/.test(key)) env.set(ANY_ENV, from)
+    } else if (!marked.has(key)) env.delete(key)
   }
   return env
+}
+// Untrusted text a run script reads: an untrusted ${{ … }}, or an untrusted env name named anywhere in it, whatever
+// the shell's read syntax ($T, $env:T, %T%, os.environ['T']; fail closed). After a $GITHUB_ENV write any shell
+// variable may hold it, except GITHUB_* and RUNNER_*, which $GITHUB_ENV can't set: $X, ${X}, $env:X, %X%, and any
+// environ / getenv / printenv / process.env read, whose name isn't parsed (fail closed).
+const SHELL_VAR = /\$(?:env:)?\{?([A-Za-z_]\w*)|%([A-Za-z_]\w*)%|\b(?:environ|getenv|printenv)\b|\bprocess\.env\b/gi
+const untrustedRead = (run, env, outputs) => {
+  const direct = untrustedIn(run, env, outputs)[0]
+  if (direct) return direct
+  const text = run.toLowerCase()
+  for (const [name, from] of env) {
+    if (name !== ANY_ENV && new RegExp(`(?<![\\w-])${escapeRegExp(name)}(?![\\w-])`).test(text)) return `${name} (env.${name} is set from ${from})`
+  }
+  if (!env.has(ANY_ENV)) return undefined
+  for (const [ref, dollar, percent] of run.matchAll(SHELL_VAR)) {
+    const name = dollar ?? percent
+    if (name === undefined || !/^(?:github|runner)_/i.test(name)) return `${ref} (env.${ANY_ENV} is set from ${env.get(ANY_ENV)})`
+  }
+  return undefined
 }
 
 const triggersOf = (doc) => {
@@ -491,9 +533,14 @@ const shapeProblems = (doc) => {
   return out
 }
 
+// A step output in a checkout ref counts as PR code: the usual issue_comment job looks up the PR head with gh or
+// github-script and passes it on that way (ESP-103). Any steps reference counts, so steps[x] fails closed. Each
+// ${{ … }} span is read whole, so a "}" in a string literal ('{0}') can't end it early.
+const STEPS_IN_EXPR = /(?<![\w.-])steps\b/
+const readsStepOutput = (s) => exprSpans(s).some(({ inner }) => STEPS_IN_EXPR.test(normalizeExpr(inner)))
 const checksOutPrCode = (step) => {
   if (typeof step.uses === 'string' && actionName(step.uses) === 'actions/checkout' && isPlainObject(step.with)) {
-    return ['ref', 'repository'].some((k) => typeof step.with[k] === 'string' && PR_REF_EXPR.test(normalizeExprs(step.with[k])))
+    return ['ref', 'repository'].some((k) => typeof step.with[k] === 'string' && (PR_REF_EXPR.test(normalizeExprs(step.with[k])) || readsStepOutput(step.with[k])))
   }
   return typeof step.run === 'string' && runChecksOutPr(normalizeExprs(step.run))
 }
@@ -533,22 +580,29 @@ const privilegedRules = (doc, file, findings) => {
 const untrustedInputRules = (doc, file, findings) => {
   const workflowEnv = untrustedEnv(doc.env, new Map())
   for (const [id, job] of jobsOf(doc)) {
-    const jobEnv = untrustedEnv(job.env, workflowEnv)
+    let jobEnv = untrustedEnv(job.env, workflowEnv)
+    const outputs = new Set()
     for (const step of stepsOf(job)) {
-      const env = untrustedEnv(step.env, jobEnv)
+      const env = untrustedEnv(step.env, jobEnv, outputs)
       const line = lineOf(step, 'run') || lineOf(step, 'with') || lineOf(job.steps, job.steps.indexOf(step))
       if (typeof step.run === 'string') {
-        for (const expr of untrustedIn(step.run, env)) {
+        for (const expr of untrustedIn(step.run, env, outputs)) {
           findings.push({
             rule: 'wf-untrusted-input', tier: TIER.HIGH, file, line,
             detail: `Job "${id}" puts ${expr} directly into a run script (shell injection). Pass it through env: and quote it.`,
           })
         }
+        // Untrusted text written to $GITHUB_ENV reaches every later step's env under a name the script chose, and
+        // text written to $GITHUB_OUTPUT reaches steps.<id>.outputs (R8). Either file named, in any case (Windows env
+        // names aren't case-sensitive), counts as written to.
+        const from = untrustedRead(step.run, env, outputs)
+        if (from && /\bGITHUB_ENV\b/i.test(step.run)) jobEnv = new Map([...jobEnv, [ANY_ENV, `$GITHUB_ENV, written from ${from}`]])
+        if (from && /\bGITHUB_OUTPUT\b/i.test(step.run) && step.id != null) outputs.add(String(step.id).toLowerCase())
       }
       if (typeof step.uses !== 'string' || !isPlainObject(step.with)) continue
       const isScript = actionName(step.uses) === 'actions/github-script'
       const inputs = isScript ? [step.with.script].filter((s) => typeof s === 'string') : isAiAction(step.uses) ? strings(step.with) : []
-      for (const expr of inputs.flatMap((s) => untrustedIn(s, env))) {
+      for (const expr of inputs.flatMap((s) => untrustedIn(s, env, outputs))) {
         findings.push({
           rule: 'wf-untrusted-input', tier: TIER.HIGH, file, line,
           detail: isScript

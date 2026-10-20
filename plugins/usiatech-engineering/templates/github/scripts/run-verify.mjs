@@ -16,7 +16,9 @@ const cfg = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')
 const base = process.env.BASE_REF
 // -z gives raw paths; without it git quotes non-ASCII names and no `when` prefix matches them.
 const changed = base ? execFileSync('git', ['-c', 'core.quotePath=false', 'diff', '--name-only', '-z', `origin/${base}...HEAD`], { encoding: 'utf8' }).split('\0').filter(Boolean) : []
-const hasPkg = existsSync('package.json')
+// The bootstrap skip holds only while the base branch has no package.json either; a PR that deletes it must not
+// skip every npm step and pass (R6). govRoot is the base-branch checkout.
+const hasPkg = existsSync('package.json') || existsSync(path.join(govRoot, 'package.json'))
 const steps = [...(cfg.verify || []), ...(cfg.verifyConditional || []).filter((s) => (s.when || []).some((w) => changed.some((f) => f.startsWith(w))))]
 
 // A missing or empty config must not report a pass. Without this, an absent
