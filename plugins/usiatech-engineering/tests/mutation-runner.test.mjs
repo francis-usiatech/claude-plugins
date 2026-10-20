@@ -2,7 +2,8 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile, execFileSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { makeRepo, git, tempDir, cleanupTempDirs, PLUGIN_ROOT } from './helpers.mjs'
@@ -37,10 +38,19 @@ const LOCK = `import { readFileSync, chmodSync } from 'node:fs'
 if (readFileSync('guard-lf.mjs', 'utf8').includes('LOCK')) chmodSync('guard-lf.mjs', 0o444)
 `
 
+// Stands in for an IDE autosave during the run: once a "MUTATED" mutation is applied, rewrites
+// guard-lf.mjs, or deletes it when given "delete". Unmutated (the baseline) it does nothing.
+const REWRITE = `import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+if (readFileSync('guard-lf.mjs', 'utf8').includes('MUTATED')) {
+  if (process.argv[2] === 'delete') unlinkSync('guard-lf.mjs')
+  else writeFileSync('guard-lf.mjs', 'USER EDIT\\n')
+}
+`
+
 const NODE = `"${process.execPath}"`
 const CMD = `${NODE} check.mjs`
 
-const fixtureRepo = () => makeRepo({ headFiles: { 'guard-lf.mjs': GUARD_LF, 'guard-crlf.mjs': GUARD_CRLF, 'check.mjs': CHECK, 'lock.mjs': LOCK } })
+const fixtureRepo = () => makeRepo({ headFiles: { 'guard-lf.mjs': GUARD_LF, 'guard-crlf.mjs': GUARD_CRLF, 'check.mjs': CHECK, 'lock.mjs': LOCK, 'rewrite.mjs': REWRITE } })
 const importRunner = () => import(pathToFileURL(RUNNER).href)
 
 const snapshot = (repo) => ({
@@ -410,5 +420,91 @@ describe('mutation-runner audit fixes (ESP-78)', () => {
     const repo = makeRepo({ headFiles: { 'triple.txt': 'aaa\n' } })
     const out = await runMutations({ root: repo, mutations: [{ label: 'aa', file: 'triple.txt', find: 'aa', replace: 'b', command: `${NODE} -e "process.exit(0)"` }] })
     assert.equal(out.results[0]?.status, 'SURVIVED', JSON.stringify(out))
+  })
+})
+
+describe('mutation-runner re-audit fixes (ESP-108)', () => {
+  it('should not overwrite a file changed during the run, and save its current and original bytes (R7)', async () => {
+    const repo = fixtureRepo()
+    const list = writeList({
+      mutations: [
+        mutation({ label: 'edited during run', find: '// keep zero positive', replace: '// MUTATED', command: `${NODE} rewrite.mjs` }),
+        mutation({ label: 'never runs' }),
+      ],
+    })
+    const r = await runRunner(repo, list)
+    assert.equal(r.code, 3, r.stdout + r.stderr)
+    assert.equal(readFileSync(path.join(repo, 'guard-lf.mjs'), 'utf8'), 'USER EDIT\n', 'the edit made during the run was overwritten')
+    assert.match(r.stderr, /guard-lf\.mjs changed while its command ran/)
+    const current = r.stderr.match(/current bytes are saved at (.+?)\. Its original/)?.[1]
+    const original = r.stderr.match(/original bytes are saved at (.+?)\. Check it/)?.[1]
+    assert.ok(current && original, r.stderr)
+    assert.equal(readFileSync(current, 'utf8'), 'USER EDIT\n')
+    // Each backup sits in its own private temp folder, so no one can plant a link at a guessable name.
+    assert.notEqual(path.dirname(current), tmpdir())
+    if (process.platform !== 'win32') assert.equal(statSync(current).mode & 0o777, 0o600)
+    assert.equal(readFileSync(original, 'utf8'), GUARD_LF)
+    assert.doesNotMatch(r.stdout, /never runs/)
+  })
+
+  it('should write the original back when the file was deleted during the run (R7)', async () => {
+    const repo = fixtureRepo()
+    const r = await runRunner(repo, writeList({ mutations: [mutation({ label: 'deleted', find: '// keep zero positive', replace: '// MUTATED', command: `${NODE} rewrite.mjs delete` })] }))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.equal(readFileSync(path.join(repo, 'guard-lf.mjs'), 'utf8'), GUARD_LF)
+    assert.match(r.stderr, /guard-lf\.mjs was deleted while its command ran/)
+  })
+
+  it('should go on without a restore error when the file is back to its original bytes (R7)', async () => {
+    const repo = fixtureRepo()
+    const list = writeList({
+      mutations: [
+        mutation({ label: 'checked out', find: '// keep zero positive', replace: '// MUTATED', command: 'git checkout -- guard-lf.mjs' }),
+        mutation({ label: 'runs next' }),
+      ],
+    })
+    const r = await runRunner(repo, list)
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /CAUGHT\s+runs next/)
+    assert.equal(readFileSync(path.join(repo, 'guard-lf.mjs'), 'utf8'), GUARD_LF)
+  })
+
+  it('should run a shared baseline with the largest timeoutMs of its entries, and give no exit code for a timeout (R9)', async () => {
+    const repo = fixtureRepo()
+    const slow = `${NODE} -e "setTimeout(() => {}, 1500)"`
+    const both = writeList({
+      mutations: [
+        mutation({ label: 'slow suite', find: '// keep zero positive', replace: '// a', command: slow, timeoutMs: 60000 }),
+        mutation({ label: 'may loop', find: '// keep zero positive', replace: '// b', command: slow, timeoutMs: 500 }),
+      ],
+    })
+    const r = await runRunner(repo, both)
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /SURVIVED\s+slow suite/)
+    // A timeout shorter than the unmutated run is certain, so it must not read as a catch.
+    assert.match(r.stdout, /TIMEOUT\s+may loop[^\n]*the unmutated run took \d+ ms/)
+    assert.doesNotMatch(r.stdout, /slow suite[^\n]*unmutated run took/)
+    const short = await runRunner(repo, writeList({ mutations: [mutation({ command: slow, timeoutMs: 500 })] }))
+    assert.equal(short.code, 1, short.stdout + short.stderr)
+    assert.match(short.stderr, /baseline failed \(timeout\):/)
+  })
+
+  it('should accept a repo folder whose name starts with ".." (R15)', async () => {
+    const repo = fixtureRepo()
+    mkdirSync(path.join(repo, '..cache'))
+    writeFileSync(path.join(repo, '..cache', 'b.txt'), 'b\n')
+    const r = await runRunner(repo, writeList({ mutations: [mutation({ file: '..cache/b.txt', find: 'b', replace: 'c' })] }))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /SURVIVED/)
+    assert.equal(readFileSync(path.join(repo, '..cache', 'b.txt'), 'utf8'), 'b\n')
+  })
+})
+
+describe('mutation-runner timeout detail (ESP-108 review)', () => {
+  it('should mark a timeout within 1.5 times the unmutated run as maybe not a catch', async () => {
+    const { timeoutDetail } = await importRunner()
+    assert.match(timeoutDetail(1000, 700), /the unmutated run took 700 ms, so this may not be a catch/)
+    assert.match(timeoutDetail(1000, 1200), /may not be a catch/)
+    assert.equal(timeoutDetail(1000, 600), 'no result after 1000 ms')
   })
 })

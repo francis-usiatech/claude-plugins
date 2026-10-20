@@ -3,11 +3,12 @@
 // Usage: node mutation-runner.mjs --list <mutations.json>
 // Applies each mutation in turn, runs its test command and reports CAUGHT, SURVIVED, NOT-FOUND,
 // TIMEOUT or ERROR. Every file is restored byte for byte after each mutation, on error and on
-// interrupt. It never stages or commits anything.
+// interrupt, unless something else changed it while the command ran (then it is left alone and the
+// run stops with exit 3). It never stages or commits anything.
 // Exit codes: 0 run complete (survivors never block, D10), 1 baseline failed, 2 invalid list or repo,
-// 3 restore failed (a file was left mutated), 130 interrupted.
+// 3 restore failed or the file changed while its command ran (a file may be left mutated), 130 interrupted.
 import { execFileSync, spawn } from 'node:child_process'
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { isMainModule } from '../../templates/github/scripts/main-module.mjs'
@@ -48,7 +49,7 @@ const checkFile = (file, root, where) => {
   const inGit = (parts) => parts.some((s) => s.toLowerCase() === '.git')
   if (inGit(segments)) throw new ListError(`${where}: "file" must not be inside .git: ${file}`)
   const rel = path.relative(realpathSync.native(root), realPathOf(resolved, where))
-  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) throw new ListError(`${where}: "file" must stay inside the repo root (it links outside): ${file}`)
+  if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) throw new ListError(`${where}: "file" must stay inside the repo root (it links outside): ${file}`)
   if (inGit(rel.split(path.sep))) throw new ListError(`${where}: "file" must not be inside .git (it links there): ${file}`)
   return resolved
 }
@@ -152,24 +153,57 @@ const countMatches = (buf, find) => {
   return n
 }
 
-// Called when the original bytes can't be written back: keep a copy and say exactly what was left.
-const restoreFailed = (m, original, e) => {
-  let backup = ''
+// Saves bytes of the file to a temp copy and says where, for a RestoreError message. The copy goes in a
+// new private folder (wx, 0600), so on a shared /tmp no one can plant a link at a guessable name or read it.
+const saveCopy = (m, bytes, kind) => {
   try {
-    const copy = path.join(tmpdir(), `mutation-runner-${Date.now()}-${path.basename(m.path)}`)
-    writeFileSync(copy, original)
-    backup = ` The original bytes are saved at ${copy}.`
-  } catch (be) {
-    backup = ` Saving a backup also failed: ${be.message}.`
+    const copy = path.join(mkdtempSync(path.join(tmpdir(), 'mutation-runner-')), `${kind}-${path.basename(m.path)}`)
+    writeFileSync(copy, bytes, { flag: 'wx', mode: 0o600 })
+    return ` Its ${kind} bytes are saved at ${copy}.`
+  } catch (e) {
+    return ` Saving its ${kind} bytes also failed: ${e.message}.`
   }
-  return new RestoreError(`${m.file} was left mutated: restoring it failed (${e.message}).${backup} Check it with git diff -- ${m.file}.`)
 }
+
+// Called when the original bytes can't be written back: keep a copy and say exactly what was left.
+const restoreFailed = (m, original, e, step = 'restoring it') =>
+  new RestoreError(`${m.file} was left mutated: ${step} failed (${e.message}).${saveCopy(m, original, 'original')} Check it with git diff -- ${m.file}.`)
+
+// Writes the original bytes back, unless something else (an IDE autosave, another session) changed the
+// file while the command ran: then the file is left as it is and both versions are saved (R7).
+const restore = (m, original, mutated) => {
+  let current = null
+  try {
+    current = readFileSync(m.path)
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw restoreFailed(m, original, e, 'reading it before the restore')
+    // A deleted file holds no edit to lose, so it is written back, with a notice.
+    console.error(`mutation-runner: ${m.file} was deleted while its command ran; its original bytes were written back.`)
+  }
+  // A file already back to its original bytes holds no other edit, so it isn't reported.
+  if (current && mutated && !current.equals(mutated) && !current.equals(original)) {
+    throw new RestoreError(`${m.file} changed while its command ran, so it was not restored and the mutation may still be in it.${saveCopy(m, current, 'current')}${saveCopy(m, original, 'original')} Check it with git diff -- ${m.file}.`)
+  }
+  // shortcut: an edit landing between the read above and this write is still overwritten; add a lock if that window ever bites.
+  try {
+    writeFileSync(m.path, original)
+  } catch (e) {
+    throw restoreFailed(m, original, e)
+  }
+}
+
+/**
+ * The TIMEOUT detail. A timeout close to or below the unmutated run's time is likely slowness, not something
+ * the mutation caused, so it is marked as maybe not a catch.
+ */
+export const timeoutDetail = (timeoutMs, baselineMs) =>
+  `no result after ${timeoutMs} ms${baselineMs * 1.5 >= timeoutMs ? ` (the unmutated run took ${baselineMs} ms, so this may not be a catch: raise timeoutMs)` : ''}`
 
 /**
  * Applies one mutation, runs its command and restores the file from the original bytes in `finally`.
  * Returns { label, file, status, detail }; throws RestoreError when the restore itself fails.
  */
-const runOne = async (m, { root, signal }) => {
+const runOne = async (m, { root, signal, baselineMs }) => {
   const base = { label: m.label, file: m.file }
   let original
   try {
@@ -180,24 +214,24 @@ const runOne = async (m, { root, signal }) => {
   const find = Buffer.from(m.find)
   const matches = countMatches(original, find)
   if (matches !== 1) return { ...base, status: 'NOT-FOUND', detail: `${matches} matches (needs exactly 1)` }
+  // Stays null until the mutated bytes are fully written, so a failed write is restored without the R7 check.
+  let mutated = null
   try {
     const at = original.indexOf(find)
-    writeFileSync(m.path, Buffer.concat([original.subarray(0, at), Buffer.from(m.replace), original.subarray(at + find.length)]))
+    const bytes = Buffer.concat([original.subarray(0, at), Buffer.from(m.replace), original.subarray(at + find.length)])
+    writeFileSync(m.path, bytes)
+    mutated = bytes
     const r = await runCommand(m.command, { root, timeoutMs: m.timeoutMs, signal })
     if (r.outcome === 'pass') return { ...base, status: 'SURVIVED', detail: 'tests passed with the mutation applied' }
     if (r.outcome === 'fail') return { ...base, status: 'CAUGHT', detail: `exit ${r.code}` }
-    if (r.outcome === 'timeout') return { ...base, status: 'TIMEOUT', detail: `no result after ${m.timeoutMs} ms` }
+    if (r.outcome === 'timeout') return { ...base, status: 'TIMEOUT', detail: timeoutDetail(m.timeoutMs, baselineMs) }
     if (r.outcome === 'aborted') return { ...base, status: 'ERROR', detail: 'interrupted' }
     return { ...base, status: 'ERROR', detail: r.stderr }
   } catch (e) {
     return { ...base, status: 'ERROR', detail: e.message }
   } finally {
-    try {
-      writeFileSync(m.path, original)
-    } catch (e) {
-      // Thrown from finally on purpose: it replaces the result, because the tree is no longer clean.
-      throw restoreFailed(m, original, e)
-    }
+    // Throws from finally on purpose: a RestoreError replaces the result, because the tree is no longer clean.
+    restore(m, original, mutated)
   }
 }
 
@@ -209,17 +243,22 @@ const runOne = async (m, { root, signal }) => {
  */
 export const runMutations = async ({ root, mutations: input, signal }) => {
   const mutations = validateList({ mutations: input }, root)
-  const commands = [...new Map(mutations.map((m) => [m.command, m])).values()]
-  for (const m of commands) {
-    const r = await runCommand(m.command, { root, timeoutMs: m.timeoutMs, signal })
+  // Each distinct command runs once, with the largest timeoutMs of its entries (R9).
+  const baselines = new Map()
+  for (const m of mutations) baselines.set(m.command, Math.max(baselines.get(m.command) ?? 0, m.timeoutMs))
+  const baselineMs = new Map()
+  for (const [command, timeoutMs] of baselines) {
+    const started = Date.now()
+    const r = await runCommand(command, { root, timeoutMs, signal })
+    baselineMs.set(command, Date.now() - started)
     if (r.outcome === 'aborted') return { interrupted: true, results: [] }
-    if (r.outcome !== 'pass') return { baselineFailure: { command: m.command, ...r }, interrupted: false, results: [] }
+    if (r.outcome !== 'pass') return { baselineFailure: { command, ...r }, interrupted: false, results: [] }
   }
   const results = []
   for (const m of mutations) {
     if (signal?.aborted) return { interrupted: true, results }
     try {
-      results.push(await runOne(m, { root, signal }))
+      results.push(await runOne(m, { root, signal, baselineMs: baselineMs.get(m.command) }))
     } catch (e) {
       if (!(e instanceof RestoreError)) throw e
       return { restoreFailure: e.message, interrupted: Boolean(signal?.aborted), results }
@@ -296,7 +335,7 @@ const main = async () => {
     const outcome = await runMutations({ root, mutations, signal: controller.signal })
     if (outcome.baselineFailure) {
       const f = outcome.baselineFailure
-      console.error(`mutation-runner: baseline failed (${f.outcome}${f.code === undefined ? '' : `, exit ${f.code}`}): ${f.command}${f.stderr ? `\n${f.stderr}` : ''}`)
+      console.error(`mutation-runner: baseline failed (${f.outcome}${f.code == null || f.outcome === 'timeout' ? '' : `, exit ${f.code}`}): ${f.command}${f.stderr ? `\n${f.stderr}` : ''}`)
       console.error('No mutation was applied. Fix the tests so they pass unmutated, then run again.')
       return 1
     }
