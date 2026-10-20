@@ -53,7 +53,7 @@ Repo `AGENTS.md` rules win on conflict.
    - For each confirmed key: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" transition --issue <KEY> --event released`.
 
 ## Jira tracker
-- **Which tracker:** when `.claude/engineering.json` exists, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root and read `tracker` from its output.
+- **Which tracker:** when `.claude/engineering.json` exists, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root and read `tracker` from its output. Show any stderr warning it prints to the user, even when it exits 0 (for example, a site outside `.atlassian.net`).
   - With no config file, or `"tracker":"github"`, the Jira steps don't apply.
   - Any non-zero exit (2 is a config problem) is a failure to report, not a reason to skip.
 - **Failures:** a failed `check`, `git describe`, `git log`, `keys`, `transition` or `comment` never undoes a git step: the merge, the tag and the push stand.

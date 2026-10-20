@@ -35,7 +35,7 @@ description: Runs the repository's verification gate (typecheck, tests, build an
    - Collect everything first, then write all evidence lines and ticks in one edit. The guard asks before each edit to the plan, so one edit means one prompt.
 8. **Jira tracker only:** move the plan's tickets to verified, only when step 3's result is **Gate: PASS** (commands and fake-pass check) and step 7 marked every AC `shown`.
    - Skip this step, and say why, when there's no `.claude/engineering.json`, when `check` prints `"tracker":"github"`, when `jira.statuses` in its output has no `verified`, when there's no `.claude/plans/active.md`, when the plan has no `## Acceptance criteria` section, or when any AC is `not shown`.
-   - Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root. A non-zero exit (2 is a config problem) is a failure to report, not a reason to skip.
+   - Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root. A non-zero exit (2 is a config problem) is a failure to report, not a reason to skip. Show any stderr warning it prints to the user, even when it exits 0 (for example, a site outside `.atlassian.net`).
    - The keys are the Jira tickets the plan's tasks name. A parent or blocker key that appears only in the requirement references is not moved. If the tasks name no Jira key, say so.
    - For each key: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" transition --issue <KEY> --event verified`.
    - A non-zero exit doesn't change the gate verdict and undoes nothing. Report each failed key with the script's message as one the user must fix, and go on with the other keys. Don't retry silently.
