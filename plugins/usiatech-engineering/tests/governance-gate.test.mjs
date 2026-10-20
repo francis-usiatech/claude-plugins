@@ -100,7 +100,8 @@ describe('governance-gate', () => {
   const aiSkipped = { ...allGreen, 'ai-governance-review': { result: 'skipped' } }
 
   it('should not demand or fetch a verdict when the AI review was skipped by an opt-out, a draft or a fork', async () => {
-    for (const env of [{ GOVERNANCE_AI_REVIEW: 'off' }, { PR_DRAFT: 'true' }, { PR_FORK: 'true' }]) {
+    // GitHub compares expression strings case-insensitively, so OFF also skips the review job (R13).
+    for (const env of [{ GOVERNANCE_AI_REVIEW: 'off' }, { GOVERNANCE_AI_REVIEW: 'OFF' }, { PR_DRAFT: 'true' }, { PR_FORK: 'true' }]) {
       const r = await runGate({ needs: aiSkipped, env })
       assert.equal(r.code, 0, `${JSON.stringify(env)}: ${r.stdout}`)
       assert.equal(r.requests.length, 0)

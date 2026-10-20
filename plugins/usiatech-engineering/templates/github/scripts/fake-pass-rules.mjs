@@ -127,14 +127,16 @@ const firstAtOrAfter = (sorted, x) => {
 }
 
 // A modifier chain may come before or after the marker: test.concurrent.only(…), it.only.each(table)(…),
-// test.only.failing(…), it.only.each`table`. Linear time on a long chain with no call: the lookbehind
-// starts a match only at a chain head, and the marker is found by a lookahead, not by backtracking.
+// test.only.failing(…), it.only.each`table`, and a chain split across lines (it\n  .only(…)). Linear time on a
+// long chain with no call: the lookbehind starts a match only at a chain head, and the marker is found by a
+// lookahead, not by backtracking.
 const FOCUSED = [
-  /(?<![\w$.])(?:it|test|describe|suite|context)(?=(?:\.\w+)*?\.only\b)(?:\.\w+)+\s*[(`]/g,
+  /(?<![\w$.])(?:it|test|describe|suite|context)(?=(?:\s*\.\s*\w+)*?\s*\.\s*only\b)(?:\s*\.\s*\w+)+\s*[(`]/g,
   /(?<![\w$.])(?:fit|fdescribe)\s*\(/g,
 ]
 const SKIPPED = [
-  /(?<![\w$.])(?:it|test|describe|suite|context)(?=(?:\.\w+)*?\.(?:skip|todo|fixme)\b)(?:\.\w+)+\s*[(`]/g,
+  // skipIf/runIf (vitest) skip on a runtime condition, so they count as skips, like a non-false { skip } option.
+  /(?<![\w$.])(?:it|test|describe|suite|context)(?=(?:\s*\.\s*\w+)*?\s*\.\s*(?:skip|todo|fixme|skipIf|runIf)\b)(?:\s*\.\s*\w+)+\s*[(`]/g,
   /(?<![\w$.])(?:xit|xdescribe|xtest|xcontext)\s*\(/g,
   // node:test options: it(name, { skip: … }, fn) or { todo: … }; an explicit false is not a skip.
   /(?<![\w$.])(?:it|test|describe|suite)\s*\(\s*[^,(){}[\]]*?,\s*\{[^{}]*?\b(?:skip|todo)\s*:\s*(?!false\b)/g,

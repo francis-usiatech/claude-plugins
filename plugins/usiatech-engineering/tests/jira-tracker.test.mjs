@@ -456,7 +456,16 @@ describe('runCli commands (R3)', () => {
     const result = await runCli(['check'], { env: CLI_ENV, fetch, cwd: cliRepo(t) })
     assert.equal(result.code, 0, result.stderr)
     assert.deepEqual(printed(result), validateTicketsConfig(jira()).tickets)
+    assert.equal(result.stderr, '')
     assert.equal(calls.length, 0)
+  })
+
+  it('should warn, with exit 0, when check sees a site the client will not trust without JIRA_SITE (R14)', async (t) => {
+    const tickets = jira({ site: 'https://evil.example.com' })
+    const result = await runCli(['check'], { env: CLI_ENV, fetch: stubFetch().fetch, cwd: cliRepo(t, tickets) })
+    assert.equal(result.code, 0, result.stderr)
+    assert.deepEqual(printed(result), validateTicketsConfig(tickets).tickets)
+    assert.match(result.stderr, /warning: .*"evil\.example\.com".*JIRA_SITE/)
   })
 
   it('should create an issue from the config, the summary and the body file, and print its key', async (t) => {
