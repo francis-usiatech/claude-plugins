@@ -100,17 +100,29 @@ export const verdictOf = (comment) => {
 }
 
 /**
+ * Whether a comment is a verdict comment from before 0.18.4: a github-actions[bot] comment that starts with that
+ * version's "## <icon> Governance review: " title line and ends with the marker, but has no VERDICT_HEADER.
+ * post-verdict updates one in place rather than adding a second; the gate never trusts it.
+ * @param {{ user?: { login?: string }, body?: string }} comment  a comment from the GitHub issues API
+ * @returns {boolean}
+ */
+export const isLegacyVerdict = (comment) => comment?.user?.login === 'github-actions[bot]'
+  && /^## \S+ Governance review: /.test(comment?.body || '') && VERDICT_MARKER.test(comment.body)
+
+/**
  * Every comment on a pull request, in order, 100 per page.
  * @param {{ api: string, repo: string, pr: string, headers: object }} target
  * @returns {AsyncGenerator<object>}
- * @throws {Error} when GitHub answers a page with a non-ok status or something other than a list
+ * @throws {Error} when GitHub answers a page with a non-ok status or something other than a list; the message names
+ *   the PR and the page
  */
 export async function* prComments({ api, repo, pr, headers }) {
   for (let page = 1; ; page++) {
     const res = await fetch(`${api}/repos/${repo}/issues/${pr}/comments?per_page=100&page=${page}`, { headers })
-    if (!res.ok) throw new Error(`GitHub API returned ${res.status}`)
+    const where = `reading PR ${pr} comments, page ${page}`
+    if (!res.ok) throw new Error(`GitHub API returned ${res.status} ${where}`)
     const list = await res.json()
-    if (!Array.isArray(list)) throw new Error('GitHub API returned something other than a list of comments')
+    if (!Array.isArray(list)) throw new Error(`GitHub API returned something other than a list of comments ${where}`)
     yield* list
     if (list.length < 100) return
   }

@@ -168,7 +168,7 @@ describe('governance-gate: GitHub API errors', () => {
         env: { NEEDS_JSON: JSON.stringify(allGreen), PR_LABELS: '[]', HEAD_SHA: SHA, PR_NUMBER: '5', GITHUB_REPOSITORY: 'o/r', GITHUB_TOKEN: 't', GITHUB_API_URL: stub.url },
       })
       assert.equal(r.code, 1)
-      assert.match(r.stdout, /GitHub API returned 403/)
+      assert.match(r.stdout, /GitHub API returned 403 reading PR 5 comments, page 1/)
     } finally {
       await stub.close()
     }
