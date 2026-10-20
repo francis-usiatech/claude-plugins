@@ -3,7 +3,7 @@
 // Env: NEEDS_JSON, PR_LABELS, HEAD_SHA, PR_NUMBER, GITHUB_REPOSITORY, GITHUB_TOKEN, GITHUB_API_URL, GITHUB_STEP_SUMMARY,
 //      GOVERNANCE_AI_REVIEW, PR_DRAFT, PR_FORK
 import { appendFileSync } from 'node:fs'
-import { readApprovalLabel } from './governance-checks.mjs'
+import { readApprovalLabel, prComments, verdictOf } from './governance-checks.mjs'
 
 const api = process.env.GITHUB_API_URL || 'https://api.github.com'
 const repo = process.env.GITHUB_REPOSITORY
@@ -27,21 +27,15 @@ const optedOut = process.env.GOVERNANCE_AI_REVIEW === 'off' || process.env.PR_DR
 const aiSkipped = result('ai-governance-review') === 'skipped' && optedOut
 
 let verdict = null
-let page = 1
-for (; !aiSkipped;) {
-  const res = await fetch(`${api}/repos/${repo}/issues/${pr}/comments?per_page=100&page=${page}`, { headers })
-  if (!res.ok) { problems.push(`Could not read PR comments to find the verdict: GitHub API returned ${res.status}. Re-run the gate.`); break }
-  const list = await res.json()
-  if (!Array.isArray(list) || !list.length) break
-  for (const c of list) {
-    if (c.user?.login !== 'github-actions[bot]') continue
-    // The real marker is the comment's last; post-verdict writes the AI text before it.
-    const m = [...(c.body || '').matchAll(/<!-- governance-verdict (\{.*?\}) -->/g)].at(-1)
-    if (!m) continue
-    try { const v = JSON.parse(m[1]); if (v.sha === sha) verdict = v.verdict } catch { /* ignore */ }
+if (!aiSkipped) {
+  try {
+    for await (const c of prComments({ api, repo, pr, headers })) {
+      const v = verdictOf(c)
+      if (v?.sha === sha) verdict = v.verdict
+    }
+  } catch (e) {
+    problems.push(`Could not read PR comments to find the verdict: ${e.message}. Re-run the gate.`)
   }
-  if (list.length < 100) break
-  page++
 }
 if (aiSkipped) notes.push('AI governance review skipped; deterministic checks and the verify gate still applied.')
 else if (!verdict) problems.push(`No AI governance verdict for commit ${sha.slice(0, 7)}: the review has not run or posted a verdict for this commit. Re-run the workflow.`)
