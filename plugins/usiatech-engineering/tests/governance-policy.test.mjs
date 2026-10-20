@@ -167,6 +167,179 @@ describe('evaluate: re-audit guard bypasses (ESP-106; R1–R5)', () => {
   })
 })
 
+describe('evaluate: guard gaps from the ESP-106 reviews (ESP-110)', () => {
+  const ps = (command) => evaluate({ tool_name: 'PowerShell', tool_input: { command } }, { root: tempDir(), git: fakeGit() })
+
+  for (const cmd of [
+    // Items 2, 3, 11: cmd-style flags and Windows drive-root and home targets.
+    'rd /s /q C:\\',
+    'rmdir /s /q C:',
+    'Remove-Item -Recurse -Force C:\\',
+    'rm -rf C:/',
+    'rm -rf \\',
+    'rm -rf .\\',
+    'rm -rf $env:HOMEDRIVE\\',
+    'rm -rf ${env:HOME}',
+    'Remove-Item -Recurse -Force $PSHOME',
+    'Remove-Item -Recurse -Force $env:SystemDrive',
+    'Remove-Item -Recurse -Force $env:HOMEPATH',
+    'rd /s /q %USERPROFILE%',
+    // Item 4: a separator, a bracket or a glob right after a root or workspace target.
+    'rm -r -f /;echo',
+    'rm -rf .;',
+    'rm -rf /*',
+    'rm -rf /|cat',
+    '(rm -rf /)',
+    String.raw`rm -rf C:\*`,
+    // Item 6: a pipeline delete of a home or root listing.
+    'Get-ChildItem ~ | Remove-Item -Recurse -Force',
+    'gci $HOME -Recurse | ri -r -fo',
+    String.raw`dir C:\ | del -Recurse -Force`,
+    // Item 8.
+    'git config --get core.hooksPath',
+    'rmdir -r -f ~',
+    // Item 9: spellings the shell rewrites into the plain one.
+    'git commit --no-ver`ify -m x',
+    String.raw`git commit --no-ver\ify -m x`,
+    "git commit '--no-ver''ify' -m x",
+    'git.exe commit -n',
+    // Review round 1: a delete run through a cmd or PowerShell wrapper, clustered cmd flags, more root spellings,
+    // and a listing piped into a delete whatever its flags.
+    'cmd /c rd /s /q C:\\',
+    'cmd /c "rd /s /q C:\\"',
+    'cmd.exe /c del /s /q C:\\',
+    'cmd //c "rd /s /q C:\\\\"',
+    'powershell -c "rd -r -fo C:\\"',
+    'pwsh -NoProfile -c "erase -r -fo $HOME"',
+    'rd /s/q C:\\',
+    'rd /q/s C:\\',
+    'Remove-Item -Recurse -Force -Path:C:\\',
+    'rm -rf C:\\\\',
+    'rm -rf /c/',
+    'gci ~ -Recurse | Remove-Item -Force',
+    'Get-ChildItem C:\\ | Remove-Item',
+    // Review round 2: cmd switches before /c and /r, PowerShell options with values, -Comm, the bare form, cmd's ^.
+    'cmd /r rd /s /q C:\\',
+    'cmd /s /c "rd /s /q C:\\"',
+    'cmd /d /c del /s /q C:\\*',
+    'cmd /q /k rd /s /q C:\\',
+    'powershell -ExecutionPolicy Bypass -Command "rd /s /q C:\\"',
+    'pwsh -Comm "rd /s /q C:\\"',
+    'powershell "rd /s /q C:\\"',
+    'cmd /c r^d /s /q C:\\',
+  ]) {
+    it(`should deny: ${cmd}`, async () => assert.equal((await ps(cmd))?.decision, 'deny'))
+  }
+
+  for (const cmd of [
+    // Item 1: git abbreviations of --delete.
+    'git branch --d x',
+    'git branch --de x',
+    // Item 2.
+    'rd /s /q build',
+    'rmdir /s build',
+    'del /s build',
+    'cd x; erase -Recurse build',
+    // Item 7: shell writes to an env file.
+    'echo x > .env',
+    'echo x >> .env.local',
+    'echo x>.env',
+    'echo x | tee .env',
+    'Set-Content .env x',
+    'Add-Content -Path .env -Value x',
+    'Get-Process | Out-File -FilePath .env',
+    // Item 8.
+    'git switch -f main',
+    'git switch --discard-changes main',
+    // Item 9.
+    "git push '--for''ce' origin x",
+    'git push --for`ce origin x',
+    'git.exe push --force origin x',
+    "& 'git' push --force origin x",
+    // Review round 1.
+    'rd /s/q build',
+    'cmd /c rd /s /q build',
+    'cp .env.example .env',
+    'mv x .env',
+    'sed -i s/a/b/ .env',
+    'Copy-Item x .env.local',
+    'Move-Item x .env',
+  ]) {
+    it(`should ask: ${cmd}`, async () => assert.equal((await ps(cmd))?.decision, 'ask'))
+  }
+
+  it('should ask when an escaped spelling names the after-Bash snapshots (review round 1)', async () => {
+    const r = await ps('cat > /tmp/usiatech-gov""ernance/x')
+    assert.equal(r?.decision, 'ask')
+    assert.match(r.reason, /snapshot/)
+  })
+
+  it('should decide a padded pipeline-rule input quickly, so the guard cannot time out (review round 1)', async () => {
+    // '\nls ~ ' starts a command at every line, which the pipeline rule's target lookahead keeps linear per start.
+    for (const cmd of ['ls ~ '.repeat(3200), 'dir C:\\ '.repeat(2000), '|ls ~ '.repeat(2700), '\nls ~ '.repeat(600), '\nls ~ '.repeat(2700), 'cmd /s '.repeat(2300), 'pwsh -a b '.repeat(1600), `git push --force origin feature/x; echo ${'ls ~ '.repeat(1800)}`]) {
+      const started = Date.now()
+      await ps(cmd)
+      assert.ok(Date.now() - started < 2000, `${cmd.slice(0, 20)}… (${cmd.length} chars) decided in under 2 s`)
+    }
+    assert.equal((await ps(`git push --force origin feature/x; echo ${'ls ~ '.repeat(1800)}`))?.decision, 'ask')
+  })
+
+  for (const cmd of ['rm -f /srv/x.txt', 'rm -f /s/x', 'rm -rf ./build', 'rm -rf /c/build', 'rm -rf /cache', 'echo ls ~ | Remove-Item x', String.raw`rm -rf C:\Users\me\build`, 'rm -rf .git', 'echo x > .env.example', 'Set-Content .env.example x', 'echo x > out.txt', 'git push --dry-run origin x', 'ls ~ | Select-String x', 'deliver.sh']) {
+    it(`should not deny: ${cmd}`, async () => assert.notEqual((await ps(cmd))?.decision, 'deny'))
+  }
+
+  for (const cmd of ['rm -f /srv/x.txt', 'echo x > .env.example', 'echo x > out.txt', 'ls ~ | Select-String x', 'deliver.sh', String.raw`git commit -m "fix C:\Users path"`, 'cp a.txt b.txt', 'cp .env.example .env.example.bak', 'cmd /c dir']) {
+    it(`should allow: ${cmd}`, async () => assert.equal(await ps(cmd), null))
+  }
+
+  it('should apply the protected-branch checks to an escaped git spelling (item 9)', async () => {
+    assert.match((await bash('git.exe commit -m x', { branch: 'main' }))?.reason ?? '', /Git commit while on protected branch "main"/)
+    assert.match((await bash('git.exe push origin main'))?.reason ?? '', /Push to protected branch "main"/)
+  })
+
+  it('should ask on a command over 16 KB without running the rules (item 5)', async () => {
+    const started = Date.now()
+    const r = await bash(`echo ${'a '.repeat(88 * 1024)}`)
+    assert.ok(Date.now() - started < 1000, 'decided in under 1 s')
+    assert.equal(r?.decision, 'ask')
+    assert.match(r.reason, /16 KB/)
+    assert.equal(await bash(`echo ${'a'.repeat(16 * 1024 - 5)}`), null)
+  })
+
+  describe('a Windows 8.3 short name (item 10)', () => {
+    const win = (file_path) =>
+      evaluate({ tool_name: 'Write', tool_input: { file_path, content: 'x' } }, { root: String.raw`C:\repo`, git: fakeGit(), pathApi: path.win32, caseInsensitive: true })
+
+    for (const file of ['AGENTS~1.MD', 'docs/CLAUDE~1.MD', '.GITHU~1/workflows/x.yml', 'src/A~12/x.js']) {
+      it(`should ask for ${file}`, async () => {
+        const r = await win(file)
+        assert.equal(r?.decision, 'ask')
+        assert.match(r.reason, /short name/)
+      })
+    }
+
+    it('should still deny an env file or protected path under a short-name folder (review round 1)', async () => {
+      assert.equal((await win('src/A~1/.env'))?.decision, 'deny')
+      assert.equal((await win('generated/A~1/x.js'))?.decision, 'deny')
+    })
+
+    it('should still deny a secret written under a short-name folder, and name both reasons on an ask (review round 2)', async () => {
+      const write = (file_path, content) => evaluate({ tool_name: 'Write', tool_input: { file_path, content } }, { root: String.raw`C:\repo`, git: fakeGit(), pathApi: path.win32, caseInsensitive: true })
+      assert.equal((await write('src/A~1/x.js', `const k = '${'AKIA'}${'Q'.repeat(16)}'`))?.decision, 'deny')
+      const asked = await write('src/A~1/x.js', `const password = '${'q7'.repeat(8)}'`)
+      assert.equal(asked?.decision, 'ask')
+      assert.match(asked.reason, /short name/)
+      assert.match(asked.reason, /hard-codes/)
+    })
+
+    it('should allow a ~ that is not followed by a digit, and leave POSIX paths alone', async () => {
+      assert.equal(await win('src/~draft.js'), null)
+      assert.equal(await win('src/x~.js'), null)
+      assert.equal(await evaluate({ tool_name: 'Write', tool_input: { file_path: 'src/A~1.js', content: 'x' } }, { root: '/repo', git: fakeGit(), pathApi: path.posix }), null)
+    })
+  })
+})
+
 describe('evaluate: protected branches', () => {
   it('should ask for a commit while on main', async () => {
     const r = (await bash('git commit -m "x"', { branch: 'main' }))
