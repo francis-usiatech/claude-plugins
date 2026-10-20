@@ -461,25 +461,33 @@ const pushTargets = (cmd, branch) =>
   new RegExp(String.raw`${GIT_PREFIX}push\b[^;&|]*(\s["']?|:["']?|refs/heads/)${escapeRegExp(branch)}["']?(?=\s|$|[;&|])`).test(cmd)
 
 const SNAPSHOT_COMMAND = /usiatech-governance|bash-wf-/i
+// ESP-110 item 5: some rules are quadratic, and a guard timeout fails open, so a longer command is asked unchecked.
+const MAX_COMMAND_CHARS = 16 * 1024
+// ESP-110 item 9: the command as the shell reads it, without backtick, caret or backslash escapes, quotes or a .exe
+// suffix, so `--no-ver`ify`, `'--for''ce'`, cmd's `r^d` and `git.exe` match like the plain spelling.
+const unescaped = (cmd) => cmd.replace(/[`'"^]|\\(?=[a-z])|(?<=\w)\.exe\b/gi, '')
 
 const decideBash = (cmd, { cfg, gov, repoRules }, git, root) => {
+  if (cmd.length > MAX_COMMAND_CHARS) return decision('ask', `The command is over ${MAX_COMMAND_CHARS / 1024} KB, too long for the guard to check. Confirm it is part of the approved plan.`, cmd)
+  const forms = [cmd, unescaped(cmd)]
+  const matches = (re) => forms.some((c) => new RegExp(re, 'i').test(c))
   for (const [why, re] of [...DENY_COMMANDS, ...repoRules.deny]) {
-    if (new RegExp(re, 'i').test(cmd)) return decision('deny', `Blocked: ${why}.`, cmd)
+    if (matches(re)) return decision('deny', `Blocked: ${why}.`, cmd)
   }
   const protectedBranches = gov.protectedBranches || [cfg.git?.releaseBranch || 'main', 'master']
-  const gitAction = cmd.match(new RegExp(String.raw`${GIT_PREFIX}(commit|merge|push)\b`))
+  const gitAction = forms.map((c) => c.match(new RegExp(String.raw`${GIT_PREFIX}(commit|merge|push)\b`))).find(Boolean)
   if (gitAction) {
     const branch = git.currentBranch(root)
     if (branch && protectedBranches.includes(branch)) return decision('ask', `Git ${gitAction[1]} while on protected branch "${branch}". Work should happen on a feature branch.`, cmd)
     for (const b of protectedBranches) {
-      if (pushTargets(cmd, b)) return decision('ask', `Push to protected branch "${b}".`, cmd)
+      if (forms.some((c) => pushTargets(c, b))) return decision('ask', `Push to protected branch "${b}".`, cmd)
     }
   }
   for (const [why, re] of [...ASK_COMMANDS, ...repoRules.ask]) {
-    if (new RegExp(re, 'i').test(cmd)) return decision('ask', `Risky action: ${why}. Confirm it is part of the approved plan.`, cmd)
+    if (matches(re)) return decision('ask', `Risky action: ${why}. Confirm it is part of the approved plan.`, cmd)
   }
   // R6: the after-Bash check trusts its snapshot, so a command that could rewrite one needs confirmation.
-  if (SNAPSHOT_COMMAND.test(cmd)) return decision('ask', 'The command names the after-Bash workflow snapshots (usiatech-governance, bash-wf-*), which could hide a workflow change. Confirm it is part of the approved plan.', cmd)
+  if (forms.some((c) => SNAPSHOT_COMMAND.test(c))) return decision('ask', 'The command names the after-Bash workflow snapshots (usiatech-governance, bash-wf-*), which could hide a workflow change. Confirm it is part of the approved plan.', cmd)
   return null
 }
 
@@ -521,6 +529,9 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
       return decision('deny', `"${rel}" matches "${g}" and is already committed; create a new file instead.`, rel)
     }
   }
+  // ESP-110 item 10: an 8.3 short name (AGENTS~1.MD) may stand for any long name, so the path checks can't see it.
+  // It is one of the ask reasons below, so it never turns a deny into an ask or hides another ask.
+  const shortName = p.sep === '\\' && /~\d/.test(rel)
 
   // Before the plan/exempt/ask checks: a secret is never fine, wherever it is written.
   const secret = findSecret(editedText(tool, ti))
@@ -541,6 +552,7 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
       : decideScope(rel, gov, root, ic)
   // A credential or content ask must not hide a scope or governance ask; the user confirms them all at once.
   const reasons = [
+    shortName && `"${rel}" has a Windows short name (8.3) segment, which may stand for a governance, plan or protected file. Confirm the edit.`,
     secret && `The edit looks like it hard-codes a ${secret.why}. Confirm it is not a real secret.`,
     blocking.length && `The ${kind} change has ${blocking.length} high-risk finding(s).`,
     scope?.decision && scope.reason,
