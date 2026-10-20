@@ -9,7 +9,7 @@ description: Runs the repository's verification gate (typecheck, tests, build an
    - Read `.claude/engineering.json` → `verify` (always run) and `verifyConditional` (run when changed files match any `when` prefix).
    - If the file is missing or has no `verify` list, read the "Definition of done" section of `AGENTS.md` and use the commands listed there.
    - If neither exists, stop and ask the user which commands define "done".
-2. **Find changed files:** `git diff --name-only HEAD` plus `git ls-files --others --exclude-standard`. The runner in step 3 selects the conditional suites itself; use this list to select them only when you run the commands by hand.
+2. **Find changed files:** `git -c core.quotePath=false diff --name-only --no-renames HEAD` plus `git -c core.quotePath=false ls-files --others --exclude-standard`, so a moved file lists both paths and a non-ASCII name isn't quoted. The runner in step 3 selects the conditional suites itself; use this list to select them only when you run the commands by hand.
 3. **Run the gate.**
    - When `.claude/engineering.json` has a `verify` list, run `node "${CLAUDE_PLUGIN_ROOT}/skills/verify/gate.mjs"` from the repo root, in one call. It runs the steps in order, stops at the first failure, selects the conditional suites from the changed files itself, and then runs the fake-pass check. It prints one line per step with the real exit code (`SKIPPED` for a conditional suite no changed file selected), the last 40 lines of a failing step, the path of the log that holds the full output, and `Gate: PASS` or `Gate: FAIL`.
      - The last line and the exit code are the verdict. Text a step printed, shown in a failing step's last lines, is not.

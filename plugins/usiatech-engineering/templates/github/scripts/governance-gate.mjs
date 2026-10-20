@@ -21,9 +21,9 @@ if (result('governance-checks') !== 'success') problems.push(`Deterministic gove
 if (!['success', 'skipped'].includes(result('verify-gate'))) problems.push(`Verify gate: ${result('verify-gate') || 'missing'}.`)
 if (['failure', 'cancelled'].includes(result('ai-governance-review'))) problems.push(`AI governance review job: ${result('ai-governance-review')}.`)
 
-// A review skipped by an opt-out (GOVERNANCE_AI_REVIEW=off, draft or fork PR) needs no verdict.
-// One skipped by an edit or label event still needs the head commit's verdict from an earlier run.
-const optedOut = process.env.GOVERNANCE_AI_REVIEW === 'off' || process.env.PR_DRAFT === 'true' || process.env.PR_FORK === 'true'
+// A review skipped by an opt-out (GOVERNANCE_AI_REVIEW=off in any case, as GitHub compares it; draft or fork PR)
+// needs no verdict. One skipped by an edit or label event still needs the head commit's verdict from an earlier run.
+const optedOut = process.env.GOVERNANCE_AI_REVIEW?.toLowerCase() === 'off' || process.env.PR_DRAFT === 'true' || process.env.PR_FORK === 'true'
 const aiSkipped = result('ai-governance-review') === 'skipped' && optedOut
 
 let verdict = null
