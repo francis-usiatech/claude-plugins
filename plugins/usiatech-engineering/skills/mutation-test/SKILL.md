@@ -49,11 +49,11 @@ node "${CLAUDE_PLUGIN_ROOT}/skills/mutation-test/mutation-runner.mjs" --list <pa
 
 The runner:
 1. Validates the list. An invalid list exits 2 before anything runs. Paths into `.git` or out of the repo (including through a symlink) are invalid.
-2. Prints the commands, then runs each distinct one once, unmutated (the baseline). If one fails, it reports **baseline failed**, applies no mutation and exits 1. Fix the tests first.
-3. Applies each mutation, runs its command, then restores the file from its original bytes (also on error and on Ctrl+C, however many times it's pressed).
+2. Prints the commands, then runs each distinct one once, unmutated (the baseline), with the largest `timeoutMs` of the entries that share it. If one fails, it reports **baseline failed**, applies no mutation and exits 1. Fix the tests first.
+3. Applies each mutation, runs its command, then restores the file from its original bytes (also on error and on Ctrl+C, however many times it's pressed). If something else changed the file while the command ran (an editor autosave, another session), it leaves the file as it is and stops with exit 3.
 4. Prints one line per mutation and a summary, and exits 0 (130 if interrupted).
 
-If a restore fails (exit 3), the runner names the file it left mutated, saves the original bytes to a temp file and stops. If the runner itself was killed (a hard kill or a crash), run `git diff` on the listed files and put any mutated one back with `git checkout -- <file>`; uncommitted edits to it must be redone.
+If a restore fails (exit 3), the runner names the file it left mutated, saves the original bytes to a temp file and stops. When the file changed during the run, it also saves the current bytes (the other edit) to a temp file. Copy that edit back from the backup before you run `git checkout -- <file>`, or it is lost. If the runner itself was killed (a hard kill or a crash), run `git diff` on the listed files and put any mutated one back with `git checkout -- <file>`; uncommitted edits to it must be redone.
 
 ## 4. Read the report
 | Status | Meaning | Do |
@@ -61,7 +61,7 @@ If a restore fails (exit 3), the runner names the file it left mutated, saves th
 | `CAUGHT` | the command failed with the mutation applied | nothing: a test guards this |
 | `SURVIVED` | the command passed with the mutation applied: a missing test | report it and ask the user whether to add a test |
 | `NOT-FOUND` | `find` occurs 0 or 2+ times | fix the list (more context) and re-run that entry |
-| `TIMEOUT` | no result before the timeout; the process tree was killed | usually an infinite loop the mutation caused; treat as caught only if that's the expected failure, otherwise raise the timeout |
+| `TIMEOUT` | no result before the timeout; the process tree was killed | usually an infinite loop the mutation caused; treat as caught only if that's the expected failure, otherwise raise the timeout. A line that says "the unmutated run took N ms" may not be a catch: the timeout is close to or below the tests' own time, so raise it |
 | `ERROR` | the file couldn't be read or written, the command was killed by a signal, its process tree couldn't be killed and it didn't close within 2 s, or the run was interrupted | fix the cause and re-run |
 
 Report every `SURVIVED` mutation as a missing test: name the label, the file and the behaviour no test checks, then ask the user whether to add a test for it (the `tdd` skill writes it test-first). Survivors never block a commit or a release; the user decides.
