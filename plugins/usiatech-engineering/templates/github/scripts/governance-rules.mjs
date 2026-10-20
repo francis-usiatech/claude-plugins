@@ -32,14 +32,24 @@ export const isPathPrefix = (v) => typeof v === 'string' && v.trim() !== '' && v
 
 // ESP-106 R4: rm and the PowerShell delete cmdlet and aliases (not `--rm`). Flags may be separate, long or clustered;
 // the cluster letters are rm's own (d, f, i, v, r) so `-Force` doesn't read as recursive; `-Recurse` and `-r` do.
-// The short aliases ri and rd count only where a command starts, so a folder named rd isn't one.
-const RM = String.raw`(?:(?<!-)\b(?:rm|remove-item|rmdir)|(?:^|[\n;&|({])\s*(?:ri|rd))\b`
-const RM_RECURSIVE = String.raw`[^;&|]*\s(?:-[dfiv]*r[a-z]*|--recursive\b)`
-const RM_FORCE = String.raw`[^;&|]*\s(?:-[dirv]*f[a-z]*|--force\b)`
+// The short aliases ri, rd, del and erase count only where a command starts, so a folder named rd isn't one.
+// ESP-110: cmd-style /s and /q count as recursive and force, alone or clustered (/s/q), and a command also starts
+// inside a cmd or PowerShell wrapper: `cmd /d /c rd …` (also /k, /r), `pwsh -ExecutionPolicy Bypass -Comm "erase …"`,
+// or the bare `powershell "…"`.
+const CMD_START = String.raw`(?:^|[\n;&|({]|\b(?:cmd(?:\.exe)?(?:\s+\/{1,2}[a-z](?::\S*)?){0,4}?\s+\/{1,2}[ckr]|(?:powershell|pwsh)(?:\.exe)?(?:\s+-\w+(?:\s+(?!-)[^\s"']+)?){0,6}?\s+[-\/]c[a-z]*|(?:powershell|pwsh)(?:\.exe)?(?=\s+["']))\s+["']?)`
+const RM = String.raw`(?:(?<!-)\b(?:rm|remove-item|rmdir)|${CMD_START}\s*(?:ri|rd|del|erase))\b`
+const RM_RECURSIVE = String.raw`[^;&|]*\s(?:-[dfiv]*r[a-z]*|--recursive\b|\/(?:[a-z]\/)*s(?=[\s\/"']|$))`
+const RM_FORCE = String.raw`[^;&|]*\s(?:-[dirv]*f[a-z]*|--force\b|\/(?:[a-z]\/)*q(?=[\s\/"']|$))`
+// A root, drive, workspace or home target, after a space or a `-Path:` / `--path=` value, ended by a space, a
+// separator, a bracket or a glob (ESP-110 items 3, 4, 11). /c/ is the Git Bash drive root; it needs the trailing slash so a /s or /q flag isn't one.
+const ROOT_TARGET = String.raw`[\s:=]["']?(?:(?:(?:[a-z]:)?[\/\\]{1,2}|[a-z]:|\.[\/\\]?|\/[a-z]\/)["']?(?=\s|$|[;&|)*])|~|\*|\$\{?(?:env:)?(?:home|userprofile|systemdrive)|\$pshome|%(?:userprofile|home|systemdrive))`
 
 // Command rules: [reason, regex source], matched case-insensitively against the full Bash or PowerShell command.
 export const DENY_COMMANDS = [
-  ['destructive delete of root/home/workspace', String.raw`${RM}(?=${RM_RECURSIVE})(?=${RM_FORCE})[^;&|]*\s["']?(\/["']?(\s|$)|~|\$HOME|\$\{HOME\}|\$env:userprofile|\*|\.\/?["']?(\s|$))`],
+  ['destructive delete of root/home/workspace', String.raw`${RM}(?=${RM_RECURSIVE})(?=${RM_FORCE})[^;&|]*${ROOT_TARGET}`],
+  // ESP-110 item 6: a listing of such a target piped straight into a delete, whatever its flags. The target is a
+  // lookahead and the listing must start a command, so a long command without a pipe stays linear (no ReDoS).
+  ['destructive delete of root/home/workspace', String.raw`${CMD_START}\s*(?:get-childitem|gci|ls|dir|get-item|gi)\b(?=[^;&|]*${ROOT_TARGET})[^;&|]*\|\s*(?:remove-item|rm|rmdir|ri|rd|del|erase)\b`],
   ['piping a download into a shell', String.raw`\b(curl|wget)\b[^|;&]*\|\s*(sudo\s+)?(ba|z|da)?sh\b`],
   // R3: git takes any unique prefix of a long option, and --no-veri is the shortest that isn't --no-verbose.
   ['bypassing git hooks', String.raw`--no-veri(fy?)?\b`],
@@ -57,7 +67,7 @@ export const ASK_COMMANDS = [
   ['force push', String.raw`${GIT_PREFIX}push\b.*(\s--force(-with-lease)?\b|\s-f\b|\s["']?\+\S)`],
   // R5: separate or abbreviated flags too. A short cluster can't start with "--", so --merged or --exclude isn't one.
   ['discarding work (reset/clean/restore/checkout)', String.raw`${GIT_PREFIX}(reset\b[^;&|]*\s--h(a(rd?)?)?\b|clean\b[^;&|]*\s(-[a-z]*f|--f[a-z]*\b)|restore\s+\.|checkout\s+--\s+\.|(checkout|switch)\b[^;&|]*\s(-f\b|--fo[a-z]*\b|--discard-changes\b)|stash\s+(drop|clear))`],
-  ['deleting a branch', String.raw`${GIT_PREFIX}(branch\b[^;&|]*\s(-[a-z]*d|--del[a-z]*\b)|push\b[^;&|]*\s(-d\b|--de[a-z]*\b|--mi[a-z]*\b)|push\s+\S+\s+:\S)`],
+  ['deleting a branch', String.raw`${GIT_PREFIX}(branch\b[^;&|]*\s(-[a-z]*d|--d[a-z]*\b)|push\b[^;&|]*\s(-d\b|--de[a-z]*\b|--mi[a-z]*\b)|push\s+\S+\s+:\S)`],
   ['rewriting history', String.raw`${GIT_PREFIX}(rebase|filter-branch|filter-repo|commit\s+--amend)\b`],
   ['recursive delete', `${RM}${RM_RECURSIVE}`],
   ['destructive SQL', String.raw`\b(drop\s+table|truncate\s+|delete\s+from\s+\w+\s*(;|$|"|'))`],
@@ -67,6 +77,8 @@ export const ASK_COMMANDS = [
   ['publishing a package', String.raw`\b(npm|pnpm|yarn)\s+publish\b`],
   ['remote host / infrastructure change', String.raw`\b(ssh|scp|rsync)\s|\b(terraform\s+(apply|destroy)|kubectl\s+(apply|delete)|ansible-playbook\b(?!.*--check)|firebase\s+deploy|docker\s+(system\s+prune|volume\s+rm))`],
   ['reading secrets', String.raw`\b(cat|less|more|head|tail|type|bat)\s+[^|;&]*\.env(?!\.example)(\.[\w-]+)?(\s|$)|\bprintenv\b`],
+  // ESP-110 item 7: Edit and Write deny env files, so a shell write to one asks, in Bash and PowerShell alike.
+  ['writing an env file', String.raw`(>|\btee\b|\b(set|add)-content\b|\bout-file\b|\b(cp|mv|copy-item|move-item)\b|\bsed\s+-i)[^|;&]*\.env(?!\.example)(\.[\w-]+)?["']?(\s|$|[;&|)])`],
   ['elevated privileges', String.raw`\bsudo\s`],
   ['world-writable permissions', String.raw`\bchmod\s+(-R\s+)?0?777\b`],
 ]
