@@ -84,6 +84,9 @@ describe('checkFakePasses: focused and skipped tests (AC2)', () => {
     ['fp-skip', `it.todo.each([[1]])('later')`], ['fp-skip', `test.concurrent.fixme${body}`],
     ['fp-only', `test.only.failing${body}`], ['fp-skip', `test.skip.failing${body}`],
     ['fp-only', 'it.only.each`a\n${1}`' + body],
+    // R17: a chain split across lines, and vitest's conditional skip modifiers
+    ['fp-only', `it\n  .only${body}`], ['fp-only', `test\n  .concurrent\n  .only${body}`], ['fp-skip', `it\n  .skip${body}`],
+    ['fp-skip', `it.skipIf(true)${body}`], ['fp-skip', `test.runIf(false)${body}`], ['fp-skip', `describe.skipIf(ci)('s', () => { it${body} })`],
   ]
   for (const [rule, code] of cases) {
     it(`should give one ${rule} high finding for ${code.slice(0, 40)}`, () => {
@@ -234,6 +237,9 @@ describe('checkFakePasses: review fix set 1', () => {
     ['a 320 KB .it.only chain', '.it.only'.repeat(40000)],
     ['a 320 KB .it.skip chain', '.it.skip'.repeat(40000)],
     ['one it with 20k .only segments', 'it' + '.only'.repeat(20000) + ' x'],
+    // R17: whitespace is allowed around each dot, so long runs of it must not backtrack either.
+    ['one it with 20k split .only segments', 'it' + '\n  .only'.repeat(20000) + ' x'],
+    ['15k chain heads each followed by spaces', ('it' + ' '.repeat(50) + 'x\n').repeat(15000)], // under MAX_CHARS
   ]) {
     it(`should check ${label} in under 2 s`, () => {
       const start = performance.now()

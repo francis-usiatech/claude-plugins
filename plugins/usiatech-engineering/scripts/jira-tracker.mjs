@@ -111,6 +111,7 @@ export const credentialsFromEnv = (env) => ({ email: env.JIRA_EMAIL, token: env.
 const DEFAULT_TIMEOUT_MS = 30000
 const TRUSTED_SUFFIX = '.atlassian.net'
 const hostOf = (url) => url.hostname.toLowerCase().replace(/\.$/, '')
+const isAtlassianHost = (host) => host.endsWith(TRUSTED_SUFFIX) && host.length > TRUSTED_SUFFIX.length
 
 // The site comes from the repo's own config, so the token goes only to an Atlassian host or the host the user
 // set in JIRA_SITE (R11). Returns the API base URL, or throws the reason the site isn't trusted.
@@ -126,7 +127,7 @@ const trustedApiBase = (site, trustedSite) => {
       throw new Error(`JIRA_SITE "${trustedSite}" is not a URL`)
     }
     if (host !== trusted) throw new Error(`site host "${host}" does not match JIRA_SITE host "${trusted}"`)
-  } else if (!(host.endsWith(TRUSTED_SUFFIX) && host.length > TRUSTED_SUFFIX.length)) {
+  } else if (!isAtlassianHost(host)) {
     throw new Error(`site host "${host}" is not trusted; use an ${TRUSTED_SUFFIX.slice(1)} site or set JIRA_SITE to it`)
   }
   return `https://${host}/rest/api/2`
@@ -392,12 +393,17 @@ const JIRA_COMMANDS = {
   },
 }
 
-const runCommand = async (argv, { email, token, trustedSite, doFetch, cwd }) => {
+const runCommand = async (argv, { email, token, trustedSite, doFetch, cwd, warn }) => {
   const { command, values } = parseCliArgs(argv)
   if (command !== 'check' && !Object.hasOwn(JIRA_COMMANDS, command)) throw new UsageError(`unknown command "${command}"\n${USAGE}`)
   const file = values.config ?? DEFAULT_CONFIG
   const tickets = loadTickets(cwd, file)
-  if (command === 'check') return tickets
+  if (command === 'check') {
+    // check stays environment-free, so it can't see JIRA_SITE: it warns rather than fails (R14).
+    const host = tickets.tracker === 'jira' && hostOf(new URL(tickets.jira.site))
+    if (host && !isAtlassianHost(host)) warn(`site host "${host}" is not an ${TRUSTED_SUFFIX.slice(1)} host; Jira commands will refuse it unless JIRA_SITE is set to that site`)
+    return tickets
+  }
   if (tickets.tracker !== 'jira') throw new UsageError(`"tickets.tracker" is "${tickets.tracker}" in ${file}, so there is nothing for the Jira script to do`)
   const client = () => createJiraClient({ site: tickets.jira.site, email, token, trustedSite, fetch: doFetch })
   return JIRA_COMMANDS[command]({ client, jira: tickets.jira, values, cwd })
@@ -423,8 +429,10 @@ export const runCli = async (argv, { env = process.env, fetch: doFetch = globalT
   const { email, token, trustedSite } = credentialsFromEnv(env)
   const redact = redactor(email, token)
   try {
-    const result = await runCommand(argv, { email, token, trustedSite, doFetch, cwd })
-    return { code: 0, stdout: redact(`${JSON.stringify(result)}\n`), stderr: '' }
+    const warnings = []
+    const warn = (text) => warnings.push(`jira-tracker: warning: ${text}\n`)
+    const result = await runCommand(argv, { email, token, trustedSite, doFetch, cwd, warn })
+    return { code: 0, stdout: redact(`${JSON.stringify(result)}\n`), stderr: redact(warnings.join('')) }
   } catch (err) {
     return { code: err instanceof UsageError ? 2 : 1, stdout: '', stderr: redact(`jira-tracker: ${err.message}\n`) }
   }
