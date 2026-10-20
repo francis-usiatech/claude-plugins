@@ -278,6 +278,18 @@ describe('checkWorkflow: privileged trigger with PR checkout (R7, R9; AC6)', () 
     assert.deepEqual(checkWorkflow({ file: '.github/workflows/x.yml', content: content.replace('issue_comment', 'pull_request') }), [])
   })
 
+  it('should flag a privileged checkout of a ref taken from a step output (ESP-103)', () => {
+    const job = (trigger, key = 'ref') => `on: ${trigger}\njobs:\n  a:\n    steps:\n      - id: pr\n        run: echo "sha=$(gh pr view 1 --json headRefOid -q .headRefOid)" >> "$GITHUB_OUTPUT"\n      - uses: actions/checkout@v4\n        with:\n          ${key}: \${{ steps.pr.outputs.sha }}\n`
+    for (const trigger of ['issue_comment', 'pull_request_target']) {
+      assert.deepEqual(rules(checkWorkflow({ file: '.github/workflows/x.yml', content: job(trigger) })), ['wf-privileged-checkout:high'], trigger)
+    }
+    assert.deepEqual(rules(checkWorkflow({ file: '.github/workflows/x.yml', content: job('issue_comment', 'repository') })), ['wf-privileged-checkout:high'])
+    // A "}" in a string literal before the reference must not hide it.
+    const braced = job('issue_comment').replace('${{ steps.pr.outputs.sha }}', "${{ format('{0}', steps.pr.outputs.sha) }}")
+    assert.deepEqual(rules(checkWorkflow({ file: '.github/workflows/x.yml', content: braced })), ['wf-privileged-checkout:high'])
+    assert.deepEqual(checkWorkflow({ file: '.github/workflows/x.yml', content: job('pull_request') }), [])
+  })
+
   it('should give no finding for pull_request_target that checks out the base code', () => {
     const content = 'on: pull_request_target\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n      - run: echo ${{ secrets.X }}\n'
     assert.deepEqual(checkWorkflow({ file: '.github/workflows/x.yml', content }), [])
@@ -421,6 +433,84 @@ describe('checkWorkflow: untrusted input (R8; AC7)', () => {
 
     it('should treat a name set from another untrusted env name as untrusted', () => {
       assert.deepEqual(found(wf({ top: `env:\n  U: ${TITLE}\n`, step: '        env:\n          T: ${{ env.U }}\n' })), ['wf-untrusted-input:high'])
+    })
+
+    it('should treat every name as untrusted after a whole-expression env block that reads untrusted text (ESP-102)', () => {
+      const body = 'env: ${{ fromJSON(github.event.pull_request.body) }}\n'
+      assert.deepEqual(found(wf({ top: body })), ['wf-untrusted-input:high'])
+      assert.deepEqual(found(wf({ job: `    ${body}` })), ['wf-untrusted-input:high'])
+      assert.deepEqual(found(wf({ top: 'env: ${{ fromJSON(vars.ENV) }}\n' })), [])
+    })
+
+    it('should flag an untrusted name outside [\\w-] whatever name the reference reads (ESP-102)', () => {
+      const use = `      - run: echo "\${{ env['A.B'] }}"\n`
+      assert.deepEqual(found(wf({ top: `env:\n  A.B: ${TITLE}\n`, use })), ['wf-untrusted-input:high'])
+      assert.deepEqual(found(wf({ top: 'env:\n  A.B: fixed\n', use })), [])
+    })
+
+    it('should not let a same-block name that differs only in case clear an untrusted one (ESP-102)', () => {
+      assert.deepEqual(found(wf({ top: `env:\n  T: ${TITLE}\n  t: fixed\n` })), ['wf-untrusted-input:high'])
+      assert.deepEqual(found(wf({ top: `env:\n  t: fixed\n  T: ${TITLE}\n` })), ['wf-untrusted-input:high'])
+    })
+  })
+
+  describe('untrusted input passed through $GITHUB_ENV or a step output (R8)', () => {
+    const TITLE = '${{ github.event.pull_request.title }}'
+    const found = (steps) => rules(checkWorkflow({ file: '.github/workflows/x.yml', content: `on: pull_request\njobs:\n  a:\n    steps:\n${steps}` }))
+    const writer = (run, id = '') => `      - ${id ? `id: ${id}\n        ` : ''}run: ${run}\n        env:\n          TITLE: ${TITLE}\n`
+
+    it('should flag ${{ env.NAME }} after an earlier step writes untrusted text to $GITHUB_ENV', () => {
+      assert.deepEqual(found(writer('echo "T=$TITLE" >> "$GITHUB_ENV"') + '      - run: echo "${{ env.T }}"\n'), ['wf-untrusted-input:high'])
+      assert.deepEqual(found(writer('echo "T=${TITLE}" >> $GITHUB_ENV') + '      - run: echo "${{ toJSON(env) }}"\n'), ['wf-untrusted-input:high'])
+    })
+
+    it('should flag a heredoc write grouped into $GITHUB_ENV', () => {
+      const run = '|\n          {\n            echo "T<<EOF"\n            echo "$TITLE"\n            echo EOF\n          } >> "$GITHUB_ENV"'
+      assert.deepEqual(found(writer(run) + '      - run: echo "${{ env.T }}"\n'), ['wf-untrusted-input:high'])
+    })
+
+    it('should flag ${{ steps.ID.outputs.NAME }} after that step writes untrusted text to $GITHUB_OUTPUT', () => {
+      const write = writer('echo "t=$TITLE" >> "$GITHUB_OUTPUT"', 's')
+      assert.deepEqual(found(write + '      - run: echo "${{ steps.s.outputs.t }}"\n'), ['wf-untrusted-input:high'])
+      assert.deepEqual(found(write + "      - run: echo \"${{ steps['S'].outputs.t }}\"\n"), ['wf-untrusted-input:high'])
+      assert.deepEqual(found(write + '      - run: echo \'${{ toJSON(steps) }}\'\n'), ['wf-untrusted-input:high'])
+      assert.deepEqual(found(write + '      - run: echo "${{ steps.other.outputs.t }}"\n'), [])
+    })
+
+    it('should flag a step output read into a later step env', () => {
+      const write = writer('echo "t=$TITLE" >> "$GITHUB_OUTPUT"', 's')
+      assert.deepEqual(found(write + '      - run: echo "${{ env.T }}"\n        env:\n          T: ${{ steps.s.outputs.t }}\n'), ['wf-untrusted-input:high'])
+    })
+
+    it('should give no finding for fixed text, a write after the use, or a write in another job', () => {
+      const fixed = '      - id: s\n        run: |\n          echo "X=1" >> "$GITHUB_ENV"\n          echo "t=1" >> "$GITHUB_OUTPUT"\n'
+      assert.deepEqual(found(fixed + '      - run: echo "${{ env.X }} ${{ steps.s.outputs.t }}"\n'), [])
+      assert.deepEqual(found('      - run: echo "${{ env.T }}"\n' + writer('echo "T=$TITLE" >> "$GITHUB_ENV"')), [])
+      const content = `on: pull_request\njobs:\n  a:\n    steps:\n${writer('echo "T=$TITLE" >> "$GITHUB_ENV"')}  b:\n    steps:\n      - run: echo "\${{ env.T }}"\n`
+      assert.deepEqual(checkWorkflow({ file: '.github/workflows/x.yml', content }), [])
+    })
+
+    it('should flag a write that reads the untrusted name with another shell syntax', () => {
+      for (const run of ['Add-Content $env:GITHUB_ENV "T=$env:TITLE"', 'echo T=%TITLE%>> %GITHUB_ENV%', "python -c \"import os; open(os.environ['GITHUB_ENV'], 'a').write('T=' + os.environ['TITLE'])\""]) {
+        assert.deepEqual(found(writer(run) + '      - run: echo "${{ env.T }}"\n'), ['wf-untrusted-input:high'], run)
+      }
+    })
+
+    it('should match the $GITHUB_ENV and $GITHUB_OUTPUT names in any case (Windows env names)', () => {
+      assert.deepEqual(found(writer('Add-Content $env:github_env "T=$env:TITLE"') + '      - run: echo "${{ env.T }}"\n'), ['wf-untrusted-input:high'])
+      assert.deepEqual(found(writer('Add-Content $env:github_output "t=$env:TITLE"', 's') + '      - run: echo "${{ steps.s.outputs.t }}"\n'), ['wf-untrusted-input:high'])
+    })
+
+    it('should treat a later $GITHUB_OUTPUT write that reads any variable as untrusted after a $GITHUB_ENV write', () => {
+      const taint = writer('echo "T=$TITLE" >> "$GITHUB_ENV"')
+      for (const run of ['echo "t=$T" >> "$GITHUB_OUTPUT"', 'echo t=%T%>> %GITHUB_OUTPUT%', "python -c \"import os; open(os.environ['GITHUB_OUTPUT'], 'a').write('t=' + os.environ['T'])\""]) {
+        assert.deepEqual(found(`${taint}      - id: o\n        run: ${run}\n      - run: echo "\${{ steps.o.outputs.t }}"\n`), ['wf-untrusted-input:high'], run)
+      }
+    })
+
+    it('should not read $GITHUB_OUTPUT as untrusted text after a $GITHUB_ENV write (it cannot be set that way)', () => {
+      const taint = writer('echo "T=$TITLE" >> "$GITHUB_ENV"')
+      assert.deepEqual(found(`${taint}      - id: o\n        run: echo "t=1" >> "$GITHUB_OUTPUT"\n      - run: echo "\${{ steps.o.outputs.t }}"\n`), [])
     })
   })
 

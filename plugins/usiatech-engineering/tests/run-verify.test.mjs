@@ -1,6 +1,7 @@
 import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { writeFileSync } from 'node:fs'
 import { makeRepo, makeGovTree, runNode, git, cleanupTempDirs } from './helpers.mjs'
 
 after(cleanupTempDirs)
@@ -68,6 +69,15 @@ describe('run-verify', () => {
     const r = await runVerify({ repo, config: { verify: [{ name: 'tests', run: 'pnpm test' }] } })
     assert.equal(r.code, 0)
     assert.match(r.summary, /skipped \(no package\.json yet\)/)
+  })
+
+  it('should not skip package-manager steps when the PR deletes the base branch package.json (R6)', async () => {
+    const repo = makeRepo()
+    const scripts = makeGovTree({ verify: [{ name: 'tests', run: 'npm test' }] })
+    writeFileSync(path.join(scripts, '../../package.json'), '{}')
+    const r = await runNode(path.join(scripts, 'run-verify.mjs'), { cwd: repo, env: { BASE_REF: 'develop' } })
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    assert.doesNotMatch(r.summary, /no package\.json yet/)
   })
 
   it('should fail when expectNoDiff paths change after the step runs', async () => {

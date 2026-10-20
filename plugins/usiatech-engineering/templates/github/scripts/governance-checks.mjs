@@ -74,6 +74,48 @@ export const readApprovalLabel = (govRoot = SCRIPT_GOV_ROOT) => {
   return stringValue(objectKey(cfg, 'governance'), 'approvalLabel', 'governance.approvalLabel', DEFAULT_APPROVAL_LABEL)
 }
 
+/** First line of every comment post-verdict writes. The gate trusts a verdict marker only under it (R11). */
+export const VERDICT_HEADER = '<!-- governance-review -->'
+// The marker must be the comment's last line, so text echoed after it (or a forged one before it) is never read.
+const VERDICT_MARKER = /<!-- governance-verdict (\{.*?\}) -->\s*$/
+
+/**
+ * The verdict marker line post-verdict ends its comment with.
+ * @param {{ verdict: string, sha: string }} verdict
+ * @returns {string}
+ */
+export const verdictMarker = (verdict) => `<!-- governance-verdict ${JSON.stringify(verdict)} -->`
+
+/**
+ * The verdict a post-verdict comment carries: a github-actions[bot] comment that starts with VERDICT_HEADER and ends
+ * with the marker. Any other comment, or a marker that isn't valid JSON, gives undefined.
+ * @param {{ user?: { login?: string }, body?: string }} comment  a comment from the GitHub issues API
+ * @returns {{ verdict: string, sha: string } | undefined}
+ */
+export const verdictOf = (comment) => {
+  const body = comment?.body || ''
+  if (comment?.user?.login !== 'github-actions[bot]' || !body.startsWith(`${VERDICT_HEADER}\n`)) return undefined
+  const m = body.match(VERDICT_MARKER)
+  try { return m ? JSON.parse(m[1]) : undefined } catch { return undefined }
+}
+
+/**
+ * Every comment on a pull request, in order, 100 per page.
+ * @param {{ api: string, repo: string, pr: string, headers: object }} target
+ * @returns {AsyncGenerator<object>}
+ * @throws {Error} when GitHub answers a page with a non-ok status or something other than a list
+ */
+export async function* prComments({ api, repo, pr, headers }) {
+  for (let page = 1; ; page++) {
+    const res = await fetch(`${api}/repos/${repo}/issues/${pr}/comments?per_page=100&page=${page}`, { headers })
+    if (!res.ok) throw new Error(`GitHub API returned ${res.status}`)
+    const list = await res.json()
+    if (!Array.isArray(list)) throw new Error('GitHub API returned something other than a list of comments')
+    yield* list
+    if (list.length < 100) return
+  }
+}
+
 // -z gives raw, unquoted paths (git otherwise quotes non-ASCII names, which would slip past every path check).
 // Records are NUL-separated: status, path, and a second path for renames and copies.
 const changedFiles = (base, cwd) => {
