@@ -57,26 +57,24 @@ const GIT_NO_VALUE = String.raw`(?:-p|-P|--paginate|--no-pager|--bare|--no-repla
 export const GIT_PREFIX = String.raw`\bgit(?:\s+(?:(?!${GIT_NO_VALUE}\s)-[\w-]+\s+(?!-)${GIT_VALUE}+|-[\w-]+(?:=${GIT_VALUE}*)?)){0,8}?\s+`
 const GIT_CHECKOUT_CMD = new RegExp(String.raw`${GIT_PREFIX}(?:fetch|checkout|switch|clone|pull)\b`, 'gi')
 const PULL_REF_AT = /(?:refs\/|[\s:])pull\//iy
-const PR_HEAD_EXPR_AT = /\$\{\{[^}]*\bgithub\.(?:head_ref|event\.pull_request\.head|event\.workflow_run\.head_|event\.(?:pull_request\.)?number\b)/iy
+const PR_HEAD_IN_EXPR = /\bgithub\.(?:head_ref|event\.pull_request\.head|event\.workflow_run\.head_|event\.(?:pull_request\.)?number\b)/i
 const matchesAt = (re, s, at) => { re.lastIndex = at; return re.test(s) }
-// One regex with "[^\n]*" between the command and the ref would rescan the rest of the line from every command, and
-// "[^}]*" from every "${{" (quadratic). Instead each start position is tried once: a command whose line was already
-// searched from an earlier command adds nothing, and a "${{" with no "}" since the last "${{" that failed fails too.
+// One regex with "[^\n]*" between the command and the ref would rescan the rest of the line from every command
+// (quadratic). Instead each start position is tried once: a command whose line was already searched from an earlier
+// command adds nothing. Each ${{ … }} that starts on the line is read whole through exprSpans, so a "}" in a literal
+// can't end it early (ESP-111); the spans are walked in order alongside the lines, so each is tested once.
 const runChecksOutPr = (run) => {
   if (GH_PR_CHECKOUT.test(run)) return true
-  let searchedTo = -1, exprFailsUntil = -1
+  const spans = exprSpans(run)
+  let searchedTo = -1, next = 0
   for (const cmd of run.matchAll(GIT_CHECKOUT_CMD)) {
     const from = cmd.index + cmd[0].length
     if (from <= searchedTo) continue
     const lineEnd = run.indexOf('\n', from)
     searchedTo = lineEnd === -1 ? run.length : lineEnd
-    for (let at = from; at <= searchedTo; at++) {
-      if (matchesAt(PULL_REF_AT, run, at)) return true
-      if (at < exprFailsUntil || !run.startsWith('${{', at)) continue
-      if (matchesAt(PR_HEAD_EXPR_AT, run, at)) return true
-      const brace = run.indexOf('}', at)
-      exprFailsUntil = brace === -1 ? run.length : brace
-    }
+    for (let at = from; at <= searchedTo; at++) if (matchesAt(PULL_REF_AT, run, at)) return true
+    while (next < spans.length && spans[next].start < from) next++
+    for (; next < spans.length && spans[next].start <= searchedTo; next++) if (PR_HEAD_IN_EXPR.test(spans[next].inner)) return true
   }
   return false
 }
@@ -373,15 +371,27 @@ const strings = (v, out = []) => {
 }
 // Expressions are case-insensitive and accept obj['key'] and spaces around dots; rewrite them to one lowercase
 // dotted form so the patterns above see github.event.issue.title however it was written.
-// Each ${{ … }} runs to the first "}}" after it. Found with indexOf rather than a lazy regex, which rescans to the end
-// of the text from every "${{" that is never closed (quadratic).
+// Each ${{ … }} runs to the first "}}" after it outside a '…' literal, so format('}}', x) can't end it early
+// (ESP-111). An escaped quote ('') reads as a literal ending and the next starting, which skips the same text. A
+// literal that never closes runs the span to the end of the text (fail closed).
+// A "${{" with no "}}" anywhere after it is not a span. Found with indexOf rather than a lazy regex, which rescans to
+// the end of the text from every "${{" that is never closed (quadratic); the "}}" and quote searches only move forward.
 const exprSpans = (s) => {
   const spans = []
   let open = s.indexOf('${{')
+  let quote = -2
   while (open !== -1) {
-    const close = s.indexOf('}}', open + 3)
+    let close = s.indexOf('}}', open + 3)
+    // Kept across spans: a quote past this span is searched for again only once the scan has passed it.
+    if (quote !== -1 && quote < open + 3) quote = s.indexOf("'", open + 3)
+    while (close !== -1 && quote !== -1 && quote < close) {
+      const end = s.indexOf("'", quote + 1)
+      if (end === -1) { close = s.length; break }
+      if (close < end) close = s.indexOf('}}', end + 1)
+      quote = s.indexOf("'", end + 1)
+    }
     if (close === -1) break
-    spans.push({ start: open, end: close + 2, inner: s.slice(open + 3, close) })
+    spans.push({ start: open, end: Math.min(close + 2, s.length), inner: s.slice(open + 3, close) })
     open = s.indexOf('${{', close + 2)
   }
   return spans
@@ -437,31 +447,38 @@ const untrustedEnvRef = (e, env) => {
   }
   return undefined
 }
-// The same for step outputs: outputs holds the lowercased ids of steps that wrote untrusted text to $GITHUB_OUTPUT.
-// toJSON(steps), steps.* and steps[x] may reach any of them (R8).
+// The same for step and job outputs: ids holds the lowercased ids of steps that wrote untrusted text to $GITHUB_OUTPUT
+// (R8), or of jobs with an output that reads untrusted text (ESP-111). toJSON(steps), steps.* and steps[x] may reach
+// any of them, and so may the same forms of needs.
 const STEPS_REF = /(?<![\w.-])steps(?:\.([\w-]+)|(?![\w-]))/g
-const untrustedStepsRef = (e, outputs) => {
-  for (const [ref, id] of e.matchAll(STEPS_REF)) {
-    const hit = id === undefined ? outputs.values().next().value : outputs.has(id) ? id : undefined
-    if (hit !== undefined) return `\${{ ${id === undefined ? `${ref}…` : ref} }} (step ${hit} writes untrusted text to $GITHUB_OUTPUT)`
+const NEEDS_REF = /(?<![\w.-])needs(?:\.([\w-]+)|(?![\w-]))/g
+const untrustedIdRef = (e, re, ids, why) => {
+  for (const [ref, id] of e.matchAll(re)) {
+    const hit = id === undefined ? ids.values().next().value : ids.has(id) ? id : undefined
+    if (hit !== undefined) return `\${{ ${id === undefined ? `${ref}…` : ref} }} (${why(hit)})`
   }
   return undefined
 }
-// Each untrusted ${{ … }} in s, as shown in a finding. env maps a lowercased env name set from untrusted text to
-// where it came from (F10); outputs is as for untrustedStepsRef.
-const untrustedIn = (s, env = new Map(), outputs = new Set()) => exprSpans(s)
+// What is untrusted at one point in a job: env maps a lowercased env name set from untrusted text to where it came
+// from (F10), steps and needs are the ids for untrustedIdRef.
+const NO_TAINT = { env: new Map(), steps: new Set(), needs: new Set() }
+// Each untrusted ${{ … }} in s, as shown in a finding.
+const untrustedIn = (s, taint = NO_TAINT) => exprSpans(s)
   .map(({ inner }) => {
     const e = normalizeExpr(inner)
     const found = e.match(UNTRUSTED_EXPR)?.[0] ?? e.match(WHOLE_EVENT_EXPR)?.[0] ?? unreadableIndex(e) ?? computedIndex(inner)
-    return found ? `\${{ ${found} }}` : untrustedEnvRef(e, env) ?? untrustedStepsRef(e, outputs)
+    return found ? `\${{ ${found} }}` : untrustedEnvRef(e, taint.env)
+      ?? untrustedIdRef(e, STEPS_REF, taint.steps, (id) => `step ${id} writes untrusted text to $GITHUB_OUTPUT`)
+      ?? untrustedIdRef(e, NEEDS_REF, taint.needs, (id) => `job ${id} has an output set from untrusted text`)
   })
   .filter(Boolean)
 // The env names untrusted after one level's env: block. A name it sets replaces the outer one (step over job over
 // workflow), and a value that reads an untrusted outer name is untrusted too. Names are read case-insensitively, and
 // a safe value never clears a name its own block set from untrusted text (T and t in one block, ESP-102).
-const untrustedEnv = (block, outer, outputs) => {
+const untrustedEnv = (block, taint) => {
+  const outer = taint.env
   if (typeof block === 'string') {
-    const from = untrustedIn(block, outer, outputs)[0]
+    const from = untrustedIn(block, taint)[0]
     return from ? new Map([...outer, [ANY_ENV, from]]) : outer
   }
   if (!isPlainObject(block)) return outer
@@ -469,7 +486,7 @@ const untrustedEnv = (block, outer, outputs) => {
   const marked = new Set()
   for (const [name, value] of Object.entries(block)) {
     const key = name.toLowerCase()
-    const from = typeof value === 'string' ? untrustedIn(value, outer, outputs)[0] : undefined
+    const from = typeof value === 'string' ? untrustedIn(value, taint)[0] : undefined
     if (from) {
       env.set(key, from)
       marked.add(key)
@@ -483,19 +500,73 @@ const untrustedEnv = (block, outer, outputs) => {
 // variable may hold it, except GITHUB_* and RUNNER_*, which $GITHUB_ENV can't set: $X, ${X}, $env:X, %X%, and any
 // environ / getenv / printenv / process.env read, whose name isn't parsed (fail closed).
 const SHELL_VAR = /\$(?:env:)?\{?([A-Za-z_]\w*)|%([A-Za-z_]\w*)%|\b(?:environ|getenv|printenv)\b|\bprocess\.env\b/gi
-const untrustedRead = (run, env, outputs) => {
-  const direct = untrustedIn(run, env, outputs)[0]
+// Commands that print event or PR text themselves (ESP-111): the event payload file, gh reads of a PR or issue, and
+// git log / show, which print commit messages, author names and, with a patch, PR file contents.
+const SHELL_EVENT_READ = /\bGITHUB[._]EVENT_PATH\b|\bgh\s+(?:(?:pr|issue)\s+(?:view|list|diff)|api)\b/i
+const GIT_LOG_CMD = new RegExp(String.raw`${GIT_PREFIX}(log|show)\b`, 'gi')
+// A format of only hashes, dates and newlines; anything else (%s, %an, a named format such as oneline) prints text.
+const SAFE_PLACEHOLDERS = /%(?:[HhTtPpn%]|[ac][dDrtiIsh])/g
+const safeFormat = (value) => {
+  const format = value.replace(/^t?format:/, '')
+  return format.includes('%') && !format.replace(SAFE_PLACEHOLDERS, '').includes('%')
+}
+// The only characters a hash-only git log / show may use. Anything the shell reads specially (quotes, $, `…`, {…},
+// globs, backslashes) could hide an option or change the words, so it fails closed instead of being parsed.
+// shortcut: a quoted format or a "$SHA" revision is flagged too; parse shell words if that proves noisy.
+const PLAIN_GIT_TEXT = /^[\s\w%./:@^~=,+-]*$/
+// A git log / show prints only hashes when its text is plain, every option on it is known to be safe (fail closed:
+// -L, --dirstat or an option not listed prints text), it has a format and every format is safe (git uses the last
+// one), and a show drops its patch with -s.
+const printsOnlyHashes = (sub, text) => {
+  if (!PLAIN_GIT_TEXT.test(text)) return false
+  const words = text.split(/\s+/).filter(Boolean)
+  let formats = 0, noPatch = false
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i]
+    if (word === '--') break
+    if (!word.startsWith('-') || /^-\d+$|^--max-count=\d+$/.test(word)) continue
+    if (word === '-n' || word === '--max-count') { i++; continue }
+    if (word === '-s' || word === '--no-patch') { noPatch = true; continue }
+    // Only the = form: a bare --pretty means --pretty=medium, and the next word is a revision or path.
+    const format = word.match(/^--(?:format|pretty)=(.*)$/)
+    if (!format || !safeFormat(format[1])) return false
+    formats++
+  }
+  return formats > 0 && (sub.toLowerCase() === 'log' || noPatch)
+}
+// Each git log / show is read up to the next shell separator; a quote or backtick before it makes the text not
+// plain, so a separator inside one can't hide what follows. One that starts inside the previous one's text is an
+// argument of it, already read, so each character is scanned once (a 1 MB line of "git log" stays linear).
+const SHELL_SEPARATOR = /[;&|\n)]/g
+// A line continuation leaves a backslash in the text, so it isn't plain either.
+const shellEventRead = (run) => {
+  const read = run.match(SHELL_EVENT_READ)
+  if (read) return read[0]
+  let readTo = -1
+  for (const cmd of run.matchAll(GIT_LOG_CMD)) {
+    const from = cmd.index + cmd[0].length
+    if (cmd.index < readTo) continue
+    SHELL_SEPARATOR.lastIndex = from
+    readTo = SHELL_SEPARATOR.exec(run)?.index ?? run.length
+    if (!printsOnlyHashes(cmd[1], run.slice(from, readTo))) return cmd[0].trim()
+  }
+  return undefined
+}
+const untrustedRead = (run, taint) => {
+  const direct = untrustedIn(run, taint)[0]
   if (direct) return direct
+  const { env } = taint
   const text = run.toLowerCase()
   for (const [name, from] of env) {
     if (name !== ANY_ENV && new RegExp(`(?<![\\w-])${escapeRegExp(name)}(?![\\w-])`).test(text)) return `${name} (env.${name} is set from ${from})`
   }
-  if (!env.has(ANY_ENV)) return undefined
-  for (const [ref, dollar, percent] of run.matchAll(SHELL_VAR)) {
-    const name = dollar ?? percent
-    if (name === undefined || !/^(?:github|runner)_/i.test(name)) return `${ref} (env.${ANY_ENV} is set from ${env.get(ANY_ENV)})`
+  if (env.has(ANY_ENV)) {
+    for (const [ref, dollar, percent] of run.matchAll(SHELL_VAR)) {
+      const name = dollar ?? percent
+      if (name === undefined || !/^(?:github|runner)_/i.test(name)) return `${ref} (env.${ANY_ENV} is set from ${env.get(ANY_ENV)})`
+    }
   }
-  return undefined
+  return shellEventRead(run)
 }
 
 const triggersOf = (doc) => {
@@ -533,16 +604,51 @@ const shapeProblems = (doc) => {
   return out
 }
 
-// A step output in a checkout ref counts as PR code: the usual issue_comment job looks up the PR head with gh or
-// github-script and passes it on that way (ESP-103). Any steps reference counts, so steps[x] fails closed. Each
-// ${{ … }} span is read whole, so a "}" in a string literal ('{0}') can't end it early.
-const STEPS_IN_EXPR = /(?<![\w.-])steps\b/
-const readsStepOutput = (s) => exprSpans(s).some(({ inner }) => STEPS_IN_EXPR.test(normalizeExpr(inner)))
-const checksOutPrCode = (step) => {
+// A step or job output in a checkout ref counts as PR code: the usual issue_comment job looks up the PR head with gh
+// or github-script and passes it on that way (ESP-103, ESP-111). Any steps or needs reference counts, so steps[x]
+// fails closed. So does an env name set from a PR ref, an output or untrusted text (prEnv holds those names, ANY_ENV
+// for every name), so env: REF: ${{ github.sha }} stays clean. Each ${{ … }} span is read whole, so a "}" in a
+// string literal ('{0}') can't end it early.
+const OUTPUT_IN_EXPR = /(?<![\w.-])(?:steps|needs)\b/
+const readsPrEnv = (e, prEnv) => [...e.matchAll(ENV_REF)].some(([, name]) => (name === undefined ? prEnv.size > 0 : prEnv.has(name) || prEnv.has(ANY_ENV)))
+const readsPrRef = (s, prEnv) => PR_REF_EXPR.test(normalizeExprs(s)) || untrustedIn(s).length > 0
+  || exprSpans(s).some(({ inner }) => { const e = normalizeExpr(inner); return OUTPUT_IN_EXPR.test(e) || readsPrEnv(e, prEnv) })
+const checksOutPrCode = (step, prEnv) => {
   if (typeof step.uses === 'string' && actionName(step.uses) === 'actions/checkout' && isPlainObject(step.with)) {
-    return ['ref', 'repository'].some((k) => typeof step.with[k] === 'string' && (PR_REF_EXPR.test(normalizeExprs(step.with[k])) || readsStepOutput(step.with[k])))
+    return ['ref', 'repository'].some((k) => typeof step.with[k] === 'string' && readsPrRef(step.with[k], prEnv))
   }
   return typeof step.run === 'string' && runChecksOutPr(normalizeExprs(step.run))
+}
+// The lowercased env names set from PR-derived text after one level's env: block, as untrustedEnv does for untrusted
+// text: a name it sets replaces the outer one, a whole-expression block or a name outside [\w-] that reads such text
+// marks every name, and a plain value never clears a name its own block set from such text.
+const prRefEnv = (block, outer) => {
+  if (typeof block === 'string') return readsPrRef(block, outer) ? new Set([...outer, ANY_ENV]) : outer
+  if (!isPlainObject(block)) return outer
+  const env = new Set(outer), marked = new Set()
+  for (const [name, value] of Object.entries(block)) {
+    const key = name.toLowerCase()
+    if (typeof value === 'string' && readsPrRef(value, outer)) {
+      env.add(key)
+      marked.add(key)
+      if (/[^\w-]/.test(key)) env.add(ANY_ENV)
+    } else if (!marked.has(key)) env.delete(key)
+  }
+  return env
+}
+// A run script that names $GITHUB_ENV and reads PR-derived text (an expression, a PR-derived env name in any shell
+// syntax, or event text it fetches itself) may set any env name from it.
+const writesPrEnv = (run, prEnv) => /\bGITHUB_ENV\b/i.test(run) && (readsPrRef(run, prEnv) || untrustedRead(run, NO_TAINT) !== undefined
+  || prEnv.has(ANY_ENV) || [...prEnv].some((name) => new RegExp(`(?<![\\w-])${escapeRegExp(name)}(?![\\w-])`, 'i').test(run)))
+// The index of the first step that checks out PR code.
+const prCheckoutIndex = (doc, job, steps) => {
+  let jobEnv = prRefEnv(job.env, prRefEnv(doc.env, new Set()))
+  for (const [n, step] of steps.entries()) {
+    const env = prRefEnv(step.env, jobEnv)
+    if (checksOutPrCode(step, env)) return n
+    if (typeof step.run === 'string' && writesPrEnv(step.run, env)) jobEnv = new Set([...jobEnv, ANY_ENV])
+  }
+  return -1
 }
 
 const privilegedRules = (doc, file, findings) => {
@@ -550,7 +656,7 @@ const privilegedRules = (doc, file, findings) => {
   if (!trigger) return
   for (const [id, job] of jobsOf(doc)) {
     const steps = stepsOf(job)
-    const idx = steps.findIndex(checksOutPrCode)
+    const idx = prCheckoutIndex(doc, job, steps)
     if (idx === -1) {
       // A reusable workflow call can't be read from here, so with inherited secrets it is assumed to run PR code.
       // Any non-null "uses" counts, so a malformed one fails closed.
@@ -577,32 +683,81 @@ const privilegedRules = (doc, file, findings) => {
   }
 }
 
+// Walks a job's steps in order, calling visit(step, taint) with what is untrusted at each one, and says whether any
+// of the job's outputs reads untrusted text. needs holds the lowercased ids of jobs whose outputs do.
+const walkJob = (job, workflowEnv, needs, visit) => {
+  const steps = new Set()
+  let jobEnv = untrustedEnv(job.env, { env: workflowEnv, steps, needs })
+  for (const step of stepsOf(job)) {
+    const taint = { env: untrustedEnv(step.env, { env: jobEnv, steps, needs }), steps, needs }
+    visit(step, taint)
+    if (typeof step.run !== 'string') continue
+    // Untrusted text written to $GITHUB_ENV reaches every later step's env under a name the script chose, and text
+    // written to $GITHUB_OUTPUT (or with the deprecated ::set-output command) reaches steps.<id>.outputs (R8,
+    // ESP-111). Either file named, in any case (Windows env names aren't case-sensitive), counts as written to.
+    const from = untrustedRead(step.run, taint)
+    if (from && /\bGITHUB_ENV\b/i.test(step.run)) jobEnv = new Map([...jobEnv, [ANY_ENV, `$GITHUB_ENV, written from ${from}`]])
+    if (from && /\bGITHUB_OUTPUT\b|::set-output\b/i.test(step.run) && step.id != null) steps.add(String(step.id).toLowerCase())
+  }
+  const final = { env: jobEnv, steps, needs }
+  return strings(job.outputs).some((s) => untrustedIn(s, final).length > 0)
+}
+// Jobs ordered so each comes after the jobs its needs: names, read without recursion (a long chain can't overflow the
+// stack). A job already being expanded is not expanded again, so a cycle ends; every job is in the result once.
+const needsOrder = (jobs) => {
+  const byId = new Map(jobs.map((entry) => [entry[0].toLowerCase(), entry]))
+  const order = [], placed = new Set(), expanding = new Set()
+  for (const start of jobs) {
+    const stack = [[start, false]]
+    while (stack.length) {
+      const [entry, expanded] = stack.pop()
+      if (placed.has(entry)) continue
+      if (expanded) { placed.add(entry); order.push(entry); continue }
+      if (expanding.has(entry)) continue
+      expanding.add(entry)
+      stack.push([entry, true])
+      for (const dep of [entry[1].needs].flat()) {
+        const next = typeof dep === 'string' ? byId.get(dep.toLowerCase()) : undefined
+        if (next && !placed.has(next)) stack.push([next, false])
+      }
+    }
+  }
+  return order
+}
+// The needs ids a job may read as untrusted: those in tainted, and any it doesn't declare in needs: (fail closed;
+// GitHub rejects such a read, and following it would take a pass per job).
+const needsTaintOf = (job, tainted) => {
+  const declared = new Set([job.needs].flat().filter((d) => typeof d === 'string').map((d) => d.toLowerCase()))
+  return { has: (id) => tainted.has(id) || !declared.has(id), values: () => tainted.values() }
+}
+// The jobs with an output that reads untrusted text, through any chain of needs. One walk in needs order finds them
+// all, since each job's declared needs are walked before it.
+const untrustedJobs = (doc, workflowEnv) => {
+  const tainted = new Set()
+  for (const [id, job] of needsOrder(jobsOf(doc))) {
+    if (walkJob(job, workflowEnv, needsTaintOf(job, tainted), () => {})) tainted.add(id.toLowerCase())
+  }
+  return tainted
+}
+
 const untrustedInputRules = (doc, file, findings) => {
-  const workflowEnv = untrustedEnv(doc.env, new Map())
+  const workflowEnv = untrustedEnv(doc.env, NO_TAINT)
+  const needs = untrustedJobs(doc, workflowEnv)
   for (const [id, job] of jobsOf(doc)) {
-    let jobEnv = untrustedEnv(job.env, workflowEnv)
-    const outputs = new Set()
-    for (const step of stepsOf(job)) {
-      const env = untrustedEnv(step.env, jobEnv, outputs)
+    walkJob(job, workflowEnv, needsTaintOf(job, needs), (step, taint) => {
       const line = lineOf(step, 'run') || lineOf(step, 'with') || lineOf(job.steps, job.steps.indexOf(step))
       if (typeof step.run === 'string') {
-        for (const expr of untrustedIn(step.run, env, outputs)) {
+        for (const expr of untrustedIn(step.run, taint)) {
           findings.push({
             rule: 'wf-untrusted-input', tier: TIER.HIGH, file, line,
             detail: `Job "${id}" puts ${expr} directly into a run script (shell injection). Pass it through env: and quote it.`,
           })
         }
-        // Untrusted text written to $GITHUB_ENV reaches every later step's env under a name the script chose, and
-        // text written to $GITHUB_OUTPUT reaches steps.<id>.outputs (R8). Either file named, in any case (Windows env
-        // names aren't case-sensitive), counts as written to.
-        const from = untrustedRead(step.run, env, outputs)
-        if (from && /\bGITHUB_ENV\b/i.test(step.run)) jobEnv = new Map([...jobEnv, [ANY_ENV, `$GITHUB_ENV, written from ${from}`]])
-        if (from && /\bGITHUB_OUTPUT\b/i.test(step.run) && step.id != null) outputs.add(String(step.id).toLowerCase())
       }
-      if (typeof step.uses !== 'string' || !isPlainObject(step.with)) continue
+      if (typeof step.uses !== 'string' || !isPlainObject(step.with)) return
       const isScript = actionName(step.uses) === 'actions/github-script'
       const inputs = isScript ? [step.with.script].filter((s) => typeof s === 'string') : isAiAction(step.uses) ? strings(step.with) : []
-      for (const expr of inputs.flatMap((s) => untrustedIn(s, env, outputs))) {
+      for (const expr of inputs.flatMap((s) => untrustedIn(s, taint))) {
         findings.push({
           rule: 'wf-untrusted-input', tier: TIER.HIGH, file, line,
           detail: isScript
@@ -610,7 +765,7 @@ const untrustedInputRules = (doc, file, findings) => {
             : `Job "${id}" passes ${expr} into ${actionName(step.uses)} (prompt injection into an agent with repo access).`,
         })
       }
-    }
+    })
   }
 }
 

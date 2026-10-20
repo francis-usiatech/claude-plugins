@@ -290,9 +290,93 @@ describe('checkWorkflow: privileged trigger with PR checkout (R7, R9; AC6)', () 
     assert.deepEqual(checkWorkflow({ file: '.github/workflows/x.yml', content: job('pull_request') }), [])
   })
 
+  describe('checkout ref from env.* or needs.* (ESP-111 item 2)', () => {
+    const checkout = (ref, { trigger = 'issue_comment', workflowEnv = '', jobEnv = '', before = '' } = {}) => rules(checkWorkflow({
+      file: '.github/workflows/x.yml',
+      content: `on: ${trigger}\n${workflowEnv && `env:\n  ${workflowEnv}\n`}jobs:\n  a:\n${jobEnv && `    env:\n      ${jobEnv}\n`}    steps:\n${before}      - uses: actions/checkout@v4\n        with:\n          ref: ${ref}\n`,
+    }))
+    const PR_CHECKOUT = ['wf-privileged-checkout:high']
+
+    it('should flag a ref from a job output', () => {
+      assert.deepEqual(checkout('${{ needs.p.outputs.sha }}'), PR_CHECKOUT)
+      assert.deepEqual(checkout('${{ needs.p.outputs.sha }}', { trigger: 'pull_request' }), [])
+    })
+
+    it('should flag a ref from an env name set from an expression', () => {
+      assert.deepEqual(checkout('${{ env.REF }}', { jobEnv: 'REF: ${{ github.event.pull_request.head.sha }}' }), PR_CHECKOUT)
+      assert.deepEqual(checkout('${{ env.REF }}', { workflowEnv: 'REF: refs/pull/${{ github.event.number }}/head' }), PR_CHECKOUT)
+    })
+
+    it('should flag a ref from env after an earlier step writes $GITHUB_ENV, even over a literal', () => {
+      const write = '      - run: echo "REF=$(gh pr view 1 --json headRefOid -q .headRefOid)" >> "$GITHUB_ENV"\n'
+      assert.deepEqual(checkout('${{ env.REF }}', { before: write }), PR_CHECKOUT)
+      assert.deepEqual(checkout('${{ env.REF }}', { workflowEnv: 'REF: main', before: write }), PR_CHECKOUT)
+    })
+
+    it('should flag the whole env object or a computed index when any name is PR-derived, and a name set from one', () => {
+      const head = 'REF: ${{ github.event.pull_request.head.sha }}'
+      assert.deepEqual(checkout('${{ fromJSON(toJSON(env)).REF }}', { workflowEnv: head }), PR_CHECKOUT)
+      assert.deepEqual(checkout('${{ env[inputs.k] }}', { workflowEnv: head }), PR_CHECKOUT)
+      assert.deepEqual(checkout('${{ env.B }}', { workflowEnv: head, jobEnv: 'B: ${{ env.REF }}' }), PR_CHECKOUT)
+      assert.deepEqual(checkout('${{ env.REF }}', { jobEnv: 'REF: ${{ steps.pr.outputs.sha }}' }), PR_CHECKOUT)
+    })
+
+    it('should give no finding for a ref from an env name set to a literal, the base or the pushed commit', () => {
+      assert.deepEqual(checkout('${{ env.REF }}', { workflowEnv: 'REF: main' }), [])
+      assert.deepEqual(checkout('${{ env.ref }}', { jobEnv: 'REF: v1.2' }), [])
+      assert.deepEqual(checkout('${{ env.REF }}', { jobEnv: 'REF: ${{ github.sha }}' }), [])
+      assert.deepEqual(checkout('${{ env.REF }}', { jobEnv: 'REF: ${{ github.event.pull_request.base.sha }}' }), [])
+      assert.deepEqual(checkout('${{ toJSON(env) }}', { workflowEnv: 'REF: main' }), [])
+      assert.deepEqual(checkout('${{ env.REF }}'), [])
+      assert.deepEqual(checkout('${{ github.sha }}'), [])
+    })
+
+    it('should give no finding after a $GITHUB_ENV write of fixed or base text', () => {
+      assert.deepEqual(checkout('${{ env.REF }}', { before: '      - run: echo "X=1" >> "$GITHUB_ENV"\n' }), [])
+      assert.deepEqual(checkout('${{ env.REF }}', { before: '      - run: echo "REF=${{ github.sha }}" >> "$GITHUB_ENV"\n' }), [])
+    })
+
+    it('should flag a ref from env after a $GITHUB_ENV write that reads a PR-derived name or expression', () => {
+      const viaName = '      - run: echo "REF=$HEAD" >> "$GITHUB_ENV"\n        env:\n          HEAD: ${{ github.event.pull_request.head.sha }}\n'
+      assert.deepEqual(checkout('${{ env.REF }}', { before: viaName }), PR_CHECKOUT)
+      assert.deepEqual(checkout('${{ env.REF }}', { before: '      - run: echo "REF=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_ENV"\n' }), PR_CHECKOUT)
+    })
+
+    it('should let a lower level env replace an outer value either way', () => {
+      assert.deepEqual(checkout('${{ env.REF }}', { workflowEnv: 'REF: ${{ github.event.pull_request.head.sha }}', jobEnv: 'REF: main' }), [])
+      assert.deepEqual(checkout('${{ env.REF }}', { workflowEnv: 'REF: main', jobEnv: 'REF: ${{ github.head_ref }}' }), PR_CHECKOUT)
+    })
+  })
+
   it('should give no finding for pull_request_target that checks out the base code', () => {
     const content = 'on: pull_request_target\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n      - run: echo ${{ secrets.X }}\n'
     assert.deepEqual(checkWorkflow({ file: '.github/workflows/x.yml', content }), [])
+  })
+})
+
+describe(`checkWorkflow: "}}" inside a '…' literal (ESP-111 item 7)`, () => {
+  const run = (cmd, trigger = 'pull_request') => rules(checkWorkflow({ file: '.github/workflows/x.yml', content: stepRun(cmd, trigger) }))
+
+  it('should read past a "}}" inside a string literal to the untrusted field after it', () => {
+    assert.deepEqual(run(`echo "\${{ format('}}{0}', github.event.issue.title) }}"`), ['wf-untrusted-input:high'])
+    assert.deepEqual(run(`echo "\${{ format('it''s }}', github.event.issue.title) }}"`), ['wf-untrusted-input:high'])
+  })
+
+  it('should read a span whose literal never closes to the end of the text (fail closed)', () => {
+    assert.deepEqual(run(`echo "\${{ format('}}, github.event.issue.title) }}"`), ['wf-untrusted-input:high'])
+  })
+
+  it('should still end a span at "}}" outside a literal', () => {
+    assert.deepEqual(run(`echo "\${{ 'a' }} github.event.issue.title"`), [])
+  })
+
+  it('should flag a privileged checkout whose ref has a "}}" literal before the step output', () => {
+    const content = `on: issue_comment\njobs:\n  a:\n    steps:\n      - id: pr\n        run: echo "sha=1" >> "$GITHUB_OUTPUT"\n      - uses: actions/checkout@v4\n        with:\n          ref: \${{ format('}}{0}', steps.pr.outputs.sha) }}\n`
+    assert.deepEqual(rules(checkWorkflow({ file: '.github/workflows/x.yml', content })), ['wf-privileged-checkout:high'])
+  })
+
+  it('should flag a git fetch of the PR head behind a "}" literal in run', () => {
+    assert.deepEqual(run(`git fetch origin \${{ format('}', github.head_ref) }}`, 'pull_request_target'), ['wf-privileged-checkout:high', 'wf-untrusted-input:high'])
   })
 })
 
@@ -511,6 +595,92 @@ describe('checkWorkflow: untrusted input (R8; AC7)', () => {
     it('should not read $GITHUB_OUTPUT as untrusted text after a $GITHUB_ENV write (it cannot be set that way)', () => {
       const taint = writer('echo "T=$TITLE" >> "$GITHUB_ENV"')
       assert.deepEqual(found(`${taint}      - id: o\n        run: echo "t=1" >> "$GITHUB_OUTPUT"\n      - run: echo "\${{ steps.o.outputs.t }}"\n`), [])
+    })
+
+    it('should flag a step output written with ::set-output (ESP-111 item 4)', () => {
+      assert.deepEqual(found(writer('echo "::set-output name=t::$TITLE"', 's') + '      - run: echo "${{ steps.s.outputs.t }}"\n'), ['wf-untrusted-input:high'])
+      assert.deepEqual(found('      - id: s\n        run: echo "::set-output name=t::1"\n      - run: echo "${{ steps.s.outputs.t }}"\n'), [])
+    })
+  })
+
+  describe('event text a run script reads itself (ESP-111 item 3)', () => {
+    const found = (steps) => rules(checkWorkflow({ file: '.github/workflows/x.yml', content: `on: pull_request\njobs:\n  a:\n    steps:\n${steps}` }))
+    const viaEnv = (cmd) => found(`      - run: echo "T=$(${cmd})" >> "$GITHUB_ENV"\n      - run: echo "\${{ env.T }}"\n`)
+    const viaOutput = (cmd) => found(`      - id: s\n        run: echo "t=$(${cmd})" >> "$GITHUB_OUTPUT"\n      - run: echo "\${{ steps.s.outputs.t }}"\n`)
+    const UNTRUSTED = ['wf-untrusted-input:high']
+
+    it('should treat a read of $GITHUB_EVENT_PATH as untrusted', () => {
+      assert.deepEqual(viaEnv('jq -r .pull_request.title "$GITHUB_EVENT_PATH"'), UNTRUSTED)
+      assert.deepEqual(viaEnv('jq -r .pull_request.title ${{ github.event_path }}'), UNTRUSTED)
+      assert.deepEqual(viaOutput('jq -r .issue.body $env:GITHUB_EVENT_PATH'), UNTRUSTED)
+    })
+
+    it('should treat gh pr / issue view, list and diff and gh api as untrusted', () => {
+      for (const cmd of ['gh pr view 1 --json title -q .title', 'gh issue view 2 --json body', 'gh pr list --json headRefName', 'gh pr diff 1', 'gh api repos/o/r/pulls/1']) {
+        assert.deepEqual(viaEnv(cmd), UNTRUSTED, cmd)
+      }
+    })
+
+    it('should treat git log and git show as untrusted unless they print only hashes and dates', () => {
+      for (const cmd of ['git log -1 --format=%s', 'git -C . log -1 --format=%s', 'git log -1 --oneline', 'git log -1', 'git show -s --format=%B', 'git show --format=%H', "git log -1 --format='%H %an'", 'git log -1 -p --format=%H', 'git log -1 --format=%H; git log -1 --format=%s',
+        'git log -1 -L1,5:README.md --format=%H', 'git log -1 --format=%H --dirstat', 'git log -1 --format=%H --summary', 'git log -1 --format=%H --format=%s', 'git log -1 --format',
+        'git log -1 --format=%H "--format=%s"', "git log -1 --format=%H '--pretty=%B'", 'git show -s --format=%H "-p"', 'git log -1 --format=%H \\-p',
+        'git log -1 --format=%H $OPTS', 'git log -1 --pretty %H',
+        "git log -1 --format=%h';%s'", 'git log -1 --format=%h\\"|%s\\"', "git log -1 --format=%h';%an'", "git log -1 '--format=%h;%s'", "git log -1 --format='%h", 'git log -1 --format=%H \\\n          --format=%s',
+        // Shell expansion that could add an option fails closed, and so does any quoted text.
+        'git log -1 --format=%H `echo -- -p`', 'git log -1 --format=%H {-p,-1}', 'git log -1 --format=%H ":/;" -p', 'git log -1 --format=%H -[p]',
+        "git log -1 --pretty=format:'%h %ct'"]) {
+        assert.deepEqual(viaOutput(cmd), UNTRUSTED, cmd)
+      }
+      // A line continuation in a run block joins the next line's options to the command.
+      const continued = '      - id: s\n        run: |\n          git log -1 --format=%H \\\n            --format=%s >> "$GITHUB_OUTPUT"\n      - run: echo "${{ steps.s.outputs.t }}"\n'
+      assert.deepEqual(found(continued), UNTRUSTED)
+      for (const cmd of ['git log -1 --format=%H', 'git log -1 --pretty=format:%h,%ct', 'git log -n 1 --format=%H HEAD', 'git log -1 --format=%H | head -c 7', 'git show -s --format=%H', 'git rev-parse HEAD']) {
+        assert.deepEqual(viaOutput(cmd), [], cmd)
+      }
+    })
+  })
+
+  describe('untrusted job outputs read through needs (ESP-111 item 1)', () => {
+    const TITLE = '${{ github.event.pull_request.title }}'
+    const writer = '      - id: s\n        run: echo "t=$TITLE" >> "$GITHUB_OUTPUT"\n        env:\n          TITLE: ' + TITLE + '\n'
+    const job = (id, { needs = '', outputs = '', steps = '      - run: echo hi\n' } = {}) => `  ${id}:\n${needs && `    needs: ${needs}\n`}${outputs && `    outputs:\n      t: ${outputs}\n`}    steps:\n${steps}`
+    const found = (...jobs) => rules(checkWorkflow({ file: '.github/workflows/x.yml', content: `on: pull_request\njobs:\n${jobs.join('')}` }))
+    const UNTRUSTED = ['wf-untrusted-input:high']
+
+    it('should flag needs.<job>.outputs.<name> when the output reads an untrusted step output', () => {
+      const a = job('a', { outputs: '${{ steps.s.outputs.t }}', steps: writer })
+      assert.deepEqual(found(a, job('b', { needs: 'a', steps: '      - run: echo "${{ needs.a.outputs.t }}"\n' })), UNTRUSTED)
+      // Listed before the job it needs.
+      assert.deepEqual(found(job('b', { needs: 'a', steps: '      - run: echo "${{ needs.a.outputs.t }}"\n' }), a), UNTRUSTED)
+    })
+
+    it('should flag an output set from untrusted text directly, toJSON(needs) and needs.<job>', () => {
+      const a = job('a', { outputs: TITLE })
+      for (const expr of ['needs.a.outputs.t', 'toJSON(needs)', "toJSON(needs['A'])"]) {
+        assert.deepEqual(found(a, job('b', { needs: 'a', steps: `      - run: echo "\${{ ${expr} }}"\n` })), UNTRUSTED, expr)
+      }
+    })
+
+    it('should follow a chain of jobs and a needs value read into env', () => {
+      const a = job('a', { outputs: TITLE })
+      const b = job('b', { needs: 'a', outputs: '${{ needs.a.outputs.t }}' })
+      assert.deepEqual(found(job('c', { needs: '[b]', steps: '      - run: echo "${{ needs.b.outputs.t }}"\n' }), b, a), UNTRUSTED)
+      assert.deepEqual(found(a, job('b', { needs: 'a', steps: '      - run: echo "${{ env.T }}"\n        env:\n          T: ${{ needs.a.outputs.t }}\n' })), UNTRUSTED)
+    })
+
+    it('should finish on a needs cycle and flag a needs read the job does not declare (fail closed)', () => {
+      const a = job('a', { needs: 'b', outputs: TITLE })
+      assert.deepEqual(found(a, job('b', { needs: 'a', steps: '      - run: echo "${{ needs.a.outputs.t }}"\n' })), UNTRUSTED)
+      const clean = job('a', { outputs: 'fixed' })
+      assert.deepEqual(found(job('b', { steps: '      - run: echo "${{ needs.a.outputs.t }}"\n' }), clean), UNTRUSTED)
+      assert.deepEqual(found(job('b', { needs: '[c]', steps: '      - run: echo "${{ needs.a.outputs.t }}"\n' }), clean, job('c')), UNTRUSTED)
+    })
+
+    it('should give no finding for an output of fixed text or another job', () => {
+      const clean = job('a', { outputs: '${{ steps.s.outputs.t }}', steps: '      - id: s\n        run: echo "t=1" >> "$GITHUB_OUTPUT"\n' })
+      assert.deepEqual(found(clean, job('b', { needs: 'a', steps: '      - run: echo "${{ needs.a.outputs.t }}"\n' })), [])
+      assert.deepEqual(found(job('a', { outputs: TITLE }), job('c', { outputs: 'fixed' }), job('b', { needs: 'c', steps: '      - run: echo "${{ needs.c.outputs.t }}"\n' })), [])
     })
   })
 
@@ -740,6 +910,38 @@ describe('checkWorkflow: worst-case input size', () => {
 
   it('should check 1 MB of unclosed "${{" in under 1 s (exprSpans)', async () => {
     assert.equal(await slowCheckReason(stepRun('${{ '.repeat(MEGABYTE / 4)), []), null)
+  })
+
+  it(`should check 1 MB of "\${{ '" and of "''" in under 1 s (exprSpans literal skip)`, async () => {
+    assert.equal(await slowCheckReason(stepRun(`\${{ '`.repeat(MEGABYTE / 5)), []), null)
+    assert.equal(await slowCheckReason(stepRun(`\${{ ${"''".repeat(MEGABYTE / 2)}`), []), null)
+    // The quote after the last span must be searched for once, not once per span. A workflow env value is read by one
+    // rule pass, so the 131k spans cost little apart from that search.
+    assert.equal(await slowCheckReason(`on: push\nenv:\n  A: ${'${{ a }}'.repeat(MEGABYTE / 8 + 1)}'\njobs:\n  a:\n    steps:\n      - run: echo\n`, []), null)
+  })
+
+  it('should check a 1500-job chain of undeclared needs in under 1 s (untrustedJobs)', async () => {
+    const count = 1500
+    const jobs = Array.from({ length: count }, (_, n) => n + 1 === count
+      ? `  j${n}:\n    outputs:\n      t: \${{ github.event.issue.title }}\n    steps:\n      - run: |\n          echo ${'x'.repeat(MEGABYTE)}\n`
+      : `  j${n}:\n    outputs:\n      t: \${{ needs.j${n + 1}.outputs.t }}\n    steps:\n      - run: echo${n === 0 ? ' "${{ needs.j1.outputs.t }}"' : ''}\n`)
+    assert.equal(await slowCheckReason(`on: push\njobs:\n${jobs.join('')}`, ['wf-untrusted-input:high']), null)
+  })
+
+  it('should check 1 MB of "git log" commands on one line in under 1 s (shellEventRead)', async () => {
+    const write = (cmds) => `on: push\njobs:\n  a:\n    steps:\n      - run: echo "$(${cmds})" >> "$GITHUB_ENV"\n`
+    assert.equal(await slowCheckReason(write('git log --format=%H;'.repeat(MEGABYTE / 19 + 1)), []), null)
+    assert.equal(await slowCheckReason(write('git log '.repeat(MEGABYTE / 8 + 1) + '--format=%H'), []), null)
+  })
+
+  // 1500 jobs listed against their needs order would take 1500 passes over them without needsOrder. Parsing a job
+  // costs far more than a byte of one long line, so the rest of the 1 MB is a single line in a run block.
+  it('should check a 1500-job chain listed against its needs order in under 1 s (untrustedJobs)', async () => {
+    const count = 1500
+    const jobs = Array.from({ length: count }, (_, n) => n + 1 === count
+      ? `  j${n}:\n    outputs:\n      t: \${{ github.event.issue.title }}\n    steps:\n      - run: |\n          echo ${'x'.repeat(MEGABYTE)}\n`
+      : `  j${n}:\n    needs: j${n + 1}\n    outputs:\n      t: \${{ needs.j${n + 1}.outputs.t }}\n    steps:\n      - run: echo${n === 0 ? ' "${{ needs.j1.outputs.t }}"' : ''}\n`)
+    assert.equal(await slowCheckReason(`on: push\njobs:\n${jobs.join('')}`, ['wf-untrusted-input:high']), null)
   })
 
   it('should flag 1 MB of unclosed "[" after a context name in under 1 s (UNTRUSTED_EXPR)', async () => {

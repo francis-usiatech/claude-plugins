@@ -10,10 +10,12 @@ const PASS = { verdict: 'PASS', summary: '0 findings.', findings: [], traceabili
 
 // existing: comments returned by the list call (or pages: one array per page); failList / failWrite: status for the
 // list call / for POST and PATCH; config: base-branch engineering.json
-const runPost = async ({ verdictJson = JSON.stringify(PASS), existing = [], pages = [existing], failList, failWrite, config } = {}) => {
+// failPage: fail only that page of the list call
+const runPost = async ({ verdictJson = JSON.stringify(PASS), existing = [], pages = [existing], failList, failPage, failWrite, config } = {}) => {
   const stub = await githubStub((req) => {
-    if (req.method === 'GET' && failList) return { status: failList, json: { message: 'nope' } }
-    if (req.method === 'GET') return { json: pages[Number(new URL(req.url, 'http://x').searchParams.get('page') || 1) - 1] || [] }
+    const page = Number(new URL(req.url, 'http://x').searchParams.get('page') || 1)
+    if (req.method === 'GET' && failList && (!failPage || page === failPage)) return { status: failList, json: { message: 'nope' } }
+    if (req.method === 'GET') return { json: pages[page - 1] || [] }
     return failWrite ? { status: failWrite, json: { message: 'nope' } } : { status: req.method === 'POST' ? 201 : 200, json: { id: 1 } }
   })
   try {
@@ -70,6 +72,26 @@ describe('post-verdict', () => {
     assert.equal(r.code, 1)
     assert.equal(r.write, undefined)
     assert.match(r.stderr, /500/)
+  })
+
+  it('should name the PR and the page that could not be read (ESP-111 item 5)', async () => {
+    const filler = Array.from({ length: 100 }, (_, i) => ({ id: 100 + i, user: { login: 'someone' }, body: 'lgtm' }))
+    const r = await runPost({ pages: [filler, []], failList: 502, failPage: 2 })
+    assert.equal(r.code, 1)
+    assert.equal(r.write, undefined)
+    assert.match(r.stderr, /GitHub API returned 502 reading PR 7 comments, page 2/)
+  })
+
+  it('should update a pre-0.18.4 bot verdict comment without the header instead of adding another (ESP-111 item 6)', async () => {
+    const legacy = (id) => ({ id, user: { login: 'github-actions[bot]' }, body: `## 🟡 Governance review: FLAG\n\n<!-- governance-verdict {"verdict":"FLAG","sha":"old"} -->` })
+    const echoed = { id: 23, user: { login: 'github-actions[bot]' }, body: 'Echoed PR text <!-- governance-verdict {"verdict":"PASS","sha":"x"} -->' }
+    const r = await runPost({ existing: [legacy(20), legacy(21), { id: 22, user: { login: 'someone' }, body: legacy(0).body }, echoed] })
+    assert.equal(r.code, 0, r.stderr)
+    assert.equal(r.write.method, 'PATCH')
+    assert.equal(r.write.url, '/repos/o/r/issues/comments/21')
+    // A current-format comment wins over an old one, wherever it is.
+    const both = await runPost({ existing: [botVerdict(12, 'PASS', 'x'), legacy(21)] })
+    assert.equal(both.write.url, '/repos/o/r/issues/comments/12')
   })
 
   it('should post an ERROR verdict when the reviewer output is missing or invalid', async () => {

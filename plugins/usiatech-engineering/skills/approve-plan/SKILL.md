@@ -47,7 +47,7 @@ Pick the route and tell the user which rule decided it.
    - Combine the `BLOCK`s and `FLAG`s from every pre-flight reviewer, each labelled with the reviewer that raised it. Fix the `BLOCK`s, then put every open pre-flight decision (each `FLAG` and any scope question) into one question, with a recommended default for each item. When `.claude/engineering.json` sets `decisions.batch` to `false`, ask about each one on its own instead.
 3. Show the draft and the pre-flight verdict. After the user confirms, write `.claude/plans/active.md` and show it in one short message. Don't write `.claude/plans/active.md` while a Pre-plan checklist item is empty, still the template placeholder or a bare `n/a`: fix the item first.
 4. **Jira tracker only:** mark the plan's tickets started.
-   - When `.claude/engineering.json` exists, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root.
+   - When `.claude/engineering.json` exists, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root. Show any stderr warning it prints to the user, even when it exits 0 (for example, a site outside `.atlassian.net`).
    - Skip this step when there's no config file, when `check` prints `"tracker":"github"`, or when `jira.statuses` in its output has no `started`. Say why you skipped it.
    - A non-zero exit from `check` (2 is a config problem) is a failure to report, not a reason to skip.
    - The keys are the Jira tickets the plan's tasks name. A parent or blocker key that appears only in the requirement references is not moved. If the tasks name no Jira key, say so.

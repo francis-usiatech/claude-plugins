@@ -2,7 +2,7 @@
 // Posts/updates the single governance-review comment on the PR from the AI reviewer's structured output.
 // Env: VERDICT_JSON, HEAD_SHA, PR_NUMBER, GITHUB_REPOSITORY, GITHUB_TOKEN, GITHUB_API_URL, GITHUB_STEP_SUMMARY
 import { appendFileSync } from 'node:fs'
-import { readApprovalLabel, prComments, verdictOf, verdictMarker, VERDICT_HEADER } from './governance-checks.mjs'
+import { readApprovalLabel, prComments, verdictOf, isLegacyVerdict, verdictMarker, VERDICT_HEADER } from './governance-checks.mjs'
 
 const api = process.env.GITHUB_API_URL || 'https://api.github.com'
 const repo = process.env.GITHUB_REPOSITORY
@@ -39,12 +39,18 @@ lines.push(verdictMarker({ verdict: v.verdict, sha }))
 const body = lines.join('\n')
 
 let existing
+let legacy
 let readError
 try {
-  for await (const c of prComments({ api, repo, pr, headers })) if (verdictOf(c)) existing = c
+  for await (const c of prComments({ api, repo, pr, headers })) {
+    if (verdictOf(c)) existing = c
+    else if (isLegacyVerdict(c)) legacy = c
+  }
 } catch (e) {
   readError = e
 }
+// A comment from before 0.18.4 has no header; update it rather than add a second verdict comment (ESP-111).
+existing ??= legacy
 // exitCode rather than process.exit(): exiting while fetch sockets are still closing crashes Node on Windows.
 if (readError) {
   // Posting without the full list would add a duplicate verdict comment (R10).
