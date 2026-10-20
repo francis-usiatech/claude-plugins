@@ -524,7 +524,9 @@ const printsOnlyHashes = (sub, text) => {
   for (let i = 0; i < words.length; i++) {
     const word = words[i]
     if (word === '--') break
-    if (!word.startsWith('-') || /^-\d+$|^--max-count=\d+$/.test(word)) continue
+    // A revision with ":" names a file (HEAD:path), whose contents git show prints even with -s.
+    if (!word.startsWith('-')) { if (word.includes(':')) return false; continue }
+    if (/^-\d+$|^--max-count=\d+$/.test(word)) continue
     if (word === '-n' || word === '--max-count') { i++; continue }
     if (word === '-s' || word === '--no-patch') { noPatch = true; continue }
     // Only the = form: a bare --pretty means --pretty=medium, and the next word is a revision or path.

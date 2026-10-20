@@ -629,7 +629,7 @@ describe('checkWorkflow: untrusted input (R8; AC7)', () => {
         "git log -1 --format=%h';%s'", 'git log -1 --format=%h\\"|%s\\"', "git log -1 --format=%h';%an'", "git log -1 '--format=%h;%s'", "git log -1 --format='%h", 'git log -1 --format=%H \\\n          --format=%s',
         // Shell expansion that could add an option fails closed, and so does any quoted text.
         'git log -1 --format=%H `echo -- -p`', 'git log -1 --format=%H {-p,-1}', 'git log -1 --format=%H ":/;" -p', 'git log -1 --format=%H -[p]',
-        "git log -1 --pretty=format:'%h %ct'"]) {
+        "git log -1 --pretty=format:'%h %ct'", 'git show -s --format=%H HEAD:README.md']) {
         assert.deepEqual(viaOutput(cmd), UNTRUSTED, cmd)
       }
       // A line continuation in a run block joins the next line's options to the command.
