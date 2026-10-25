@@ -61,6 +61,8 @@ describe('plugin structure: agents', () => {
       assert.match(text, /session scratchpad/)
       assert.match(text, /at most 30 lines and under 3 KB/i)
       assert.match(text, /Write no other file/)
+      // ESP-124: the agent has no clock, so it asks the shell for the report name's timestamp.
+      assert.match(text, /`date -u \+%Y%m%dT%H%M%S`/)
     })
   }
 })
