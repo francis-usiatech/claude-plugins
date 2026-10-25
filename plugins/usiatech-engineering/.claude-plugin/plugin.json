@@ -1,6 +1,6 @@
 {
   "name": "usiatech-engineering",
-  "version": "0.18.8",
+  "version": "0.18.9",
   "description": "Shared engineering workflow and governance for UsiaTech repos (WaypointCareer, HEI Impact Intelligence): verification gate, release flow, plan approval and scope control, governance and convention review, user-guide updates, and a guard that blocks or confirms dangerous actions \u2014 driven by each repo's AGENTS.md, .claude/engineering.json and .claude/governance.md.",
   "author": {
     "name": "Francis Amalraj"
