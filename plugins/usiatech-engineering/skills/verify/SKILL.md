@@ -1,9 +1,14 @@
 ---
 name: verify
-description: Runs the repository's verification gate (typecheck, tests, build and any conditional suites), checks the active plan's acceptance criteria against evidence from this session, and reports pass/fail with evidence. Use when the user says "verify", "run the gate", "is it done", "check before commit", or before reporting any code task as complete.
+description: Runs the repository's verification gate (typecheck, tests, build and any conditional suites), checks the active plan's acceptance criteria against the gate run and the evidence you pass in, and reports pass/fail with evidence. Use when the user says "verify", "run the gate", "is it done", "check before commit", or before reporting any code task as complete. It runs in a forked subagent, so pass as the argument the evidence for each acceptance criterion the repo state can't show, one `AC<n>` line each.
+context: fork
+agent: general-purpose
+background: false
 ---
 
 # Verify (definition-of-done gate)
+
+This skill runs in a forked subagent with no session history. Its input is the arguments: an evidence list (`AC<n>: <evidence>`) for criteria that the repo state can't show. Never ask the user yourself: return the step 9 report and any open decisions as a list, for the main thread to ask.
 
 1. **Load the gate.**
    - Read `.claude/engineering.json` → `verify` (always run) and `verifyConditional` (run when changed files match any `when` prefix).
@@ -17,9 +22,9 @@ description: Runs the repository's verification gate (typecheck, tests, build an
      - Exit code 2 means the gate could not start (the config can't be used, or git can't list the changed files). That is **Gate: FAIL**; report the reason it printed.
    - When there is no `verify` list (the commands came from `AGENTS.md` or the user), run the commands in order, one at a time, from the repo root. Stop at the first failure. Capture the exit code and the last ~40 lines of output.
    - Don't skip, reorder or "fix and retry" silently.
-4. **On failure:** report the failing command, the key error lines and the likely cause. Propose a fix plan and wait for approval (repo golden rule). Don't edit to make it pass.
+4. **On failure:** report the failing command, the key error lines and the likely cause. Propose a fix plan, returned as an open decision for the main thread (repo golden rule). Don't edit to make it pass.
 5. **Clean up:**
-   - Stop any dev server or watcher this session started.
+   - Stop any dev server or watcher this run started.
    - Remove stray `nul` files (`find . -name nul -type f -delete 2>/dev/null`).
    - Leave no background processes running.
 6. **Check test content (fp-*)**, only after the commands pass:
@@ -28,7 +33,7 @@ description: Runs the repository's verification gate (typecheck, tests, build an
    - Exit 1 means an unsuppressed high finding, and the result is **Gate: FAIL**. Exit 2 means the check couldn't run (for example, an invalid config), which is also **Gate: FAIL**. Don't edit tests to make it pass; report and propose a fix.
    - List every finding the script prints in the report, including warnings and suppressed ones.
 7. **Check acceptance criteria**, only if `.claude/plans/active.md` has an `## Acceptance criteria` section, and only after the commands pass:
-   - For each AC, find evidence produced in this session: a named passing test, command output, or a result you observed. Earlier sessions, memory and "should work" don't count.
+   - For each AC, find evidence from this run (a named passing test in the gate output, command output, or the diff) or from the evidence list passed in the arguments. Earlier sessions, memory and "should work" don't count.
    - Mark it `shown` with that evidence, or `not shown`.
    - Rewrite every evidence line under its AC in the plan, even ones an earlier run filled, as `- Evidence: <evidence> (shown, <UTC timestamp>)` or `(not shown, <UTC timestamp>)`, e.g. `2026-09-28T17:50Z`. The stamp lets `governance-reviewer` spot evidence older than the latest change.
    - Tick (`- [x]`) each task whose ACs are all `shown`.
@@ -37,8 +42,9 @@ description: Runs the repository's verification gate (typecheck, tests, build an
    - Skip this step, and say why, when there's no `.claude/engineering.json`, when `check` prints `"tracker":"github"`, when `jira.statuses` in its output has no `verified`, when there's no `.claude/plans/active.md`, when the plan has no `## Acceptance criteria` section, or when any AC is `not shown`.
    - Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root. A non-zero exit (2 is a config problem) is a failure to report, not a reason to skip. Show any stderr warning it prints to the user, even when it exits 0 (for example, a site outside `.atlassian.net`).
    - The keys are the Jira tickets the plan's tasks name. A parent or blocker key that appears only in the requirement references is not moved. If the tasks name no Jira key, say so.
-   - For each key: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" transition --issue <KEY> --event verified`.
-   - A non-zero exit doesn't change the gate verdict and undoes nothing. Report each failed key with the script's message as one the user must fix, and go on with the other keys. Don't retry silently.
+   - For each key, when the Atlassian MCP's `transitionJiraIssue` tool is available and the `check` output has `jira.cloudId` and `jira.transitions.verified`: call `transitionJiraIssue` with that `cloudId`, the key as `issueIdOrKey` and `transition: { id: <jira.transitions.verified> }`. Never call `getTransitionsForJiraIssue`.
+   - Otherwise: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" transition --issue <KEY> --event verified`.
+   - A failed call or a non-zero exit doesn't change the gate verdict and undoes nothing. Report each failed key with its message as one the user must fix, and go on with the other keys. Don't retry silently.
 9. **Report:**
 
 | Check | Command | Result | Notes |
@@ -51,4 +57,4 @@ description: Runs the repository's verification gate (typecheck, tests, build an
 
    If step 8 ran or was skipped on a passing gate, add a line: the keys moved to `verified`, the failed keys with the script's message, or the reason it was skipped.
 
-   End with **Gate: PASS** or **Gate: FAIL**, decided by the commands and the fake-pass check only. If any criterion is `not shown`, end with `Gate: PASS (N of M criteria not shown)` and list them. Never state that work is done unless the gate passed in this session.
+   End with **Gate: PASS** or **Gate: FAIL**, decided by the commands and the fake-pass check only. If any criterion is `not shown`, end with `Gate: PASS (N of M criteria not shown)` and list them. Never state that work is done unless the gate passed in this run. Keep the report short (the tables and the verdict); the full step output stays in the gate log.

@@ -57,6 +57,12 @@ describe('validateTicketsConfig (R1; AC1)', () => {
     ['a malformed parent', { parent: 'ESP27' }, 'tickets.jira.parent'],
     ['a non-string status name', { statuses: { merged: 41 } }, 'tickets.jira.statuses.merged'],
     ['an unknown event', { statuses: { shipped: 'Released' } }, 'tickets.jira.statuses.shipped'],
+    ['a cloud ID that is not a UUID', { cloudId: 'usiatech' }, 'tickets.jira.cloudId'],
+    ['a non-string cloud ID', { cloudId: 42 }, 'tickets.jira.cloudId'],
+    ['non-object transitions', { transitions: ['21'] }, 'tickets.jira.transitions'],
+    ['a numeric transition ID', { transitions: { started: 21 } }, 'tickets.jira.transitions.started'],
+    ['a transition ID that is not digits', { transitions: { merged: 'Ship it' } }, 'tickets.jira.transitions.merged'],
+    ['a transition for an unknown event', { transitions: { shipped: '51' } }, 'tickets.jira.transitions.shipped'],
   ]) {
     it(`should report ${name} as a problem naming ${key}`, () => {
       const { problems } = validateTicketsConfig(jira(over))
@@ -64,6 +70,21 @@ describe('validateTicketsConfig (R1; AC1)', () => {
       assert.match(problems[0], new RegExp(`"${key.replace(/\./g, '\\.')}"`))
     })
   }
+
+  it('should keep a cloud ID and transition IDs for MCP writes (ESP-123)', () => {
+    const cloudId = '3b98209f-2732-4e8e-96e1-5606c94bb847'
+    const transitions = { $comment: 'ids', started: '21', verified: '31', merged: '41', released: '51' }
+    const { tickets, problems } = validateTicketsConfig(jira({ cloudId, transitions }))
+    assert.deepEqual(problems, [])
+    assert.equal(tickets.jira.cloudId, cloudId)
+    assert.deepEqual(tickets.jira.transitions, { started: '21', verified: '31', merged: '41', released: '51' })
+  })
+
+  it('should load no cloud ID and no transitions when neither is set (ESP-123)', () => {
+    const { tickets } = validateTicketsConfig(jira())
+    assert.equal(tickets.jira.cloudId, null)
+    assert.deepEqual(tickets.jira.transitions, {})
+  })
 
   it('should accept a verified status and keep it in the loaded statuses (ESP-64)', () => {
     const { tickets, problems } = validateTicketsConfig(jira({ statuses: { started: 'In Progress', verified: 'In Testing', merged: 'Ready for Release' } }))
@@ -466,6 +487,20 @@ describe('runCli commands (R3)', () => {
     assert.equal(result.code, 0, result.stderr)
     assert.deepEqual(printed(result), validateTicketsConfig(tickets).tickets)
     assert.match(result.stderr, /warning: .*"evil\.example\.com".*JIRA_SITE/)
+  })
+
+  it('should print the cloud ID and transition IDs on check (ESP-123)', async (t) => {
+    const tickets = jira({ cloudId: '3b98209f-2732-4e8e-96e1-5606c94bb847', transitions: { started: '21' } })
+    const result = await runCli(['check'], { env: CLI_ENV, fetch: stubFetch().fetch, cwd: cliRepo(t, tickets) })
+    assert.equal(result.code, 0, result.stderr)
+    assert.equal(printed(result).jira.cloudId, '3b98209f-2732-4e8e-96e1-5606c94bb847')
+    assert.deepEqual(printed(result).jira.transitions, { started: '21' })
+  })
+
+  it('should exit 2 on check when a transition ID is not digits (ESP-123)', async (t) => {
+    const result = await runCli(['check'], { env: CLI_ENV, fetch: stubFetch().fetch, cwd: cliRepo(t, jira({ transitions: { started: 'go' } })) })
+    assert.equal(result.code, 2)
+    assert.match(result.stderr, /"tickets\.jira\.transitions\.started"/)
   })
 
   it('should create an issue from the config, the summary and the body file, and print its key', async (t) => {

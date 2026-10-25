@@ -38,3 +38,12 @@ One zero-dependency script, `plugins/usiatech-engineering/scripts/jira-tracker.m
 - **Token in `.claude/engineering.json` or a dotfile.** A file is easy to commit or leak; environment variables keep the secret out of the repo.
 - **Retry on network errors.** A retried create can file a duplicate ticket. Failing loudly, with a timed-out create reported as "unknown, may exist", keeps the user in control.
 - **Two-way sync.** Out of scope (spec non-goal); specs and plans stay the source of truth.
+
+## Addendum 2026-10-25: Atlassian MCP for writes (ESP-123)
+
+The "Atlassian MCP server" alternative above is now taken up as the first choice, with the script kept as the fallback. A repo may add `tickets.jira.cloudId` and `tickets.jira.transitions` (event → transition ID). When the Atlassian MCP's tools are available and both are set, `approve-plan`, `verify`, `release-steps` and `to-tickets` write through it: `transitionJiraIssue` with the configured ID and no `getTransitionsForJiraIssue` lookup, `addCommentToJiraIssue`, `createJiraIssue` and `createIssueLink`.
+
+- **Why.** Usage audit 2026-10-24: the script needs `JIRA_EMAIL` and `JIRA_API_TOKEN` in the shell, which interactive sessions often lack, and a transition lookup per key costs a call and its response. The MCP uses the session's OAuth connection, and fixed IDs remove the lookup.
+- **Fallback unchanged.** Without the MCP (CI, non-interactive runs), the `cloudId` or an event's transition ID, the skills run `jira-tracker.mjs` exactly as decided above, with the same credential and trusted-host rules.
+- **Consequence.** A transition ID is tied to the project's workflow. If the workflow changes, a stale ID makes the MCP call fail loudly; `check` validates only the shape, not that the ID exists. Fix the config, as with a renamed status.
+- **Still true.** Git first, Jira second: a failed MCP call never undoes a git step, and nothing is retried.
