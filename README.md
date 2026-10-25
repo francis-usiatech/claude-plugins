@@ -4,7 +4,7 @@ Private Claude plugin marketplace for UsiaTech repositories.
 
 | Plugin               | Version | Install ID                      |
 | -------------------- | ------- | ------------------------------- |
-| UsiaTech Engineering | 0.19.1  | `usiatech-engineering@usiatech` |
+| UsiaTech Engineering | 0.19.2  | `usiatech-engineering@usiatech` |
 
 ## Design records
 
