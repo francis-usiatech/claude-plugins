@@ -933,6 +933,22 @@ describe('checkWorkflow: worst-case input size', () => {
     const write = (cmds) => `on: push\njobs:\n  a:\n    steps:\n      - run: echo "$(${cmds})" >> "$GITHUB_ENV"\n`
     assert.equal(await slowCheckReason(write('git log --format=%H;'.repeat(MEGABYTE / 19 + 1)), []), null)
     assert.equal(await slowCheckReason(write('git log '.repeat(MEGABYTE / 8 + 1) + '--format=%H'), []), null)
+    assert.equal(await slowCheckReason(write('git diff --quiet;'.repeat(MEGABYTE / 17 + 1)), []), null)
+    assert.equal(await slowCheckReason(write(`git rev-list --end-of-options ${'"$A" '.repeat(MEGABYTE / 5)}`), []), null)
+  })
+
+  it('should check 1 MB of gh options in under 2 s (SHELL_EVENT_READ, ESP-115)', async () => {
+    const write = (cmds) => `on: push\njobs:\n  a:\n    steps:\n      - run: echo "$(${cmds})" >> "$GITHUB_ENV"\n`
+    assert.equal(await slowCheckReason(write('gh -x '.repeat(MEGABYTE / 6)), []), null)
+    assert.equal(await slowCheckReason(write(`gh -x ${'y'.repeat(MEGABYTE)}`), []), null)
+  })
+
+  it('should check 1 MB of variables and expressions after "git fetch" in under 2 s (runChecksOutPr, ESP-115)', async () => {
+    const env = '        env:\n          B: ${{ github.head_ref }}\n'
+    assert.equal(await slowCheckReason(`${stepRun(`git fetch ${'$A '.repeat(MEGABYTE / 3)}`, 'pull_request_target')}${env}`, []), null)
+    // Longer expressions keep the line at 1 MB with fewer of them: the untrusted-input pass already spends most of the
+    // budget per expression, and linear time in bytes is what this checks.
+    assert.equal(await slowCheckReason(stepRun(`git fetch ${`\${{ ${'a'.repeat(100)} }} `.repeat(MEGABYTE / 108)}`, 'pull_request_target'), []), null)
   })
 
   // 1500 jobs listed against their needs order would take 1500 passes over them without needsOrder. Parsing a job
@@ -1329,5 +1345,143 @@ describe('checkWorkflow: computed and quoted-numeric index into event fields (ES
 
   it('should check a 1 MB "github.event.a.a.a" chain in under 2 s (computed index)', async () => {
     assert.equal(await slowCheckReason(stepRun(`\${{ github.event${'.a'.repeat(MEGABYTE / 2)} }}`), []), null)
+  })
+})
+
+describe('checkWorkflow: workflow-rule gaps from the ESP-111 reviews (ESP-115)', () => {
+  const found = (content) => rules(checkContent(content))
+  const PR_CHECKOUT = ['wf-privileged-checkout:high']
+  const UNTRUSTED = ['wf-untrusted-input:high']
+  const viaOutput = (cmd) => found(`on: pull_request\njobs:\n  a:\n    steps:\n      - id: s\n        run: echo "t=$(${cmd})" >> "$GITHUB_OUTPUT"\n      - run: echo "\${{ steps.s.outputs.t }}"\n`)
+
+  describe('run-step checkout from env or an output (item 1)', () => {
+    const run = (cmd, { trigger = 'pull_request_target', stepEnv = '', before = '' } = {}) => found(
+      `on: ${trigger}\njobs:\n  a:\n    steps:\n${before}      - run: ${cmd}\n${stepEnv && `        env:\n          ${stepEnv}\n`}`)
+    const HEAD = 'SHA: ${{ github.event.pull_request.head.sha }}'
+
+    it('should flag a git fetch or checkout of a shell variable set from the PR head', () => {
+      for (const cmd of ['git fetch origin "$SHA"', 'git fetch origin ${SHA}', 'git -C . checkout $sha', 'git fetch origin $(printenv SHA)', `git fetch origin $(python3 -c "import os;print(os.environ['SHA'])")`]) {
+        assert.deepEqual(run(cmd, { stepEnv: HEAD }), PR_CHECKOUT, cmd)
+      }
+    })
+
+    it('should flag a PR-derived variable anywhere in a step that checks out, since it may be copied or piped (ESP-115 review)', () => {
+      for (const cmd of ['R="$SHA"; git fetch origin "$R"', 'echo "$SHA" | xargs git fetch origin', 'echo "$SHA" && git fetch origin main']) {
+        assert.deepEqual(run(cmd, { stepEnv: HEAD }), PR_CHECKOUT, cmd)
+      }
+      assert.deepEqual(run('echo "$SHA"', { stepEnv: HEAD }), [])
+    })
+
+    it('should flag a git fetch of a PR-derived env expression or of a step or job output', () => {
+      assert.deepEqual(run('git fetch origin ${{ env.REF }}', { stepEnv: 'REF: ${{ github.event.pull_request.head.sha }}' }), PR_CHECKOUT)
+      assert.deepEqual(run('git fetch origin ${{ steps.x.outputs.sha }}'), PR_CHECKOUT)
+      const needs = 'on: issue_comment\njobs:\n  p:\n    steps:\n      - run: echo\n  a:\n    needs: p\n    steps:\n      - run: git fetch origin ${{ needs.p.outputs.sha }}\n'
+      assert.deepEqual(found(needs), PR_CHECKOUT)
+    })
+
+    it('should flag any non-GitHub variable on a checkout line after a $GITHUB_ENV write of PR text', () => {
+      const write = '      - run: echo "REF=$(gh pr view 1 --json headRefOid -q .headRefOid)" >> "$GITHUB_ENV"\n'
+      assert.deepEqual(run('git checkout "$REF"', { before: write }), PR_CHECKOUT)
+      assert.deepEqual(run('git checkout "$GITHUB_SHA"', { before: write }), [])
+    })
+
+    it('should give no finding for a variable set from the pushed commit, unset, read before the command or under pull_request', () => {
+      assert.deepEqual(run('git fetch origin "$SHA"', { stepEnv: 'SHA: ${{ github.sha }}' }), [])
+      assert.deepEqual(run('git fetch origin "$SHA"'), [])
+      assert.deepEqual(run('git fetch origin ${{ env.REF }}', { stepEnv: 'REF: ${{ github.sha }}' }), [])
+      assert.deepEqual(run('git fetch origin "$SHA" ${{ steps.x.outputs.sha }}', { trigger: 'pull_request', stepEnv: HEAD }), [])
+    })
+  })
+
+  describe('actions/github-script outputs and env (item 2)', () => {
+    const script = (body, id = 's') => `      - ${id ? `id: ${id}\n        ` : ''}uses: actions/github-script@v7\n        with:\n          script: ${body}\n`
+    const job = (trigger, steps) => found(`on: ${trigger}\njobs:\n  a:\n    steps:\n${steps}`)
+    const readOutput = '      - run: echo "${{ steps.s.outputs.t }}"\n'
+    const checkoutEnvRef = '      - uses: actions/checkout@v4\n        with:\n          ref: ${{ env.REF }}\n'
+
+    it('should flag a step output set from the event payload, an API read or a tainted env name', () => {
+      for (const body of ["core.setOutput('t', context.payload.pull_request.title)", 'return (await github.rest.pulls.get(context.repo)).data.title',
+        'return (await github?.rest.pulls.get(context.repo)).data.title', 'const g = github; return (await g.rest.pulls.get(context.repo)).data.title',
+        'const { rest } = github; return (await rest.pulls.get(context.repo)).data.title', 'return (await octokit.rest.pulls.get(context.repo)).data.title',
+        "return (await exec.getExecOutput('gh', ['pr', 'view', '1', '--json', 'title'])).stdout", "const { getExecOutput } = exec; return (await getExecOutput('git', ['log', '-1'])).stdout"]) {
+        assert.deepEqual(job('pull_request', script(body) + readOutput), UNTRUSTED, body)
+      }
+      const viaEnv = script("core.setOutput('t', process.env.T)") + '        env:\n          T: ${{ github.event.issue.title }}\n'
+      assert.deepEqual(job('pull_request', viaEnv + readOutput), UNTRUSTED)
+    })
+
+    it('should flag env exported from PR text, read in a run script or a checkout ref', () => {
+      assert.deepEqual(job('pull_request', script("core.exportVariable('T', context.payload.pull_request.title)") + '      - run: echo "${{ env.T }}"\n'), UNTRUSTED)
+      const exportHead = script("core.exportVariable('REF', (await github.rest.pulls.get(context.repo)).data.head.sha)")
+      assert.deepEqual(job('issue_comment', exportHead + checkoutEnvRef), PR_CHECKOUT)
+    })
+
+    it('should give no finding for a script that reads only context.repo or context.sha, or has no id', () => {
+      assert.deepEqual(job('pull_request', script("core.setOutput('t', context.repo.repo)") + readOutput), [])
+      assert.deepEqual(job('pull_request', script("core.setOutput('t', 'https://github.com/' + context.repo.owner + ' github-actions')") + readOutput), [])
+      assert.deepEqual(job('pull_request', script("core.setOutput('t', /x/.exec(context.repo.repo)[0])") + readOutput), [])
+      assert.deepEqual(job('pull_request', script("core.setOutput('t', context.payload.pull_request.title)", '') + readOutput), [])
+      assert.deepEqual(job('issue_comment', script("core.exportVariable('REF', context.sha)") + checkoutEnvRef), [])
+    })
+  })
+
+  describe('more commands that print PR text (item 3)', () => {
+    it('should treat more gh reads, and gh options before the command, as untrusted', () => {
+      for (const cmd of ['gh pr status', 'gh issue status', 'gh run list', 'gh run view 1', 'gh search prs x', 'gh search issues x', 'gh search commits x', 'gh --repo o/r pr view 1', 'gh -R o/r issue view 2',
+        'gh pr ls', 'gh issue ls', 'gh run ls', 'gh pr --repo o/r view 1', 'gh pr -R o/r list', 'gh search --limit 5 prs x']) {
+        assert.deepEqual(viaOutput(cmd), UNTRUSTED, cmd)
+      }
+    })
+
+    it('should treat git commands that print file names, messages or contents as untrusted', () => {
+      for (const cmd of ['git diff', 'git diff --name-only HEAD~1', 'git -C . diff --stat', 'git diff --quiet "$X"', 'git shortlog -s', 'git whatchanged -1', 'git format-patch -1 --stdout',
+        'git cat-file -p HEAD', 'git cat-file blob HEAD:README.md', 'git rev-list --format=%s HEAD', 'git rev-list --objects HEAD']) {
+        assert.deepEqual(viaOutput(cmd), UNTRUSTED, cmd)
+      }
+    })
+
+    it('should give no finding for git commands that print only hashes, counts or types', () => {
+      for (const cmd of ['git rev-list --count HEAD', 'git rev-list -1 HEAD', 'git rev-list --format=%H -1 HEAD', 'git cat-file -t HEAD', 'git diff --quiet']) {
+        assert.deepEqual(viaOutput(cmd), [], cmd)
+      }
+    })
+  })
+
+  describe('a PR ref built from a PR or issue number (item 4)', () => {
+    const checkout = (trigger, ref) => found(`on: ${trigger}\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${ref}\n`)
+
+    it('should flag a format() ref with the issue or PR number', () => {
+      assert.deepEqual(checkout('issue_comment', "${{ format('refs/{0}/{1}/head', 'pull', github.event.issue.number) }}"), PR_CHECKOUT)
+      assert.deepEqual(checkout('pull_request_target', "${{ format('refs/{0}/{1}/merge', 'pull', github.event.pull_request.number) }}"), PR_CHECKOUT)
+      const run = "on: issue_comment\njobs:\n  a:\n    steps:\n      - run: git fetch origin ${{ format('refs/{0}/{1}/head', 'pull', github.event.issue.number) }}\n"
+      assert.deepEqual(found(run), PR_CHECKOUT)
+    })
+  })
+
+  describe('reusable-workflow job outputs (item 5)', () => {
+    it('should treat the outputs of a job that calls a reusable workflow as untrusted', () => {
+      const content = 'on: pull_request\njobs:\n  r:\n    uses: ./.github/workflows/called.yml\n  b:\n    needs: r\n    steps:\n      - run: echo "${{ needs.r.outputs.t }}"\n'
+      assert.deepEqual(found(content), UNTRUSTED)
+    })
+  })
+
+  describe('git log revisions and config (item 6)', () => {
+    it('should accept a quoted variable revision after --end-of-options in git log and rev-list', () => {
+      for (const cmd of ['git log -1 --format=%H --end-of-options "$SHA"', 'git rev-list --count --end-of-options "${SHA}"']) {
+        assert.deepEqual(viaOutput(cmd), [], cmd)
+      }
+    })
+
+    it('should still flag a quoted variable before --end-of-options, in git show, or with more than the variable', () => {
+      for (const cmd of ['git log -1 --format=%H "$SHA"', 'git show -s --format=%H --end-of-options "$SHA"', 'git log -1 --format=%H --end-of-options "$SHA:x"', 'git log -1 --format=%H --end-of-options HEAD:x','git log -1 --format=%H --end-of-options "$(id)"']) {
+        assert.deepEqual(viaOutput(cmd), UNTRUSTED, cmd)
+      }
+    })
+
+    it('should flag a git log run with config set on the command line', () => {
+      for (const cmd of ['git -c log.showSignature=true log -1 --format=%H', 'git --config-env=log.showSignature=V log -1 --format=%H']) {
+        assert.deepEqual(viaOutput(cmd), UNTRUSTED, cmd)
+      }
+    })
   })
 })

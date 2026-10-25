@@ -42,7 +42,8 @@ const UNTRUSTED_EXPR = new RegExp(String.raw`\bgithub\.(?:head_ref\b|event\.(?:`
 const WHOLE_EVENT_EXPR = /\bgithub(?:\.event(?:\.(?:pull_request(?:\.head(?:\.repo)?)?|issue|comment|review|review_comment|discussion|head_commit|commits|pages|workflow_run))?)?(?:\.\*|(?![\w.[]))/i
 
 // Refs and repositories that point at PR-controlled code (R7).
-const PR_REF_EXPR = /\bgithub\.(?:head_ref\b|event\.(?:pull_request\.(?:head\.(?:sha|ref|repo\.\w+)|merge_commit_sha)|workflow_run\.head_(?:sha|branch|repository)|number\b))|refs\/pull\//i
+// A PR or issue number names the PR once put into a ref, which format() can build from literals (ESP-115).
+const PR_REF_EXPR = /\bgithub\.(?:head_ref\b|event\.(?:pull_request\.(?:head\.(?:sha|ref|repo\.\w+)|merge_commit_sha)|workflow_run\.head_(?:sha|branch|repository)|(?:pull_request\.|issue\.)?number\b))|refs\/pull\//i
 // A run script checks out PR code with "gh pr checkout", or with a git fetch/checkout/switch/clone/pull followed,
 // starting on the same line, by a pull ref or a PR head expression.
 const GH_PR_CHECKOUT = /\bgh\s+pr\s+checkout\b/i
@@ -57,13 +58,16 @@ const GIT_NO_VALUE = String.raw`(?:-p|-P|--paginate|--no-pager|--bare|--no-repla
 export const GIT_PREFIX = String.raw`\bgit(?:\s+(?:(?!${GIT_NO_VALUE}\s)-[\w-]+\s+(?!-)${GIT_VALUE}+|-[\w-]+(?:=${GIT_VALUE}*)?)){0,8}?\s+`
 const GIT_CHECKOUT_CMD = new RegExp(String.raw`${GIT_PREFIX}(?:fetch|checkout|switch|clone|pull)\b`, 'gi')
 const PULL_REF_AT = /(?:refs\/|[\s:])pull\//iy
-const PR_HEAD_IN_EXPR = /\bgithub\.(?:head_ref|event\.pull_request\.head|event\.workflow_run\.head_|event\.(?:pull_request\.)?number\b)/i
+const PR_HEAD_IN_EXPR = /\bgithub\.(?:head_ref|event\.pull_request\.head|event\.workflow_run\.head_|event\.(?:pull_request\.|issue\.)?number\b)/i
 const matchesAt = (re, s, at) => { re.lastIndex = at; return re.test(s) }
 // One regex with "[^\n]*" between the command and the ref would rescan the rest of the line from every command
 // (quadratic). Instead each start position is tried once: a command whose line was already searched from an earlier
 // command adds nothing. Each ${{ … }} that starts on the line is read whole through exprSpans, so a "}" in a literal
-// can't end it early (ESP-111); the spans are walked in order alongside the lines, so each is tested once.
-const runChecksOutPr = (run) => {
+// can't end it early (ESP-111); the spans are walked in order alongside the lines, so each is tested once. A span
+// counts as it does in a checkout ref (readsPrRef). A shell variable named in prEnv, or any one but GITHUB_* and
+// RUNNER_* once prEnv holds ANY_ENV, counts anywhere in a script that runs a checkout command, since it can be copied
+// (R="$SHA") or piped (| xargs git fetch) into one (ESP-115).
+const runChecksOutPr = (run, prEnv) => {
   if (GH_PR_CHECKOUT.test(run)) return true
   const spans = exprSpans(run)
   let searchedTo = -1, next = 0
@@ -74,9 +78,13 @@ const runChecksOutPr = (run) => {
     searchedTo = lineEnd === -1 ? run.length : lineEnd
     for (let at = from; at <= searchedTo; at++) if (matchesAt(PULL_REF_AT, run, at)) return true
     while (next < spans.length && spans[next].start < from) next++
-    for (; next < spans.length && spans[next].start <= searchedTo; next++) if (PR_HEAD_IN_EXPR.test(spans[next].inner)) return true
+    for (; next < spans.length && spans[next].start <= searchedTo; next++) {
+      const { inner } = spans[next]
+      if (PR_HEAD_IN_EXPR.test(inner) || spanReadsPrRef(inner, prEnv)) return true
+    }
   }
-  return false
+  // searchedTo is set once any checkout command was seen.
+  return searchedTo !== -1 && readsPrShellVar(run, prEnv)
 }
 const SECRET_REF = /\bsecrets\.[A-Za-z_]/
 const SHA_PIN = /^[0-9a-f]{40}$/i
@@ -441,6 +449,7 @@ const ANY_ENV = '*'
 // computed index (env[x]) may reach any name, so they count as the first untrusted one (fail closed).
 const ENV_REF = /(?<![\w.-])env(?:\.([\w-]+)|(?![\w-]))/g
 const untrustedEnvRef = (e, env) => {
+  if (env.size === 0) return undefined
   for (const [ref, name] of e.matchAll(ENV_REF)) {
     const hit = name === undefined ? env.keys().next().value : env.has(name) ? name : env.has(ANY_ENV) ? ANY_ENV : undefined
     if (hit !== undefined) return `\${{ ${name === undefined ? `${ref}…` : ref} }} (env.${hit} is set from ${env.get(hit)})`
@@ -452,7 +461,9 @@ const untrustedEnvRef = (e, env) => {
 // any of them, and so may the same forms of needs.
 const STEPS_REF = /(?<![\w.-])steps(?:\.([\w-]+)|(?![\w-]))/g
 const NEEDS_REF = /(?<![\w.-])needs(?:\.([\w-]+)|(?![\w-]))/g
+// An empty Set ends the search early; needsTaintOf's object has no size, as an undeclared id counts.
 const untrustedIdRef = (e, re, ids, why) => {
+  if (ids.size === 0) return undefined
   for (const [ref, id] of e.matchAll(re)) {
     const hit = id === undefined ? ids.values().next().value : ids.has(id) ? id : undefined
     if (hit !== undefined) return `\${{ ${id === undefined ? `${ref}…` : ref} }} (${why(hit)})`
@@ -462,16 +473,16 @@ const untrustedIdRef = (e, re, ids, why) => {
 // What is untrusted at one point in a job: env maps a lowercased env name set from untrusted text to where it came
 // from (F10), steps and needs are the ids for untrustedIdRef.
 const NO_TAINT = { env: new Map(), steps: new Set(), needs: new Set() }
+// The inside of one ${{ … }} as shown in a finding when it reads untrusted text, else undefined.
+const untrustedSpan = (inner, taint = NO_TAINT) => {
+  const e = normalizeExpr(inner)
+  const found = e.match(UNTRUSTED_EXPR)?.[0] ?? e.match(WHOLE_EVENT_EXPR)?.[0] ?? unreadableIndex(e) ?? computedIndex(inner)
+  return found ? `\${{ ${found} }}` : untrustedEnvRef(e, taint.env)
+    ?? untrustedIdRef(e, STEPS_REF, taint.steps, (id) => `step ${id} writes untrusted text to $GITHUB_OUTPUT`)
+    ?? untrustedIdRef(e, NEEDS_REF, taint.needs, (id) => `job ${id} has an output set from untrusted text`)
+}
 // Each untrusted ${{ … }} in s, as shown in a finding.
-const untrustedIn = (s, taint = NO_TAINT) => exprSpans(s)
-  .map(({ inner }) => {
-    const e = normalizeExpr(inner)
-    const found = e.match(UNTRUSTED_EXPR)?.[0] ?? e.match(WHOLE_EVENT_EXPR)?.[0] ?? unreadableIndex(e) ?? computedIndex(inner)
-    return found ? `\${{ ${found} }}` : untrustedEnvRef(e, taint.env)
-      ?? untrustedIdRef(e, STEPS_REF, taint.steps, (id) => `step ${id} writes untrusted text to $GITHUB_OUTPUT`)
-      ?? untrustedIdRef(e, NEEDS_REF, taint.needs, (id) => `job ${id} has an output set from untrusted text`)
-  })
-  .filter(Boolean)
+const untrustedIn = (s, taint = NO_TAINT) => exprSpans(s).map(({ inner }) => untrustedSpan(inner, taint)).filter(Boolean)
 // The env names untrusted after one level's env: block. A name it sets replaces the outer one (step over job over
 // workflow), and a value that reads an untrusted outer name is untrusted too. Names are read case-insensitively, and
 // a safe value never clears a name its own block set from untrusted text (T and t in one block, ESP-102).
@@ -500,10 +511,16 @@ const untrustedEnv = (block, taint) => {
 // variable may hold it, except GITHUB_* and RUNNER_*, which $GITHUB_ENV can't set: $X, ${X}, $env:X, %X%, and any
 // environ / getenv / printenv / process.env read, whose name isn't parsed (fail closed).
 const SHELL_VAR = /\$(?:env:)?\{?([A-Za-z_]\w*)|%([A-Za-z_]\w*)%|\b(?:environ|getenv|printenv)\b|\bprocess\.env\b/gi
-// Commands that print event or PR text themselves (ESP-111): the event payload file, gh reads of a PR or issue, and
-// git log / show, which print commit messages, author names and, with a patch, PR file contents.
-const SHELL_EVENT_READ = /\bGITHUB[._]EVENT_PATH\b|\bgh\s+(?:(?:pr|issue)\s+(?:view|list|diff)|api)\b/i
-const GIT_LOG_CMD = new RegExp(String.raw`${GIT_PREFIX}(log|show)\b`, 'gi')
+// Commands that print event or PR text themselves (ESP-111, ESP-115): the event payload file, gh reads of a PR, an
+// issue, a run (its title) or a search, with up to 4 options before the command or between its words
+// (gh --repo o/r pr view, gh pr -R o/r ls), and the git commands that print commit messages, author names, file names
+// or PR file contents.
+const GH_OPTION = String.raw`(?:\s+-[\w-]+(?:=\S*|\s+(?!-)\S+)?)`
+const GH_OPTIONS = `${GH_OPTION}{0,4}?\\s+`
+const SHELL_EVENT_READ = new RegExp(String.raw`\bGITHUB[._]EVENT_PATH\b|\bgh${GH_OPTIONS}(?:(?:pr|issue)${GH_OPTIONS}(?:view|list|ls|diff|status)|run${GH_OPTIONS}(?:list|ls|view)|search${GH_OPTIONS}(?:prs|issues|commits)|api)\b`, 'i')
+const GIT_READ_CMD = new RegExp(String.raw`${GIT_PREFIX}(log|show|rev-list|diff|shortlog|whatchanged|format-patch|cat-file)\b`, 'gi')
+// Config set on the command line can make any of them print more (-c log.showSignature=true adds signer names).
+const GIT_CONFIG_OPTION = /\s(?:-c|--config-env)[\s=]/
 // A format of only hashes, dates and newlines; anything else (%s, %an, a named format such as oneline) prints text.
 const SAFE_PLACEHOLDERS = /%(?:[HhTtPpn%]|[ac][dDrtiIsh])/g
 const safeFormat = (value) => {
@@ -512,14 +529,22 @@ const safeFormat = (value) => {
 }
 // The only characters a hash-only git log / show may use. Anything the shell reads specially (quotes, $, `…`, {…},
 // globs, backslashes) could hide an option or change the words, so it fails closed instead of being parsed.
-// shortcut: a quoted format or a "$SHA" revision is flagged too; parse shell words if that proves noisy.
+// shortcut: a quoted format is flagged too; parse shell words if that proves noisy.
 const PLAIN_GIT_TEXT = /^[\s\w%./:@^~=,+-]*$/
-// A git log / show prints only hashes when its text is plain, every option on it is known to be safe (fail closed:
-// -L, --dirstat or an option not listed prints text), it has a format and every format is safe (git uses the last
-// one), and a show drops its patch with -s.
+// After --end-of-options git reads every word as a revision or path, so a quoted variable there ("$SHA", "${SHA}")
+// can't add an option (ESP-115). git show is left out: its revision may name a file (HEAD:path), whose contents it
+// prints.
+const END_OF_OPTIONS = /(?<!\S)--end-of-options(?!\S)/
+const QUOTED_VAR = /(?<!\S)"\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\})"(?!\S)/g
+// A git log / show / rev-list prints only hashes when its text is plain, every option on it is known to be safe (fail
+// closed: -L, --dirstat or an option not listed prints text), every format is safe (git uses the last one), a log or
+// show has one, and a show drops its patch with -s. rev-list prints hashes or, with --count, a number.
 const printsOnlyHashes = (sub, text) => {
-  if (!PLAIN_GIT_TEXT.test(text)) return false
-  const words = text.split(/\s+/).filter(Boolean)
+  const end = sub === 'show' ? -1 : text.search(END_OF_OPTIONS)
+  const options = end === -1 ? text : text.slice(0, end)
+  const revisions = end === -1 ? '' : text.slice(end).replace(END_OF_OPTIONS, '').replace(QUOTED_VAR, '')
+  if (!PLAIN_GIT_TEXT.test(options) || !PLAIN_GIT_TEXT.test(revisions) || revisions.includes(':')) return false
+  const words = options.split(/\s+/).filter(Boolean)
   let formats = 0, noPatch = false
   for (let i = 0; i < words.length; i++) {
     const word = words[i]
@@ -529,12 +554,22 @@ const printsOnlyHashes = (sub, text) => {
     if (/^-\d+$|^--max-count=\d+$/.test(word)) continue
     if (word === '-n' || word === '--max-count') { i++; continue }
     if (word === '-s' || word === '--no-patch') { noPatch = true; continue }
+    if (word === '--count' && sub === 'rev-list') continue
     // Only the = form: a bare --pretty means --pretty=medium, and the next word is a revision or path.
     const format = word.match(/^--(?:format|pretty)=(.*)$/)
     if (!format || !safeFormat(format[1])) return false
     formats++
   }
-  return formats > 0 && (sub.toLowerCase() === 'log' || noPatch)
+  return sub === 'rev-list' || (formats > 0 && (sub === 'log' || noPatch))
+}
+// Whether one git read prints no event or PR text: log, show and rev-list as above, a diff only with --quiet, a
+// cat-file only with -t, -s or -e; the rest print messages, names or contents.
+const gitPrintsNoText = (sub, prefix, text) => {
+  if (GIT_CONFIG_OPTION.test(prefix)) return false
+  if (sub === 'log' || sub === 'show' || sub === 'rev-list') return printsOnlyHashes(sub, text)
+  if (!PLAIN_GIT_TEXT.test(text)) return false
+  if (sub === 'diff') return text.split(/\s+/).includes('--quiet')
+  return sub === 'cat-file' && /^\s*-[tse]\s/.test(text)
 }
 // Each git log / show is read up to the next shell separator; a quote or backtick before it makes the text not
 // plain, so a separator inside one can't hide what follows. One that starts inside the previous one's text is an
@@ -545,12 +580,12 @@ const shellEventRead = (run) => {
   const read = run.match(SHELL_EVENT_READ)
   if (read) return read[0]
   let readTo = -1
-  for (const cmd of run.matchAll(GIT_LOG_CMD)) {
+  for (const cmd of run.matchAll(GIT_READ_CMD)) {
     const from = cmd.index + cmd[0].length
     if (cmd.index < readTo) continue
     SHELL_SEPARATOR.lastIndex = from
     readTo = SHELL_SEPARATOR.exec(run)?.index ?? run.length
-    if (!printsOnlyHashes(cmd[1], run.slice(from, readTo))) return cmd[0].trim()
+    if (!gitPrintsNoText(cmd[1].toLowerCase(), cmd[0], run.slice(from, readTo))) return cmd[0].trim()
   }
   return undefined
 }
@@ -579,6 +614,15 @@ const triggersOf = (doc) => {
 }
 
 const actionName = (uses) => String(uses).split('@')[0].toLowerCase()
+// The script of an actions/github-script step, or undefined.
+const githubScript = (step) => (typeof step.uses === 'string' && actionName(step.uses) === 'actions/github-script'
+  && isPlainObject(step.with) && typeof step.with.script === 'string' ? step.with.script : undefined)
+// A github-script script reads event or PR text through context (other than the fields listed, which hold only ids,
+// names GitHub sets and URLs), the API client (github, or its octokit alias) or exec, which can run gh or git with
+// array arguments (ESP-115). Any other use of these names counts, so a copy (const g = github), a destructuring
+// (const { rest } = github) or github?.rest fails closed; only a host name (api.github.com, github.com), a word such
+// as github-actions or a method (re.exec) is not one of them.
+const SCRIPT_EVENT_READ = /\bcontext\b(?!\s*\.\s*(?:repo|issue|sha|ref|runId|runNumber|runAttempt|workflow|actor|eventName|job|serverUrl|apiUrl|graphqlUrl)\b)|(?<![\w.$-])(?:github|octokit|exec)(?![\w$-]|\.com\b)/
 const isAiAction = (uses) => AI_ACTIONS.some((a) => actionName(uses) === a || actionName(uses).startsWith(a + '/'))
 
 const stepsOf = (job) => (Array.isArray(job?.steps) ? job.steps.filter(isPlainObject) : [])
@@ -613,14 +657,23 @@ const shapeProblems = (doc) => {
 // string literal ('{0}') can't end it early.
 const OUTPUT_IN_EXPR = /(?<![\w.-])(?:steps|needs)\b/
 const readsPrEnv = (e, prEnv) => [...e.matchAll(ENV_REF)].some(([, name]) => (name === undefined ? prEnv.size > 0 : prEnv.has(name) || prEnv.has(ANY_ENV)))
-const readsPrRef = (s, prEnv) => PR_REF_EXPR.test(normalizeExprs(s)) || untrustedIn(s).length > 0
-  || exprSpans(s).some(({ inner }) => { const e = normalizeExpr(inner); return OUTPUT_IN_EXPR.test(e) || readsPrEnv(e, prEnv) })
+const spanReadsPrRef = (inner, prEnv) => {
+  const e = normalizeExpr(inner)
+  return PR_REF_EXPR.test(e) || OUTPUT_IN_EXPR.test(e) || readsPrEnv(e, prEnv) || untrustedSpan(inner) !== undefined
+}
+const readsPrRef = (s, prEnv) => PR_REF_EXPR.test(normalizeExprs(s)) || exprSpans(s).some(({ inner }) => spanReadsPrRef(inner, prEnv))
 const checksOutPrCode = (step, prEnv) => {
   if (typeof step.uses === 'string' && actionName(step.uses) === 'actions/checkout' && isPlainObject(step.with)) {
     return ['ref', 'repository'].some((k) => typeof step.with[k] === 'string' && readsPrRef(step.with[k], prEnv))
   }
-  return typeof step.run === 'string' && runChecksOutPr(normalizeExprs(step.run))
+  return typeof step.run === 'string' && runChecksOutPr(normalizeExprs(step.run), prEnv)
 }
+// A shell variable (in any syntax SHELL_VAR reads) whose name is in prEnv, or with ANY_ENV any but
+// GITHUB_* and RUNNER_*, which $GITHUB_ENV can't set; an environ / getenv read names none, so it counts (fail closed).
+const readsPrShellVar = (text, prEnv) => prEnv.size > 0 && [...text.matchAll(SHELL_VAR)].some(([, dollar, percent]) => {
+  const name = (dollar ?? percent)?.toLowerCase()
+  return name === undefined || (prEnv.has(ANY_ENV) ? !/^(?:github|runner)_/.test(name) : prEnv.has(name))
+})
 // The lowercased env names set from PR-derived text after one level's env: block, as untrustedEnv does for untrusted
 // text: a name it sets replaces the outer one, a whole-expression block or a name outside [\w-] that reads such text
 // marks every name, and a plain value never clears a name its own block set from such text.
@@ -639,16 +692,20 @@ const prRefEnv = (block, outer) => {
   return env
 }
 // A run script that names $GITHUB_ENV and reads PR-derived text (an expression, a PR-derived env name in any shell
-// syntax, or event text it fetches itself) may set any env name from it.
-const writesPrEnv = (run, prEnv) => /\bGITHUB_ENV\b/i.test(run) && (readsPrRef(run, prEnv) || untrustedRead(run, NO_TAINT) !== undefined
-  || prEnv.has(ANY_ENV) || [...prEnv].some((name) => new RegExp(`(?<![\\w-])${escapeRegExp(name)}(?![\\w-])`, 'i').test(run)))
+// syntax, or event text it fetches itself) may set any env name from it. So may a github-script script that names
+// $GITHUB_ENV or calls core.exportVariable and reads such text, including through context or the API (ESP-115).
+const writesPrEnv = (text, prEnv, isScript) => (isScript ? /\bexportVariable\b|\bGITHUB_ENV\b/i : /\bGITHUB_ENV\b/i).test(text)
+  && (readsPrRef(text, prEnv) || untrustedRead(text, NO_TAINT) !== undefined || (isScript && SCRIPT_EVENT_READ.test(text))
+  || prEnv.has(ANY_ENV) || [...prEnv].some((name) => new RegExp(`(?<![\\w-])${escapeRegExp(name)}(?![\\w-])`, 'i').test(text)))
 // The index of the first step that checks out PR code.
 const prCheckoutIndex = (doc, job, steps) => {
   let jobEnv = prRefEnv(job.env, prRefEnv(doc.env, new Set()))
   for (const [n, step] of steps.entries()) {
     const env = prRefEnv(step.env, jobEnv)
     if (checksOutPrCode(step, env)) return n
-    if (typeof step.run === 'string' && writesPrEnv(step.run, env)) jobEnv = new Set([...jobEnv, ANY_ENV])
+    const script = githubScript(step)
+    const text = typeof step.run === 'string' ? step.run : script
+    if (text !== undefined && writesPrEnv(text, env, script !== undefined)) jobEnv = new Set([...jobEnv, ANY_ENV])
   }
   return -1
 }
@@ -693,13 +750,20 @@ const walkJob = (job, workflowEnv, needs, visit) => {
   for (const step of stepsOf(job)) {
     const taint = { env: untrustedEnv(step.env, { env: jobEnv, steps, needs }), steps, needs }
     visit(step, taint)
-    if (typeof step.run !== 'string') continue
+    const script = githubScript(step)
+    const text = typeof step.run === 'string' ? step.run : script
+    if (text === undefined) continue
     // Untrusted text written to $GITHUB_ENV reaches every later step's env under a name the script chose, and text
     // written to $GITHUB_OUTPUT (or with the deprecated ::set-output command) reaches steps.<id>.outputs (R8,
-    // ESP-111). Either file named, in any case (Windows env names aren't case-sensitive), counts as written to.
-    const from = untrustedRead(step.run, taint)
-    if (from && /\bGITHUB_ENV\b/i.test(step.run)) jobEnv = new Map([...jobEnv, [ANY_ENV, `$GITHUB_ENV, written from ${from}`]])
-    if (from && /\bGITHUB_OUTPUT\b|::set-output\b/i.test(step.run) && step.id != null) steps.add(String(step.id).toLowerCase())
+    // ESP-111). Either file named, in any case (Windows env names aren't case-sensitive), counts as written to. A
+    // github-script script that reads such text, or event text through context or the API, sets its outputs from it
+    // (core.setOutput, or its return value as outputs.result), and env too with core.exportVariable (ESP-115).
+    const from = untrustedRead(text, taint) ?? (script === undefined ? undefined : script.match(SCRIPT_EVENT_READ)?.[0])
+    if (!from) continue
+    if (/\bGITHUB_ENV\b/i.test(text) || (script !== undefined && /\bexportVariable\b/.test(script))) {
+      jobEnv = new Map([...jobEnv, [ANY_ENV, `$GITHUB_ENV, written from ${from}`]])
+    }
+    if ((script !== undefined || /\bGITHUB_OUTPUT\b|::set-output\b/i.test(text)) && step.id != null) steps.add(String(step.id).toLowerCase())
   }
   const final = { env: jobEnv, steps, needs }
   return strings(job.outputs).some((s) => untrustedIn(s, final).length > 0)
@@ -733,11 +797,12 @@ const needsTaintOf = (job, tainted) => {
   return { has: (id) => tainted.has(id) || !declared.has(id), values: () => tainted.values() }
 }
 // The jobs with an output that reads untrusted text, through any chain of needs. One walk in needs order finds them
-// all, since each job's declared needs are walked before it.
+// all, since each job's declared needs are walked before it. A job that calls a reusable workflow (uses:) has outputs
+// that can't be read from here, so they count (fail closed, ESP-115).
 const untrustedJobs = (doc, workflowEnv) => {
   const tainted = new Set()
   for (const [id, job] of needsOrder(jobsOf(doc))) {
-    if (walkJob(job, workflowEnv, needsTaintOf(job, tainted), () => {})) tainted.add(id.toLowerCase())
+    if (job.uses != null || walkJob(job, workflowEnv, needsTaintOf(job, tainted), () => {})) tainted.add(id.toLowerCase())
   }
   return tainted
 }
