@@ -480,6 +480,9 @@ const pushTargets = (cmd, branch) =>
 const SNAPSHOT_COMMAND = /usiatech-governance|bash-wf-/i
 // ESP-110 item 5: some rules are quadratic, and a guard timeout fails open, so a longer command is asked unchecked.
 const MAX_COMMAND_CHARS = 16 * 1024
+// Over this (after squeezing space padding, as denyPieces does), even the pieces and decoded forms are too many to
+// check in time, so the command is asked unchecked.
+const MAX_TOTAL_CHARS = 64 * MAX_COMMAND_CHARS
 // ESP-110 item 9: the command as the shell reads it, without backtick, caret or backslash escapes, quotes or a .exe
 // suffix, so `--no-ver`ify`, `'--for''ce'`, cmd's `r^d` and `git.exe` match like the plain spelling.
 const unescaped = (cmd) => cmd.replace(/[`'"^]|\\(?=[a-z])|(?<=\w)\.exe\b/gi, '')
@@ -488,10 +491,11 @@ const unescaped = (cmd) => cmd.replace(/[`'"^]|\\(?=[a-z])|(?<=\w)\.exe\b/gi, ''
 // break (the rules don't reach past those), so padding can't hide one; it is then asked whatever the result.
 // shortcut: a single part over 4 KB is skipped unchecked; split it further if that is ever used to hide a delete.
 const MAX_PART_CHARS = 4 * 1024
+// Runs of spaces or tabs don't change what a rule matches, so padding made of them is squeezed out first.
+const squeezeSpaces = (c) => c.replace(/[ \t]{2,}/g, ' ')
 const denyPieces = (c) => {
   if (c.length <= MAX_COMMAND_CHARS) return [c]
-  // Runs of spaces or tabs don't change what a rule matches, so padding made of them is squeezed out first.
-  const squeezed = c.replace(/[ \t]{2,}/g, ' ')
+  const squeezed = squeezeSpaces(c)
   if (squeezed.length <= MAX_COMMAND_CHARS) return [squeezed]
   const pieces = []
   let piece = ''
@@ -511,7 +515,9 @@ const denyPieces = (c) => {
 // The flag is looked for anywhere, so another tool's -e in the same command fails closed (asked). PowerShell also
 // takes -- and dash characters as the flag prefix, a quoted value may hold whitespace (base64 decoding skips it),
 // and a decoded text is read again for its own encoded command, up to MAX_ENCODED_DEPTH levels, then asked.
-const ENCODED_FLAG = /\s(?:--?|[\/–—―])(e[a-z]*)(?:\s+|:)("[^"]*"|'[^']*'|\S*)/gi
+// The value is read in a lookahead, so another -e flag (`-ep -e …`) doesn't swallow the encoded flag as its value.
+// A flag may also be a group or array element, ended by `,`, `;`, `)` or the next group: `@('-e';'…')`, `('-e')('…')`.
+const ENCODED_FLAG = /[\s(,;](?:--?|[\/–—―])(e[a-z]*)(?=(?:\)?\s*[,;(]\s*|\)?\s+|:)("[^"]*"|'[^']*'|[^\s;&|),]*))/gi
 const MAX_ENCODED_DEPTH = 3
 const encodedCommands = (cmd, depth = 0) => {
   if (!/\b(?:powershell|pwsh)\b/i.test(cmd)) return []
@@ -529,6 +535,7 @@ const encodedCommands = (cmd, depth = 0) => {
 }
 
 const decideBash = (cmd, { cfg, gov, repoRules }, git, root) => {
+  if (squeezeSpaces(cmd).length > MAX_TOTAL_CHARS) return decision('ask', `The command is over ${MAX_TOTAL_CHARS / 1024 / 1024} MB, too long for the guard to check. Confirm it is part of the approved plan.`, cmd)
   // The unescaped form too, so a quoted or split flag or name (`'-enc'`, `-e''nc`, `p''owershell`) is still read.
   const encoded = [cmd, unescaped(cmd)].flatMap((c) => encodedCommands(c))
   const decoded = encoded.filter((t) => t !== null)

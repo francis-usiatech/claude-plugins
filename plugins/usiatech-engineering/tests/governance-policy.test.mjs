@@ -382,6 +382,15 @@ describe('evaluate: guard gaps from the ESP-110 reviews (ESP-113)', () => {
     `pwsh \u2013e ${encoded('rd /s /q C:\\')}`,
     `powershell -enc "${encoded('rm ')} ${encoded('-rf /')}"`,
     `rm${' '.repeat(17000)}-rf /`,
+    // Post-commit security pass: another -e flag must not take the -EncodedCommand flag as its value.
+    `pwsh -ep -e ${encoded('rd /s /q C:\\')}`,
+    `pwsh -ex x -e ${encoded('rd /s /q C:\\')}`,
+    // Fix re-review: PowerShell array and grouping arguments.
+    `pwsh ('-e') ${encoded('rd /s /q C:\\')}`,
+    `pwsh @('-e','${encoded('rd /s /q C:\\')}')`,
+    `pwsh @( '-e', '${encoded('rd /s /q C:\\')}')`,
+    `pwsh @('-e';'${encoded('rd /s /q C:\\')}')`,
+    `pwsh ('-e')('${encoded('rd /s /q C:\\')}')`,
   ]) {
     it(`should deny: ${cmd.length > 80 ? `${cmd.slice(0, 40)}… (${cmd.length} chars)` : cmd}`, async () => assert.equal((await ps(cmd))?.decision, 'deny'))
   }
@@ -422,6 +431,18 @@ describe('evaluate: guard gaps from the ESP-110 reviews (ESP-113)', () => {
     const r = await ps(`rm -rf / ${'a'.repeat(5000)} ${pad}`)
     assert.equal(r?.decision, 'ask')
     assert.match(r.reason, /16 KB/)
+  })
+
+  it('should ask a command over 1 MB before any rule, quickly (post-commit security pass)', async () => {
+    const started = Date.now()
+    const r = await ps(`${'rm -r x; '.repeat(240 * 1024)}`)
+    assert.ok(Date.now() - started < 1000, 'decided in under 1 s')
+    assert.equal(r?.decision, 'ask')
+    assert.match(r.reason, /1 MB/)
+    // Space padding is squeezed before the cap, so it still can't turn a deny into an ask (AC3).
+    const padded = Date.now()
+    assert.equal((await ps(`rm${' '.repeat(1536 * 1024)}-rf /`))?.decision, 'deny')
+    assert.ok(Date.now() - padded < 1000, 'padded delete decided in under 1 s')
   })
 
   it('should decide a long worst-case command quickly, so the guard cannot time out (item 6)', async () => {
