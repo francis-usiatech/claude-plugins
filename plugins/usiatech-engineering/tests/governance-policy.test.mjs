@@ -2,6 +2,7 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, mkdirSync, symlinkSync, linkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { evaluate, loadConfig, sanitizeConfig, planFiles, gitProbe, logEntries, pendingAdvice, recordAdvice, configMarkerPath } from '../hooks/scripts/governance-policy.mjs'
 import { stateDir } from '../hooks/scripts/governance-state.mjs'
 import { GUARD_DEADLINE_MS } from '../templates/github/scripts/supply-chain-lookups.mjs'
@@ -297,7 +298,7 @@ describe('evaluate: guard gaps from the ESP-106 reviews (ESP-110)', () => {
     assert.match((await bash('git.exe push origin main'))?.reason ?? '', /Push to protected branch "main"/)
   })
 
-  it('should ask on a command over 16 KB without running the rules (item 5)', async () => {
+  it('should ask on a command over 16 KB that no deny rule matches (item 5)', async () => {
     const started = Date.now()
     const r = await bash(`echo ${'a '.repeat(88 * 1024)}`)
     assert.ok(Date.now() - started < 1000, 'decided in under 1 s')
@@ -336,6 +337,195 @@ describe('evaluate: guard gaps from the ESP-106 reviews (ESP-110)', () => {
       assert.equal(await win('src/~draft.js'), null)
       assert.equal(await win('src/x~.js'), null)
       assert.equal(await evaluate({ tool_name: 'Write', tool_input: { file_path: 'src/A~1.js', content: 'x' } }, { root: '/repo', git: fakeGit(), pathApi: path.posix }), null)
+    })
+  })
+})
+
+describe('evaluate: guard gaps from the ESP-110 reviews (ESP-113)', () => {
+  const ps = (command) => evaluate({ tool_name: 'PowerShell', tool_input: { command } }, { root: tempDir(), git: fakeGit() })
+  const encoded = (text) => Buffer.from(text, 'utf16le').toString('base64')
+  const pad = 'a '.repeat(9000)
+
+  for (const cmd of [
+    // Item 4: = starts a command.
+    '$null = ri C:\\ -Recurse -Force',
+    // Item 6: padding over 16 KB no longer hides a deny.
+    `echo ${pad}; rm -rf /`,
+    `rm -rf /; echo ${pad}`,
+    `echo ${pad}\nRemove-Item -Recurse -Force C:\\`,
+    // Item 8: a stage before the delete, and xargs.
+    'gci ~ | % { ri $_ -r }',
+    'ls ~ | ? {$_} | Remove-Item -Recurse',
+    'ls ~ | xargs rm -rf',
+    'find / | xargs rm -rf',
+    'find / -name x | xargs -0 -n 1 rm -rf',
+    // Item 9: parent and current-folder targets, $'…' quoting, encoded commands.
+    'rm -rf ..',
+    'rm -rf ../',
+    'rm -rf "$PWD"',
+    'rm -rf $PWD',
+    'rm -rf ${PWD}',
+    'Remove-Item $PWD -Recurse -Force',
+    "$'rm' -rf /",
+    `powershell -EncodedCommand ${encoded('rd /s /q C:\\')}`,
+    `pwsh -enc ${encoded('Remove-Item -Recurse -Force C:\\')}`,
+    `powershell -NoProfile -e "${encoded('rd /s /q C:\\')}"`,
+    `pwsh -ec ${encoded('rd /s /q C:\\')}`,
+    // ESP-113 review: quoted or split flag and name, nested, -- and dash flags, whitespace inside the value, a padded part.
+    `powershell '-enc' ${encoded('rd /s /q C:\\')}`,
+    `powershell -e''nc ${encoded('rd /s /q C:\\')}`,
+    `p''owershell -enc ${encoded('rd /s /q C:\\')}`,
+    `pwsh -e ${encoded(`pwsh -e ${encoded('Remove-Item C:\\ -Recurse -Force')}`)}`,
+    `pwsh -e ${encoded(`pwsh '-enc' ${encoded('rd /s /q C:\\')}`)}`,
+    `pwsh -e ${encoded(`p''wsh -enc ${encoded('rd /s /q C:\\')}`)}`,
+    `pwsh --encodedcommand ${encoded('rd /s /q C:\\')}`,
+    `pwsh \u2013e ${encoded('rd /s /q C:\\')}`,
+    `powershell -enc "${encoded('rm ')} ${encoded('-rf /')}"`,
+    `rm${' '.repeat(17000)}-rf /`,
+    // Post-commit security pass: another -e flag must not take the -EncodedCommand flag as its value.
+    `pwsh -ep -e ${encoded('rd /s /q C:\\')}`,
+    `pwsh -ex x -e ${encoded('rd /s /q C:\\')}`,
+    // Fix re-review: PowerShell array and grouping arguments.
+    `pwsh ('-e') ${encoded('rd /s /q C:\\')}`,
+    `pwsh @('-e','${encoded('rd /s /q C:\\')}')`,
+    `pwsh @( '-e', '${encoded('rd /s /q C:\\')}')`,
+    `pwsh @('-e';'${encoded('rd /s /q C:\\')}')`,
+    `pwsh ('-e')('${encoded('rd /s /q C:\\')}')`,
+  ]) {
+    it(`should deny: ${cmd.length > 80 ? `${cmd.slice(0, 40)}… (${cmd.length} chars)` : cmd}`, async () => assert.equal((await ps(cmd))?.decision, 'deny'))
+  }
+
+  for (const cmd of [
+    // Items 1–5: a wrapper that names a delete alias.
+    'cmd /q /d /e:on /v:off /s /c rd /s /q C:\\',
+    'cmd /c"rd /s /q C:\\"',
+    '& $env:ComSpec /c rd /s /q C:\\',
+    '$COMSPEC //c rd /s /q C:\\',
+    'cmd /c cmd/c rd /s /q C:\\',
+    "iex 'rd C:\\ -r -fo'",
+    "Invoke-Expression 'rd C:\\ -r -fo'",
+    "Start-Process cmd -ArgumentList '/c rd /s /q C:\\'",
+    "saps cmd '/c del x'",
+    'cmd /c rd/s/q C:\\',
+    'git commit -m "cmd: rm unused"',
+    // Item 9: still a recursive delete, not a root one; ANSI-C escapes and encoded commands the guard can't read.
+    'rm -rf ../x',
+    "echo $'\\x72m'",
+    'pwsh -enc $x',
+    'powershell -EncodedCommand !!!',
+    `powershell -EncodedCommand ${Buffer.from([0xff, 0xd8, 0x41]).toString('base64')}`,
+  ]) {
+    it(`should ask: ${cmd}`, async () => assert.equal((await ps(cmd))?.decision, 'ask'))
+  }
+
+  for (const cmd of ['npm start', 'cmd /c echo hi', 'ls ~ | grep rd', 'dir C:\\ | findstr del', 'rm -f $PWD/x.txt', 'powershell -ExecutionPolicy Bypass -File x.ps1', `pwsh -enc ${encoded('Get-Date')}`, "echo $'a b'"]) {
+    it(`should allow: ${cmd}`, async () => assert.equal(await ps(cmd), null))
+  }
+
+  it('should not deny a recursive delete below the current folder (item 9)', async () => {
+    assert.equal((await ps('rm -rf $PWD/build'))?.decision, 'ask')
+    assert.equal((await ps('rm -rf ./build'))?.decision, 'ask')
+  })
+
+  it('should still ask a command over 16 KB when one part between separators is over 4 KB (item 6 limit)', async () => {
+    const r = await ps(`rm -rf / ${'a'.repeat(5000)} ${pad}`)
+    assert.equal(r?.decision, 'ask')
+    assert.match(r.reason, /16 KB/)
+  })
+
+  it('should deny a command over 1 MB before any rule, quickly (post-commit security pass)', async () => {
+    const started = Date.now()
+    // Newline padding isn't squeezed, so it can't turn a padded delete into an ask either.
+    for (const cmd of ['rm -r x; '.repeat(240 * 1024), `rm -rf /${'\n'.repeat(1536 * 1024)}`]) {
+      const r = await ps(cmd)
+      assert.equal(r?.decision, 'deny')
+      assert.match(r.reason, /1 MB/)
+    }
+    assert.ok(Date.now() - started < 1000, 'decided in under 1 s')
+    // Space padding is squeezed before the cap, so it still can't turn a deny into an ask (AC3).
+    const padded = Date.now()
+    assert.equal((await ps(`rm${' '.repeat(1536 * 1024)}-rf /`))?.decision, 'deny')
+    assert.ok(Date.now() - padded < 1000, 'padded delete decided in under 1 s')
+  })
+
+  it('should decide a long worst-case command quickly, so the guard cannot time out (item 6)', async () => {
+    // Five 4 KB parts: over the 16 KB limit, so the parts are checked, without loading a parallel test run.
+    // The last two: many listing starts before many xargs words, under and over 16 KB (ESP-113 review ReDoS).
+    for (const cmd of [`${'rm -r '.repeat(680)};`.repeat(5), `${'\nls ~ | x'.repeat(450)};`.repeat(5), `${'git commit '.repeat(370)}&`.repeat(5), `${'|ls ~ '.repeat(680)};`.repeat(5), `${'ls / |'.repeat(300)}${' xargs'.repeat(2400)}`, `${`${'ls / |'.repeat(100)}${' xargs'.repeat(560)};`.repeat(5)}`]) {
+      const started = Date.now()
+      const r = await ps(cmd)
+      assert.ok(Date.now() - started < 3000, `${cmd.slice(0, 20)}… (${cmd.length} chars) decided in under 3 s`)
+      // Over 16 KB a command is always asked or denied; the shorter xargs one has no delete, so it is allowed.
+      if (cmd.length > 16 * 1024) assert.notEqual(r?.decision ?? null, null)
+    }
+  })
+
+  describe('a Windows 8.3 short name that resolves to its long name (items 7, 10)', () => {
+    // A stand-in for fs.realpathSync.native: maps the paths that exist, throws ENOENT for the rest.
+    const longName = (map) => (abs) => {
+      if (abs in map) return map[abs]
+      throw Object.assign(new Error(`ENOENT: ${abs}`), { code: 'ENOENT' })
+    }
+    const ROOT = String.raw`C:\repo`
+    const inProject = longName({ [ROOT]: ROOT, [String.raw`C:\repo\ENV~1`]: String.raw`C:\repo\.env`, [String.raw`C:\repo\GENERA~1`]: String.raw`C:\repo\generated`, [String.raw`C:\repo\SRC~1`]: String.raw`C:\repo\src`, [String.raw`C:\repo\LINK~1`]: String.raw`D:\elsewhere` })
+    const win = (file_path, opts = {}) =>
+      evaluate({ tool_name: 'Write', tool_input: { file_path, content: 'x' } }, { root: ROOT, git: fakeGit(), pathApi: path.win32, caseInsensitive: true, longName: inProject, ...opts })
+
+    it('should deny a short name for an env file or a protected folder', async () => {
+      assert.equal((await win('ENV~1'))?.decision, 'deny')
+      assert.equal((await win('GENERA~1/x.js'))?.decision, 'deny')
+    })
+
+    it('should allow a short name for an ordinary folder', async () => {
+      assert.equal(await win('SRC~1/x.js'), null)
+    })
+
+    it('should decide an absolute path through a short project folder as the file inside (CI temp folder)', async () => {
+      const lookup = longName({ [ROOT]: ROOT, [String.raw`C:\REPO~1\ENV~1`]: String.raw`C:\repo\.env`, [String.raw`C:\REPO~1\SRC~1`]: String.raw`C:\repo\src` })
+      assert.equal((await win(String.raw`C:\REPO~1\ENV~1`, { longName: lookup }))?.decision, 'deny')
+      assert.equal(await win(String.raw`C:\REPO~1\SRC~1\x.js`, { longName: lookup }), null)
+    })
+
+    it('should still ask a short name that does not resolve, or that resolves outside the project', async () => {
+      for (const file of ['AGENTS~1.MD', 'LINK~1/x.js']) {
+        const r = await win(file)
+        assert.equal(r?.decision, 'ask', file)
+        assert.match(r.reason, /short name/, file)
+      }
+    })
+
+    it('should ask a short name when the lookup fails with another error', async () => {
+      const r = await win('SRC~1/x.js', { longName: () => { throw Object.assign(new Error('EPERM'), { code: 'EPERM' }) } })
+      assert.equal(r?.decision, 'ask')
+      assert.match(r.reason, /short name/)
+    })
+
+    const HOME = String.raw`C:\Users\me`
+    const SESSION = String.raw`C:\Users\me\.claude\session-data`
+    const outside = (file_path, map) => evaluate({ tool_name: 'Write', tool_input: { file_path, content: 'notes' } },
+      { root: String.raw`C:\Users\me\src\my-app`, homeDir: HOME, tmpDir: String.raw`C:\Users\me\AppData\Local\Temp`, git: fakeGit(), pathApi: path.win32, caseInsensitive: true, longName: longName(map) })
+
+    it('should trust an outside write through a short name that resolves to a trusted path (item 10)', async () => {
+      const r = await outside(String.raw`C:\Users\me\.claude\SESSIO~1\notes.md`, { [String.raw`C:\Users\me\.claude\SESSIO~1`]: SESSION })
+      assert.equal(r?.decision ?? null, null, r?.reason)
+      assert.equal(r?.trusted, true)
+    })
+
+    it('should deny an outside short name for an env file, and ask one that does not resolve (item 10)', async () => {
+      assert.equal((await outside(String.raw`C:\Users\me\.claude\session-data\ENV~1`, { [String.raw`C:\Users\me\.claude\session-data\ENV~1`]: `${SESSION}\\.env` }))?.decision, 'deny')
+      const r = await outside(String.raw`C:\Users\me\.claude\SESSIO~1\notes.md`, {})
+      assert.equal(r?.decision, 'ask')
+      assert.match(r.reason, /short name/)
+    })
+
+    it('should deny a real 8.3 short name for .env on this volume (native)', async (t) => {
+      if (process.platform !== 'win32') return t.skip('8.3 short names exist only on Windows')
+      const root = tempDir()
+      writeFileSync(path.join(root, '.env'), 'X=1')
+      const short = execFileSync('cmd', ['/d', '/c', `for %I in ("${path.join(root, '.env')}") do @echo %~sI`], { encoding: 'utf8', windowsVerbatimArguments: true }).trim()
+      if (!/~\d/.test(path.basename(short))) return t.skip(`this volume has no 8.3 name for .env (got ${short})`)
+      const r = await evaluate({ tool_name: 'Write', tool_input: { file_path: short, content: 'x' } }, { root, git: fakeGit() })
+      assert.equal(r?.decision, 'deny', r?.reason)
     })
   })
 })
