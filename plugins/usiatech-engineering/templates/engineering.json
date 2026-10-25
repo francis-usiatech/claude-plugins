@@ -49,12 +49,19 @@
     "silent-failure-reviewer",
     "security-reviewer"
   ],
+  "reviewerModels": {
+    "$comment": "Optional model per reviewer agent, keyed by agent name: \"sonnet\", \"opus\", \"haiku\" or \"inherit\" (the session's model). Read from the base branch. A reviewer with no entry runs on its agent file's model: sonnet for convention, silent-failure, supply-chain and workflow reviewers, opus for governance and security. E.g. {\"security-reviewer\": \"sonnet\"}."
+  },
+  "session": {
+    "$comment": "Advice from scripts/session-check.mjs at the start of release and approve-plan. contextAdvisoryTokens (default 300000, a positive whole number) is the context size above which it recommends compacting or a fresh session, once per session. Read from the base branch.",
+    "contextAdvisoryTokens": 300000
+  },
   "decisions": {
     "batch": true,
     "nitsNeedDecision": false
   },
   "tickets": {
-    "$comment": "Ticket tracker for to-tickets, approve-plan, verify and release: \"github\" (the default) or \"jira\". For Jira set tracker to \"jira\" and add \"jira\": {\"site\": \"https://example.atlassian.net\", \"project\": \"ESP\", \"issueType\": \"Subtask\", \"parent\": \"ESP-27\" (optional), \"statuses\": {\"started\": \"In Progress\", \"verified\": \"In Testing\", \"merged\": \"Ready for Release\", \"released\": \"Released\"} (each optional)}. Credentials come only from the JIRA_EMAIL and JIRA_API_TOKEN environment variables; the token is sent only to an .atlassian.net site or the JIRA_SITE host. Jira failures are never retried and never undo git steps. See the README under Jira tracker and ADR 0003.",
+    "$comment": "Ticket tracker for to-tickets, approve-plan, verify and release: \"github\" (the default) or \"jira\". For Jira set tracker to \"jira\" and add \"jira\": {\"site\": \"https://example.atlassian.net\", \"project\": \"ESP\", \"issueType\": \"Subtask\", \"parent\": \"ESP-27\" (optional), \"statuses\": {\"started\": \"In Progress\", \"verified\": \"In Testing\", \"merged\": \"Ready for Release\", \"released\": \"Released\"} (each optional), \"cloudId\" and \"transitions\": {\"started\": \"21\", ...} (optional; with both, the skills write through the Atlassian MCP using these transition IDs, else through the script)}. Credentials come only from the JIRA_EMAIL and JIRA_API_TOKEN environment variables; the token is sent only to an .atlassian.net site or the JIRA_SITE host. Jira failures are never retried and never undo git steps. See the README under Jira tracker and ADR 0003.",
     "tracker": "github"
   },
   "governance": {

@@ -12,6 +12,8 @@ const TRACKERS = ['github', 'jira']
 const EVENTS = ['started', 'verified', 'merged', 'released']
 const PROJECT_KEY = /^[A-Z][A-Z0-9_]+$/
 const ISSUE_KEY = /^[A-Z][A-Z0-9_]+-\d+$/
+const CLOUD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const TRANSITION_ID = /^\d+$/
 
 // Why a site URL can't be used as a Jira base (not a URL, not https, or more than a host), or null.
 // `check` and the client both use it, so a site `check` accepts never fails later as a Jira error.
@@ -32,7 +34,7 @@ const siteShapeProblem = (site) => {
 // "$comment" is the config's note key, allowed at every level and never treated as a setting.
 const COMMENT_KEY = '$comment'
 const TICKETS_KEYS = ['tracker', 'jira']
-const JIRA_KEYS = ['site', 'project', 'issueType', 'parent', 'statuses']
+const JIRA_KEYS = ['site', 'project', 'issueType', 'parent', 'statuses', 'cloudId', 'transitions']
 const quoted = (keys) => keys.map((k) => `"${k}"`).join(', ')
 const settingEntries = (obj) => Object.entries(obj).filter(([key]) => key !== COMMENT_KEY)
 
@@ -49,6 +51,16 @@ const statusProblems = (statuses) => {
       : [])
 }
 
+// Transition IDs let the skills move an issue through the Atlassian MCP without a lookup call (ESP-123).
+const transitionProblems = (transitions) => {
+  if (transitions == null) return []
+  if (!isPlainObject(transitions)) return ['"tickets.jira.transitions" must be an object mapping events to transition IDs']
+  return settingEntries(transitions).flatMap(([event, id]) =>
+    !EVENTS.includes(event) ? [`"tickets.jira.transitions.${event}" is not an event; use ${quoted(EVENTS)}`]
+      : !(typeof id === 'string' && TRANSITION_ID.test(id)) ? [`"tickets.jira.transitions.${event}" must be a transition ID in digits, such as "21"`]
+      : [])
+}
+
 const jiraProblems = (j) => {
   if (!isPlainObject(j)) return ['"tickets.jira" must be an object']
   const siteProblem = isNonEmptyString(j.site) && siteShapeProblem(j.site)
@@ -60,6 +72,8 @@ const jiraProblems = (j) => {
     !isNonEmptyString(j.issueType) && '"tickets.jira.issueType" must be a non-empty issue type name',
     j.parent != null && !(typeof j.parent === 'string' && ISSUE_KEY.test(j.parent)) && '"tickets.jira.parent" must be an issue key such as "ESP-27"',
     ...statusProblems(j.statuses),
+    j.cloudId != null && !(typeof j.cloudId === 'string' && CLOUD_ID.test(j.cloudId)) && '"tickets.jira.cloudId" must be the Atlassian cloud ID, a UUID',
+    ...transitionProblems(j.transitions),
   ].filter(Boolean)
 }
 
@@ -80,9 +94,13 @@ export const validateTicketsConfig = (raw) => {
   ]
   if (problems.length) return { tickets: null, problems }
   if (tracker === 'github') return { tickets: { tracker }, problems: [] }
-  const { site, project, issueType, parent, statuses } = raw.jira
+  const { site, project, issueType, parent, statuses, cloudId, transitions } = raw.jira
+  const settings = (obj) => Object.fromEntries(settingEntries(obj ?? {}))
   return {
-    tickets: { tracker, jira: { site: site.replace(/\/+$/, ''), project, issueType, parent: parent ?? null, statuses: Object.fromEntries(settingEntries(statuses ?? {})) } },
+    tickets: {
+      tracker,
+      jira: { site: site.replace(/\/+$/, ''), project, issueType, parent: parent ?? null, statuses: settings(statuses), cloudId: cloudId ?? null, transitions: settings(transitions) },
+    },
     problems: [],
   }
 }

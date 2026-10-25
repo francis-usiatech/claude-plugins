@@ -1,4 +1,4 @@
-// Plugin structure: every skill and agent has valid frontmatter, reviewers stay read-only,
+// Plugin structure: every skill and agent has valid frontmatter, reviewers edit no project file,
 // and the README and engineering.json template only name components that exist.
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
@@ -12,7 +12,10 @@ const frontmatter = (text) => {
   const m = text.match(FRONTMATTER)
   assert.ok(m, 'missing frontmatter')
   const field = (k) => m[1].match(new RegExp(`^${k}:[ \\t]*(.*)$`, 'm'))?.[1].trim()
-  return { name: field('name'), description: field('description'), tools: field('tools') }
+  return {
+    name: field('name'), description: field('description'), tools: field('tools'), model: field('model'),
+    context: field('context'), agent: field('agent'), background: field('background'),
+  }
 }
 const body = (text) => text.replace(FRONTMATTER, '')
 const skills = readdirSync(path.join(PLUGIN_ROOT, 'skills'))
@@ -29,14 +32,35 @@ describe('plugin structure: skills', () => {
   }
 })
 
+// ESP-119: routine reviewers run on Sonnet; governance and security stay on Opus.
+const AGENT_MODELS = {
+  'convention-reviewer': 'sonnet',
+  'governance-reviewer': 'opus',
+  'security-reviewer': 'opus',
+  'silent-failure-reviewer': 'sonnet',
+  'supply-chain-reviewer': 'sonnet',
+  'workflow-reviewer': 'sonnet',
+}
+
 describe('plugin structure: agents', () => {
   for (const a of agents) {
-    it(`should give agent "${a}" a matching name and read-only tools`, () => {
+    it(`should give agent "${a}" a matching name, its model and no edit tools`, () => {
       const fm = frontmatter(read('agents', `${a}.md`))
       assert.equal(fm.name, a)
-      for (const t of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']) {
+      assert.equal(fm.model, AGENT_MODELS[a], `${a} model`)
+      // ESP-122: Write is only for the report file in the scratchpad (instruction-only limit).
+      assert.match(fm.tools || '', /"Write"/, `${a} needs Write for its report file`)
+      for (const t of ['Edit', 'MultiEdit', 'NotebookEdit']) {
         assert.ok(!new RegExp(`"${t}"`).test(fm.tools || ''), `${a} must not have ${t}`)
       }
+    })
+
+    it(`should cap agent "${a}" replies and send the full report to the scratchpad`, () => {
+      const text = body(read('agents', `${a}.md`))
+      assert.match(text, /\*\*Reply size:\*\*/)
+      assert.match(text, /session scratchpad/)
+      assert.match(text, /at most 30 lines and under 3 KB/i)
+      assert.match(text, /Write no other file/)
     })
   }
 })
@@ -55,6 +79,64 @@ describe('plugin structure: references', () => {
   it('should default to all four reviewers, governance first', () => {
     const cfg = JSON.parse(read('templates', 'engineering.json'))
     assert.deepEqual(cfg.reviewers, ['governance-reviewer', 'convention-reviewer', 'silent-failure-reviewer', 'security-reviewer'])
+  })
+
+  it('should pick each reviewer model from base-branch reviewerModels, then the agent file (ESP-119)', () => {
+    const release = body(read('skills', 'release', 'SKILL.md'))
+    assert.match(release, /\*\*Models:\*\*/)
+    assert.match(release, /`reviewerModels\[<agent>\]` from the base-branch `\.claude\/engineering\.json`/)
+    assert.match(release, /agent file's `model`/)
+    assert.match(release, /5 files or fewer runs `governance-reviewer` on `sonnet`/)
+    const plan = body(read('skills', 'approve-plan', 'SKILL.md'))
+    assert.match(plan, /`governance-reviewer` on `sonnet` when the plan's \*\*Files\*\* section lists 5 paths or fewer/)
+    assert.match(plan, /`reviewerModels`/)
+    const cfg = JSON.parse(read('templates', 'engineering.json'))
+    assert.ok(cfg.reviewerModels && typeof cfg.reviewerModels === 'object', 'template documents reviewerModels')
+  })
+
+  // ESP-118: a forked skill runs as a subagent without session history; background: false keeps every tool.
+  for (const s of ['verify', 'release-steps']) {
+    it(`should run "${s}" as a forked foreground subagent that returns decisions as a list`, () => {
+      const text = read('skills', s, 'SKILL.md')
+      const fm = frontmatter(text)
+      assert.equal(fm.context, 'fork')
+      assert.equal(fm.agent, 'general-purpose')
+      assert.equal(fm.background, 'false')
+      assert.match(body(text), /no session history/)
+      assert.match(body(text), /open decisions as a list/i)
+      assert.match(body(text), /never ask the user yourself/i)
+    })
+  }
+
+  it('should take AC evidence the repo cannot show from the verify arguments (ESP-118)', () => {
+    const text = read('skills', 'verify', 'SKILL.md')
+    assert.match(frontmatter(text).description, /pass.*evidence/i)
+    assert.match(body(text), /evidence list passed in the arguments/)
+    assert.doesNotMatch(body(text), /evidence produced in this session/)
+  })
+
+  it('should keep reviews in release and hand the mechanical steps to release-steps (ESP-118, ESP-122)', () => {
+    const release = body(read('skills', 'release', 'SKILL.md'))
+    assert.match(release, /`release-steps`/)
+    assert.match(release, /nits for the PR from the report files/)
+    assert.doesNotMatch(release, /git push origin --delete/, 'clean-up lives in release-steps')
+    const steps = body(read('skills', 'release-steps', 'SKILL.md'))
+    for (const s of ['Commit once', 'Pull request into the base branch', 'Tag with the configured format', 'git push origin --delete']) {
+      assert.ok(steps.includes(s), s)
+    }
+  })
+
+  it('should run session-check first in release and approve-plan, as advice only (ESP-120, ESP-121)', () => {
+    const release = body(read('skills', 'release', 'SKILL.md'))
+    const check = release.indexOf('## 0. Session check')
+    assert.ok(check > -1 && check < release.indexOf('## 1. Commit'), 'release runs the check before step 1')
+    const plan = body(read('skills', 'approve-plan', 'SKILL.md'))
+    assert.ok(plan.indexOf('session-check.mjs') > -1 && plan.indexOf('session-check.mjs') < plan.indexOf('## Route'), 'approve-plan runs it before routing')
+    assert.match(plan, /already closed a plan/)
+    for (const t of [release, plan]) {
+      assert.match(t, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/session-check\.mjs"/)
+      assert.match(t, /Don't block/)
+    }
   })
 
   it('should review in two stages in release: scope first, then code quality', () => {
@@ -301,11 +383,11 @@ describe('plugin structure: step-4 workflow checks (B10)', () => {
 })
 
 describe('plugin structure: step-4 supply-chain checks (B9; AC15)', () => {
-  it('should ship a read-only supply-chain-reviewer agent that covers the sc-* findings', () => {
+  it('should ship a supply-chain-reviewer agent that edits no project file and covers the sc-* findings', () => {
     assert.ok(agents.includes('supply-chain-reviewer'))
     const text = body(read('agents', 'supply-chain-reviewer.md'))
     for (const rule of ['sc-typosquat', 'sc-advisory', 'sc-lockfile-drift', 'sc-install-script']) assert.match(text, new RegExp(`\`${rule}\``), rule)
-    assert.match(text, /Never edit files/)
+    assert.match(text, /Never edit project files/)
   })
 
   it('should run supply-chain-reviewer in release stage 2 only when a manifest or lockfile changes', () => {
@@ -778,11 +860,13 @@ describe('plugin structure: review and release efficiency (ESP-11, 39, 42, 43, 4
     assert.match(steps[archive], /`\.claude\/plans\/active\.md`/)
     assert.match(steps[archive], /same commit/)
     assert.match(steps[archive], /record the final status as shipped/)
-    assert.equal(archive + 2, steps.length, 'the commit must be the one step after the archive')
-    assert.match(steps[archive + 1], /^\d+\. Commit once/)
-    const cleanUp = section(release(), '## 4. Clean up')
-    assert.doesNotMatch(cleanUp, /Close the plan with the `approve-plan` skill/)
-    assert.match(cleanUp, /already archived/)
+    // ESP-118: after the archive come only the commit message and the forked commit run.
+    assert.equal(archive + 3, steps.length, 'only the commit message and the commit run follow the archive')
+    assert.match(steps[archive + 1], /^\d+\. Write the commit message/)
+    assert.match(steps[archive + 2], /^\d+\. Run the `release-steps` skill with phase `commit`/)
+    const rules = section(read('skills', 'release-steps', 'SKILL.md'), '## Rules')
+    assert.doesNotMatch(rules, /Close the plan with the `approve-plan` skill/)
+    assert.match(rules, /already archived/)
   })
 
   it('should have approve-plan close the plan in the same PR as the work (AC4)', () => {
