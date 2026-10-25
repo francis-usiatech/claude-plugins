@@ -35,21 +35,25 @@ export const isPathPrefix = (v) => typeof v === 'string' && v.trim() !== '' && v
 // The short aliases ri, rd, del and erase count only where a command starts, so a folder named rd isn't one.
 // ESP-110: cmd-style /s and /q count as recursive and force, alone or clustered (/s/q), and a command also starts
 // inside a cmd or PowerShell wrapper: `cmd /d /c rd …` (also /k, /r), `pwsh -ExecutionPolicy Bypass -Comm "erase …"`,
-// or the bare `powershell "…"`.
-const CMD_START = String.raw`(?:^|[\n;&|({]|\b(?:cmd(?:\.exe)?(?:\s+\/{1,2}[a-z](?::\S*)?){0,4}?\s+\/{1,2}[ckr]|(?:powershell|pwsh)(?:\.exe)?(?:\s+-\w+(?:\s+(?!-)[^\s"']+)?){0,6}?\s+[-\/]c[a-z]*|(?:powershell|pwsh)(?:\.exe)?(?=\s+["']))\s+["']?)`
+// or the bare `powershell "…"`. ESP-113: `=` starts one too (`$null = ri …`); other wrapper spellings get the ask below.
+const CMD_START = String.raw`(?:^|[\n;&|({=]|\b(?:cmd(?:\.exe)?(?:\s+\/{1,2}[a-z](?::\S*)?){0,4}?\s+\/{1,2}[ckr]|(?:powershell|pwsh)(?:\.exe)?(?:\s+-\w+(?:\s+(?!-)[^\s"']+)?){0,6}?\s+[-\/]c[a-z]*|(?:powershell|pwsh)(?:\.exe)?(?=\s+["']))\s+["']?)`
 const RM = String.raw`(?:(?<!-)\b(?:rm|remove-item|rmdir)|${CMD_START}\s*(?:ri|rd|del|erase))\b`
 const RM_RECURSIVE = String.raw`[^;&|]*\s(?:-[dfiv]*r[a-z]*|--recursive\b|\/(?:[a-z]\/)*s(?=[\s\/"']|$))`
 const RM_FORCE = String.raw`[^;&|]*\s(?:-[dirv]*f[a-z]*|--force\b|\/(?:[a-z]\/)*q(?=[\s\/"']|$))`
 // A root, drive, workspace or home target, after a space or a `-Path:` / `--path=` value, ended by a space, a
 // separator, a bracket or a glob (ESP-110 items 3, 4, 11). /c/ is the Git Bash drive root; it needs the trailing slash so a /s or /q flag isn't one.
-const ROOT_TARGET = String.raw`[\s:=]["']?(?:(?:(?:[a-z]:)?[\/\\]{1,2}|[a-z]:|\.[\/\\]?|\/[a-z]\/)["']?(?=\s|$|[;&|)*])|~|\*|\$\{?(?:env:)?(?:home|userprofile|systemdrive)|\$pshome|%(?:userprofile|home|systemdrive))`
+// ESP-113 item 9: the parent folder (..) and $PWD itself, but not a path below them.
+const ROOT_TARGET = String.raw`[\s:=]["']?(?:(?:(?:[a-z]:)?[\/\\]{1,2}|[a-z]:|\.{1,2}[\/\\]?|\/[a-z]\/|\$\{?pwd\}?[\/\\]?)["']?(?=\s|$|[;&|)*])|~|\*|\$\{?(?:env:)?(?:home|userprofile|systemdrive)|\$pshome|%(?:userprofile|home|systemdrive))`
+const DELETE_ALIAS = String.raw`(?:remove-item|rm|rmdir|ri|rd|del|erase)\b`
 
 // Command rules: [reason, regex source], matched case-insensitively against the full Bash or PowerShell command.
 export const DENY_COMMANDS = [
   ['destructive delete of root/home/workspace', String.raw`${RM}(?=${RM_RECURSIVE})(?=${RM_FORCE})[^;&|]*${ROOT_TARGET}`],
-  // ESP-110 item 6: a listing of such a target piped straight into a delete, whatever its flags. The target is a
-  // lookahead and the listing must start a command, so a long command without a pipe stays linear (no ReDoS).
-  ['destructive delete of root/home/workspace', String.raw`${CMD_START}\s*(?:get-childitem|gci|ls|dir|get-item|gi)\b(?=[^;&|]*${ROOT_TARGET})[^;&|]*\|\s*(?:remove-item|rm|rmdir|ri|rd|del|erase)\b`],
+  // ESP-110 item 6: a listing of such a target piped into a delete, whatever its flags. ESP-113 item 8: also after
+  // another stage, inside a script block or through xargs. The target is a lookahead and the listing must start a
+  // command, so a long command without a pipe stays linear (no ReDoS). xargs may take only dash options (with a
+  // number value), so its scans can't overlap: a free-text gap after each xargs word was quadratic.
+  ['destructive delete of root/home/workspace', String.raw`${CMD_START}\s*(?:get-childitem|gci|ls|dir|get-item|gi|find)\b(?=[^;&|]*${ROOT_TARGET})(?=[^;&|]*(?=\|)[^;&\n]*?(?:\|\s*|[{(]\s*|\bxargs\s+(?:-\S*\s+(?:\d+\s+)?)*)${DELETE_ALIAS})`],
   ['piping a download into a shell', String.raw`\b(curl|wget)\b[^|;&]*\|\s*(sudo\s+)?(ba|z|da)?sh\b`],
   // R3: git takes any unique prefix of a long option, and --no-veri is the shortest that isn't --no-verbose.
   ['bypassing git hooks', String.raw`--no-veri(fy?)?\b`],
@@ -70,6 +74,11 @@ export const ASK_COMMANDS = [
   ['deleting a branch', String.raw`${GIT_PREFIX}(branch\b[^;&|]*\s(-[a-z]*d|--d[a-z]*\b)|push\b[^;&|]*\s(-d\b|--de[a-z]*\b|--mi[a-z]*\b)|push\s+\S+\s+:\S)`],
   ['rewriting history', String.raw`${GIT_PREFIX}(rebase|filter-branch|filter-repo|commit\s+--amend)\b`],
   ['recursive delete', `${RM}${RM_RECURSIVE}`],
+  // ESP-113 items 1–5: wrapper spellings are too many to list, so any command that names a cmd, PowerShell or
+  // Invoke-Expression wrapper and a delete is asked. Anchored lookaheads keep it linear.
+  ['delete inside a command wrapper', String.raw`^(?=[\s\S]*\b(?:cmd|comspec|powershell|pwsh|iex|invoke-expression|start-process|saps)\b)(?=[\s\S]*(?<![-\w])${DELETE_ALIAS})`],
+  // ESP-113 item 9: bash ANSI-C quoting with an escape ($'\x72m') can spell any command; the guard doesn't decode it.
+  ['ANSI-C quoted escape', String.raw`\$'[^']*\\`],
   ['destructive SQL', String.raw`\b(drop\s+table|truncate\s+|delete\s+from\s+\w+\s*(;|$|"|'))`],
   ['weakening row-level security', String.raw`(disable\s+row\s+level\s+security|no\s+force\s+row\s+level\s+security|bypassrls)`],
   ['resetting/dropping a database', String.raw`\b(prisma\s+migrate\s+reset|drizzle-kit\s+drop|db:reset|db:drop)\b`],

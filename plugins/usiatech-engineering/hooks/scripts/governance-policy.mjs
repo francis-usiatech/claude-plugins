@@ -96,6 +96,23 @@ const realOf = (target, p) => {
   return p.join(realpathSync.native(cur), ...tail)
 }
 
+// ESP-113 items 7, 10: the long name of a path with an 8.3 segment, through longName (realpathSync.native), or null.
+// The nearest existing parent is resolved and the rest kept: a short name that doesn't exist yet is a literal one.
+// Any lookup error other than a missing path gives null, so the caller asks.
+const SHORT_NAME = /~\d/
+const longPathOf = (target, p, longName) => {
+  if (!longName) return null
+  const tail = []
+  for (let cur = target; ; cur = p.dirname(cur)) {
+    try {
+      return p.join(longName(cur), ...tail)
+    } catch (e) {
+      if (!['ENOENT', 'ENOTDIR'].includes(e?.code) || p.dirname(cur) === cur) return null
+    }
+    tail.unshift(p.basename(cur))
+  }
+}
+
 // Why a plan or archive write can't be trusted under planEdits "all", or null. The file must really be under the
 // project's .claude/plans: not reached through a link or junction, and not a hard link sharing content elsewhere.
 const planLinkProblem = (rel, root, p) => {
@@ -467,13 +484,62 @@ const MAX_COMMAND_CHARS = 16 * 1024
 // suffix, so `--no-ver`ify`, `'--for''ce'`, cmd's `r^d` and `git.exe` match like the plain spelling.
 const unescaped = (cmd) => cmd.replace(/[`'"^]|\\(?=[a-z])|(?<=\w)\.exe\b/gi, '')
 
-const decideBash = (cmd, { cfg, gov, repoRules }, git, root) => {
-  if (cmd.length > MAX_COMMAND_CHARS) return decision('ask', `The command is over ${MAX_COMMAND_CHARS / 1024} KB, too long for the guard to check. Confirm it is part of the approved plan.`, cmd)
-  const forms = [cmd, unescaped(cmd)]
-  const matches = (re) => forms.some((c) => new RegExp(re, 'i').test(c))
-  for (const [why, re] of [...DENY_COMMANDS, ...repoRules.deny]) {
-    if (matches(re)) return decision('deny', `Blocked: ${why}.`, cmd)
+// ESP-113 item 6: a longer command is still checked for denies, in pieces of up to 4 KB cut before ; & or a line
+// break (the rules don't reach past those), so padding can't hide one; it is then asked whatever the result.
+// shortcut: a single part over 4 KB is skipped unchecked; split it further if that is ever used to hide a delete.
+const MAX_PART_CHARS = 4 * 1024
+const denyPieces = (c) => {
+  if (c.length <= MAX_COMMAND_CHARS) return [c]
+  // Runs of spaces or tabs don't change what a rule matches, so padding made of them is squeezed out first.
+  const squeezed = c.replace(/[ \t]{2,}/g, ' ')
+  if (squeezed.length <= MAX_COMMAND_CHARS) return [squeezed]
+  const pieces = []
+  let piece = ''
+  for (const part of squeezed.split(/(?=[;&\n])/)) {
+    const fits = part.length <= MAX_PART_CHARS
+    if (piece && (!fits || piece.length + part.length > MAX_PART_CHARS)) {
+      pieces.push(piece)
+      piece = ''
+    }
+    if (fits) piece += part
   }
+  return piece ? [...pieces, piece] : pieces
+}
+
+// ESP-113 item 9: the text of each `-EncodedCommand` (any prefix of the name, or -ec) in a command that names
+// PowerShell, or null for one the guard can't read: a value that isn't literal base64 or clean UTF-16 text.
+// The flag is looked for anywhere, so another tool's -e in the same command fails closed (asked). PowerShell also
+// takes -- and dash characters as the flag prefix, a quoted value may hold whitespace (base64 decoding skips it),
+// and a decoded text is read again for its own encoded command, up to MAX_ENCODED_DEPTH levels, then asked.
+const ENCODED_FLAG = /\s(?:--?|[\/–—―])(e[a-z]*)(?:\s+|:)("[^"]*"|'[^']*'|\S*)/gi
+const MAX_ENCODED_DEPTH = 3
+const encodedCommands = (cmd, depth = 0) => {
+  if (!/\b(?:powershell|pwsh)\b/i.test(cmd)) return []
+  const values = [...cmd.matchAll(ENCODED_FLAG)]
+    .filter(([, flag]) => 'encodedcommand'.startsWith(flag.toLowerCase()) || flag.toLowerCase() === 'ec')
+    .map(([, , value]) => value.replace(/^["']|["']$/g, '').replace(/\s+/g, ''))
+  if (values.length && depth >= MAX_ENCODED_DEPTH) return [null]
+  return values.flatMap((b64) => {
+    if (!/^[a-z0-9+/]+={0,2}$/i.test(b64) || b64.length % 4) return [null]
+    const bytes = Buffer.from(b64, 'base64')
+    const text = bytes.toString('utf16le')
+    if (bytes.length % 2 || /[\u0000-\u0008\u000e-\u001f�\ud800-\udfff]/.test(text)) return [null]
+    return [text, ...[text, unescaped(text)].flatMap((t) => encodedCommands(t, depth + 1))]
+  })
+}
+
+const decideBash = (cmd, { cfg, gov, repoRules }, git, root) => {
+  // The unescaped form too, so a quoted or split flag or name (`'-enc'`, `-e''nc`, `p''owershell`) is still read.
+  const encoded = [cmd, unescaped(cmd)].flatMap((c) => encodedCommands(c))
+  const decoded = encoded.filter((t) => t !== null)
+  const forms = [cmd, ...decoded].flatMap((c) => [c, unescaped(c)])
+  const matches = (re) => forms.some((c) => new RegExp(re, 'i').test(c))
+  const pieces = forms.flatMap(denyPieces)
+  for (const [why, re] of [...DENY_COMMANDS, ...repoRules.deny]) {
+    if (pieces.some((piece) => new RegExp(re, 'i').test(piece))) return decision('deny', `Blocked: ${why}.`, cmd)
+  }
+  if (forms.some((c) => c.length > MAX_COMMAND_CHARS)) return decision('ask', `The command is over ${MAX_COMMAND_CHARS / 1024} KB, too long for the guard to check fully. Confirm it is part of the approved plan.`, cmd)
+  if (encoded.includes(null)) return decision('ask', 'The command has a PowerShell -EncodedCommand the guard could not decode. Confirm it is part of the approved plan.', cmd)
   const protectedBranches = gov.protectedBranches || [cfg.git?.releaseBranch || 'main', 'master']
   const gitAction = forms.map((c) => c.match(new RegExp(String.raw`${GIT_PREFIX}(commit|merge|push)\b`))).find(Boolean)
   if (gitAction) {
@@ -494,6 +560,12 @@ const decideBash = (cmd, { cfg, gov, repoRules }, git, root) => {
 // ESP-9: an edit outside the project asks, unless it falls under a trusted write path. A trusted write still gets
 // the env-file and secret checks, and is returned as an allow (decision null) that logEntries records as "trusted".
 const decideOutsideEdit = (file, gov, root, p, ic, tool, ti, places, cfg) => {
+  if (p.sep === '\\' && SHORT_NAME.test(file)) {
+    const long = longPathOf(p.resolve(root, file), p, places.longName)
+    if (!long || SHORT_NAME.test(long)) return decision('ask', `Edit outside the project folder (${file}) through a Windows short name (8.3) the guard could not resolve.`, file)
+    const result = decideOutsideEdit(long, gov, root, p, ic, tool, ti, places, cfg)
+    return result && { ...result, target: file }
+  }
   let entry
   // Fail closed: a lookup that throws (an unreadable folder, a link loop, a dangling link) must not reach the hook's
   // fail-open catch, since an outside edit asked before trusted write paths existed.
@@ -520,6 +592,17 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
     const result = await decideEdit(windowsCanonical(rel), { cfg, gov }, git, root, p, ic, tool, ti, net, places)
     return result && { ...result, target: rel }
   }
+  // ESP-113 item 7: an existing 8.3 path is decided as its long name, if that stays in the project; otherwise the
+  // short-name ask below applies.
+  if (p.sep === '\\' && SHORT_NAME.test(rel)) {
+    const long = longPathOf(p.join(root, rel), p, places.longName)
+    const longRoot = long && longPathOf(root, p, places.longName)
+    const longRel = longRoot && p.relative(longRoot, long)
+    if (longRel && !longRel.startsWith('..') && !p.isAbsolute(longRel) && !SHORT_NAME.test(longRel)) {
+      const result = await decideEdit(longRel, { cfg, gov }, git, root, p, ic, tool, ti, net, places)
+      return result && { ...result, target: rel }
+    }
+  }
 
   if (isSecretEnvFile(path.posix.basename(rel), cfg.allowEnvExample !== false, ic)) return decision('deny', 'Env files hold secrets.', rel)
   const prot = matchAny(rel, cfg.protectedPaths || DEFAULT_PROTECTED_PATHS, ic)
@@ -531,7 +614,7 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
   }
   // ESP-110 item 10: an 8.3 short name (AGENTS~1.MD) may stand for any long name, so the path checks can't see it.
   // It is one of the ask reasons below, so it never turns a deny into an ask or hides another ask.
-  const shortName = p.sep === '\\' && /~\d/.test(rel)
+  const shortName = p.sep === '\\' && SHORT_NAME.test(rel)
 
   // Before the plan/exempt/ask checks: a secret is never fine, wherever it is written.
   const secret = findSecret(editedText(tool, ti))
@@ -640,13 +723,14 @@ const decideScope = (rel, gov, root, ic) => {
  * @param {{ registry: Function, advisories: Function }} [opts.lookups] dependency lookups (stubs in tests; npm by default)
  * @param {number} [opts.lookupDeadlineMs] shared deadline for the lookups (GUARD_DEADLINE_MS by default)
  * @param {string} [opts.markerFile]      the warn-once marker (configMarkerPath); without it advisory config problems aren't reported
+ * @param {(p: string) => string} [opts.longName] long-name lookup for 8.3 paths (realpathSync.native with the native path module; a stub in tests)
  * @returns {Promise<{ decision: 'deny'|'ask'|null, reason: string, target: string, findings?: object[], failures?: object[], configWarning?: string, configLogReason?: string, configHash?: string, markerError?: string } | null>}
  *   null, or decision null, means allow. findings (workflow and dependency content checks) and failures (lookups
  *   that failed open) are set whenever there are any, so the hook can log them even when the edit is allowed.
  *   configWarning (advisory config problems due to be shown; the caller logs configLogReason, which names them all,
  *   then passes configHash to recordAdvice) and markerError never change the decision.
  */
-export const evaluate = async (input, { root, cfg = {}, configError = null, git = gitProbe, pathApi = path, caseInsensitive = CASE_INSENSITIVE_FS, lookups, lookupDeadlineMs, homeDir = os.homedir(), tmpDir = os.tmpdir(), markerFile }) => {
+export const evaluate = async (input, { root, cfg = {}, configError = null, git = gitProbe, pathApi = path, caseInsensitive = CASE_INSENSITIVE_FS, lookups, lookupDeadlineMs, homeDir = os.homedir(), tmpDir = os.tmpdir(), markerFile, longName = pathApi === path ? realpathSync.native : null }) => {
   const tool = input.tool_name || ''
   const ti = input.tool_input || {}
   const safe = sanitizeConfig(cfg)
@@ -664,7 +748,7 @@ export const evaluate = async (input, { root, cfg = {}, configError = null, git 
     if (typeof target !== 'string') {
       target = JSON.stringify(target)
       result = decision('ask', 'The edit target is not a file path string. Confirm the edit.', target)
-    } else result = await decideEdit(target, safe, git, root, pathApi, caseInsensitive, tool, ti, { lookups, deadlineMs: lookupDeadlineMs }, { homeDir, tmpDir })
+    } else result = await decideEdit(target, safe, git, root, pathApi, caseInsensitive, tool, ti, { lookups, deadlineMs: lookupDeadlineMs }, { homeDir, tmpDir, longName })
   } else return null
 
   // Advisory problems alone (ESP-35 R1) don't change the decision; they are reported beside it, once per change (R4).
