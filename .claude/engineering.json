@@ -28,6 +28,13 @@
         "verified": "In Testing",
         "merged": "Ready for Release",
         "released": "Released"
+      },
+      "cloudId": "3b98209f-2732-4e8e-96e1-5606c94bb847",
+      "transitions": {
+        "started": "21",
+        "verified": "31",
+        "merged": "41",
+        "released": "51"
       }
     }
   }

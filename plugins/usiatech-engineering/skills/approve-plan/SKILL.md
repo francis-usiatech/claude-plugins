@@ -7,6 +7,8 @@ description: Records the plan the user has approved as .claude/plans/active.md, 
 
 The approved plan is the scope baseline. The governance guard asks for confirmation on any file edit outside the plan's **Files** list. The `governance-reviewer` agent checks the finished diff against it. Because the plan sets the scope, the guard also asks before every write to `.claude/plans/active.md`, so expect a confirmation prompt when you record or update it. A repo that sets `governance.planEdits` to `"all"` in `.claude/engineering.json` turns that prompt off for `active.md` and `.claude/plans/archive/`; each write is still logged as trusted. The trade-off: the governance-reviewer's check for scope added without a dated Change log line is then the only scope check on plan changes, so still add a dated Change log line for every scope change.
 
+**Session check first:** run `node "${CLAUDE_PLUGIN_ROOT}/scripts/session-check.mjs"` from the repo root and show what it prints (a stale plugin version, or a context above the advisory threshold). Also, when this session already closed a plan, recommend saving the session and starting the new plan in a fresh session. Don't block: the user decides. A non-zero exit or "Cannot find module" (the running plugin folder was replaced) is reported too; the second also means the plugin is stale.
+
 Before routing, if `.claude/plans/active.md` already exists and is unfinished, ask whether to close it or replace it. Settle this first, so no clarify or spec work is spent while another plan is in progress.
 
 ## Route (before drafting)
@@ -39,6 +41,7 @@ Pick the route and tell the user which rule decided it.
    - **Out of scope:** what this plan explicitly doesn't do.
    - **Approved:** the user's name and today's date, and `Route: small` or `Route: large` with the rule that decided it.
 2. Run the `governance-reviewer` agent on the draft in pre-flight mode. On the large route it also checks the plan against the spec and tickets. Fix a `BLOCK` before going on; a `FLAG` needs the user's decision, recorded in the plan's change log.
+   - **Model:** run `governance-reviewer` on `sonnet` when the plan's **Files** section lists 5 paths or fewer, otherwise on its agent file's model. A `reviewerModels` entry for the agent in the base-branch `.claude/engineering.json` wins either way; pre-flight reviewers use the same `reviewerModels` rule (the `release` skill, **Models**).
    - **Pre-flight reviewers:** run each agent listed in `.claude/engineering.json` → `planning.preflightReviewers` on the draft in design mode, in parallel with `governance-reviewer`. Give each one only the draft plan, nothing else from the session, and ask for `PASS`, `FLAG` or `BLOCK` with findings.
      - Each entry is `{ "agent": "<name>", "when": ["<prefix>", …] }`. An entry with `when` runs only when one of its path prefixes matches the start of a path in the plan's **Files** section; an entry without `when` always runs. A `"when": null` counts as no `when`, and other keys are ignored; the guard reports both.
      - An invalid entry (no non-empty string `agent`, an `agent` with a control character or a space at either end, or a bad `when`) is skipped and named in the pre-flight report by its index, `planning.preflightReviewers[i]`, never by its `agent` value. The guard has already warned about it once.
@@ -51,8 +54,9 @@ Pick the route and tell the user which rule decided it.
    - Skip this step when there's no config file, when `check` prints `"tracker":"github"`, or when `jira.statuses` in its output has no `started`. Say why you skipped it.
    - A non-zero exit from `check` (2 is a config problem) is a failure to report, not a reason to skip.
    - The keys are the Jira tickets the plan's tasks name. A parent or blocker key that appears only in the requirement references is not moved. If the tasks name no Jira key, say so.
-   - For each key: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" transition --issue <KEY> --event started`.
-   - A non-zero exit doesn't undo the plan. Report each failed key with the script's message as one the user must fix, and go on with the other keys.
+   - For each key, when the Atlassian MCP's `transitionJiraIssue` tool is available and the `check` output has `jira.cloudId` and `jira.transitions.started`: call `transitionJiraIssue` with that `cloudId`, the key as `issueIdOrKey` and `transition: { id: <jira.transitions.started> }`. Never call `getTransitionsForJiraIssue`.
+   - Otherwise: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" transition --issue <KEY> --event started`.
+   - A failed call or a non-zero exit doesn't undo the plan. Report each failed key with its message as one the user must fix, and go on with the other keys.
 
 ## Update (scope change)
 When new work falls outside the plan:
