@@ -433,12 +433,15 @@ describe('evaluate: guard gaps from the ESP-110 reviews (ESP-113)', () => {
     assert.match(r.reason, /16 KB/)
   })
 
-  it('should ask a command over 1 MB before any rule, quickly (post-commit security pass)', async () => {
+  it('should deny a command over 1 MB before any rule, quickly (post-commit security pass)', async () => {
     const started = Date.now()
-    const r = await ps(`${'rm -r x; '.repeat(240 * 1024)}`)
+    // Newline padding isn't squeezed, so it can't turn a padded delete into an ask either.
+    for (const cmd of ['rm -r x; '.repeat(240 * 1024), `rm -rf /${'\n'.repeat(1536 * 1024)}`]) {
+      const r = await ps(cmd)
+      assert.equal(r?.decision, 'deny')
+      assert.match(r.reason, /1 MB/)
+    }
     assert.ok(Date.now() - started < 1000, 'decided in under 1 s')
-    assert.equal(r?.decision, 'ask')
-    assert.match(r.reason, /1 MB/)
     // Space padding is squeezed before the cap, so it still can't turn a deny into an ask (AC3).
     const padded = Date.now()
     assert.equal((await ps(`rm${' '.repeat(1536 * 1024)}-rf /`))?.decision, 'deny')
@@ -475,6 +478,12 @@ describe('evaluate: guard gaps from the ESP-110 reviews (ESP-113)', () => {
 
     it('should allow a short name for an ordinary folder', async () => {
       assert.equal(await win('SRC~1/x.js'), null)
+    })
+
+    it('should decide an absolute path through a short project folder as the file inside (CI temp folder)', async () => {
+      const lookup = longName({ [ROOT]: ROOT, [String.raw`C:\REPO~1\ENV~1`]: String.raw`C:\repo\.env`, [String.raw`C:\REPO~1\SRC~1`]: String.raw`C:\repo\src` })
+      assert.equal((await win(String.raw`C:\REPO~1\ENV~1`, { longName: lookup }))?.decision, 'deny')
+      assert.equal(await win(String.raw`C:\REPO~1\SRC~1\x.js`, { longName: lookup }), null)
     })
 
     it('should still ask a short name that does not resolve, or that resolves outside the project', async () => {

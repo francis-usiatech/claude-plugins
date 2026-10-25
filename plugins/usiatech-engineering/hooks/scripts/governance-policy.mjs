@@ -481,7 +481,7 @@ const SNAPSHOT_COMMAND = /usiatech-governance|bash-wf-/i
 // ESP-110 item 5: some rules are quadratic, and a guard timeout fails open, so a longer command is asked unchecked.
 const MAX_COMMAND_CHARS = 16 * 1024
 // Over this (after squeezing space padding, as denyPieces does), even the pieces and decoded forms are too many to
-// check in time, so the command is asked unchecked.
+// check in time, so the command is denied unchecked: asking would let other padding turn a deny into an ask.
 const MAX_TOTAL_CHARS = 64 * MAX_COMMAND_CHARS
 // ESP-110 item 9: the command as the shell reads it, without backtick, caret or backslash escapes, quotes or a .exe
 // suffix, so `--no-ver`ify`, `'--for''ce'`, cmd's `r^d` and `git.exe` match like the plain spelling.
@@ -535,7 +535,7 @@ const encodedCommands = (cmd, depth = 0) => {
 }
 
 const decideBash = (cmd, { cfg, gov, repoRules }, git, root) => {
-  if (squeezeSpaces(cmd).length > MAX_TOTAL_CHARS) return decision('ask', `The command is over ${MAX_TOTAL_CHARS / 1024 / 1024} MB, too long for the guard to check. Confirm it is part of the approved plan.`, cmd)
+  if (squeezeSpaces(cmd).length > MAX_TOTAL_CHARS) return decision('deny', `Blocked: the command is over ${MAX_TOTAL_CHARS / 1024 / 1024} MB, too long for the guard to check. Write it to a script file and run that instead.`, cmd)
   // The unescaped form too, so a quoted or split flag or name (`'-enc'`, `-e''nc`, `p''owershell`) is still read.
   const encoded = [cmd, unescaped(cmd)].flatMap((c) => encodedCommands(c))
   const decoded = encoded.filter((t) => t !== null)
@@ -590,6 +590,18 @@ const decideOutsideEdit = (file, gov, root, p, ic, tool, ti, places, cfg) => {
 }
 
 const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, places) => {
+  // ESP-113 item 7: an existing 8.3 path is decided as its long name, if that stays in the project; otherwise the
+  // short-name asks below apply. The path as written is resolved, so a short spelling of the project folder itself
+  // (`C:\REPO~1\x`) is still read as inside it.
+  if (p.sep === '\\' && SHORT_NAME.test(file)) {
+    const long = longPathOf(p.resolve(root, file), p, places.longName)
+    const longRoot = long && longPathOf(root, p, places.longName)
+    const longRel = longRoot && p.relative(longRoot, long)
+    if (longRel && !longRel.startsWith('..') && !p.isAbsolute(longRel) && !SHORT_NAME.test(longRel)) {
+      const result = await decideEdit(longRel, { cfg, gov }, git, root, p, ic, tool, ti, net, places)
+      return result && { ...result, target: file }
+    }
+  }
   const relNative = p.relative(root, p.resolve(root, file))
   // On Windows a path on another drive comes back absolute rather than starting with "..".
   if (relNative.startsWith('..') || p.isAbsolute(relNative)) return decideOutsideEdit(file, gov, root, p, ic, tool, ti, places, cfg)
@@ -598,17 +610,6 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
   if (p.sep === '\\' && windowsCanonical(rel) !== rel) {
     const result = await decideEdit(windowsCanonical(rel), { cfg, gov }, git, root, p, ic, tool, ti, net, places)
     return result && { ...result, target: rel }
-  }
-  // ESP-113 item 7: an existing 8.3 path is decided as its long name, if that stays in the project; otherwise the
-  // short-name ask below applies.
-  if (p.sep === '\\' && SHORT_NAME.test(rel)) {
-    const long = longPathOf(p.join(root, rel), p, places.longName)
-    const longRoot = long && longPathOf(root, p, places.longName)
-    const longRel = longRoot && p.relative(longRoot, long)
-    if (longRel && !longRel.startsWith('..') && !p.isAbsolute(longRel) && !SHORT_NAME.test(longRel)) {
-      const result = await decideEdit(longRel, { cfg, gov }, git, root, p, ic, tool, ti, net, places)
-      return result && { ...result, target: rel }
-    }
   }
 
   if (isSecretEnvFile(path.posix.basename(rel), cfg.allowEnvExample !== false, ic)) return decision('deny', 'Env files hold secrets.', rel)
