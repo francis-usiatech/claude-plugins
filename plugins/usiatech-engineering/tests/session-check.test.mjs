@@ -1,9 +1,10 @@
 import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { pluginVersionWarning, contextAdvisory, readThreshold, projectSlug, DEFAULT_CONTEXT_TOKENS } from '../scripts/session-check.mjs'
+import { pluginVersionWarning, contextAdvisory, readThreshold, projectSlug, runChecks, DEFAULT_CONTEXT_TOKENS } from '../scripts/session-check.mjs'
+import { stateDir } from '../hooks/scripts/governance-state.mjs'
 import { PLUGIN_ROOT, tempDir, cleanupTempDirs, git } from './helpers.mjs'
 
 after(cleanupTempDirs)
@@ -53,7 +54,10 @@ const transcript = (projectsDir, cwd, sessionId, tokens) => {
 }
 
 describe('session-check: context advisory (ESP-121)', () => {
-  const setup = () => ({ projectsDir: tempDir('usiatech-projects-'), markerDir: tempDir('usiatech-marker-'), cwd: 'C:\\repo\\my.app' })
+  const setup = () => {
+    const marker = tempDir('usiatech-marker-')
+    return { projectsDir: tempDir('usiatech-projects-'), markerDir: () => marker, cwd: 'C:\\repo\\my.app' }
+  }
 
   it('should recommend a fresh session above the threshold, once per session (AC2)', () => {
     const s = setup()
@@ -109,9 +113,19 @@ describe('session-check: threshold from the base branch (ESP-121 AC1)', () => {
     assert.equal(readThreshold({ cwd: dir }).threshold, 200000)
   })
 
-  it('should fall back to the working copy when the base branch has no config', () => {
+  it('should fall back to the working copy, with a warning, when the base branch has no config', () => {
     const dir = repo(null, { session: { contextAdvisoryTokens: 250000 } })
-    assert.equal(readThreshold({ cwd: dir }).threshold, 250000)
+    const r = readThreshold({ cwd: dir })
+    assert.equal(r.threshold, 250000)
+    assert.match(r.warning, /"develop" has no readable \.claude\/engineering\.json; using the working copy/)
+  })
+
+  it('should never pass a base branch to git as an option', () => {
+    // Without --end-of-options, git show reads "--format=format:x:..." as a format and prints it, which is not JSON.
+    const dir = repo({ session: { contextAdvisoryTokens: 200000 } }, { git: { baseBranch: '--format=format:x' }, session: { contextAdvisoryTokens: 250000 } })
+    const r = readThreshold({ cwd: dir })
+    assert.equal(r.threshold, 250000)
+    assert.match(r.warning, /using the working copy/)
   })
 
   it('should warn and use the default for a bad value', () => {
@@ -124,11 +138,44 @@ describe('session-check: threshold from the base branch (ESP-121 AC1)', () => {
 })
 
 describe('session-check: entry script', () => {
+  const run = (cwd, configDir) => spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'scripts', 'session-check.mjs')], {
+    cwd, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+  })
+
   it('should exit 0 and print nothing in a source checkout with no transcript', () => {
-    const r = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'scripts', 'session-check.mjs')], {
-      cwd: tempDir(), encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: tempDir() },
-    })
+    const r = run(tempDir(), tempDir())
     assert.equal(r.status, 0, r.stderr)
     assert.equal(r.stdout, '')
+  })
+
+  it('should keep the once-per-session marker in the private project state folder', (t) => {
+    const cwd = realpathSync.native(tempDir())
+    const configDir = tempDir()
+    const state = stateDir(cwd)
+    t.after(() => rmSync(state, { recursive: true, force: true }))
+    transcript(path.join(configDir, 'projects'), cwd, 'sess-m', 350000)
+    const r = run(cwd, configDir)
+    assert.equal(r.status, 0, r.stderr)
+    assert.match(r.stdout, /350k/)
+    assert.ok(existsSync(path.join(state, 'session-check-sess-m.context')), 'marker in the state folder')
+    assert.equal(run(cwd, configDir).stdout, '', 'second run prints nothing')
+  })
+
+  it('should report a failing check on stderr and exit 1', () => {
+    const cwd = realpathSync.native(tempDir())
+    const configDir = tempDir()
+    // A file where the project's transcript folder should be makes the context check throw.
+    mkdirSync(path.join(configDir, 'projects'))
+    writeFileSync(path.join(configDir, 'projects', projectSlug(cwd)), 'x')
+    const r = run(cwd, configDir)
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, /^session-check: /m)
+  })
+})
+
+describe('session-check: runChecks', () => {
+  it('should still give the other advice when one check throws', () => {
+    const r = runChecks([() => { throw new Error('boom') }, () => null, () => 'advice'])
+    assert.deepEqual(r, { lines: ['advice'], errors: ['boom'] })
   })
 })

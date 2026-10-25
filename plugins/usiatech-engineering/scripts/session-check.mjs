@@ -2,10 +2,11 @@
 // version than the newest one installed (ESP-120), and recommends a fresh session once per session when the context
 // is above session.contextAdvisoryTokens (ESP-121). Advice only: it never blocks. Node built-ins only.
 import { execFileSync } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { checkedStateDir, stateDir } from '../hooks/scripts/governance-state.mjs'
 import { isMainModule } from '../templates/github/scripts/main-module.mjs'
 import { isPlainObject } from '../templates/github/scripts/governance-rules.mjs'
 
@@ -84,7 +85,8 @@ const lastContextTokens = (file) => {
 
 /**
  * A recommendation to compact or start a fresh session when the current session's last context is above threshold,
- * or null. Shown once per session: a marker file under markerDir records that it was shown.
+ * or null. Shown once per session: a marker file in the folder markerDir() returns records that it was shown. It is
+ * called only when the advisory is due, so a run below the threshold creates no folder.
  */
 export const contextAdvisory = ({ projectsDir, cwd, threshold, markerDir }) => {
   const dir = findProjectDir(projectsDir, cwd)
@@ -92,13 +94,14 @@ export const contextAdvisory = ({ projectsDir, cwd, threshold, markerDir }) => {
   if (!file) return null
   const tokens = lastContextTokens(file)
   if (tokens == null || tokens <= threshold) return null
-  const marker = path.join(markerDir, `${path.basename(dir)}-${path.basename(file, '.jsonl')}.context`)
+  const folder = markerDir()
+  const marker = path.join(folder, `session-check-${path.basename(file, '.jsonl')}.context`)
   if (existsSync(marker)) return null
-  mkdirSync(markerDir, { recursive: true })
   writeFileSync(marker, new Date().toISOString())
   return `This session's context is ${kTokens(tokens)}, above the ${kTokens(threshold)} advisory threshold. Compact, or save the session and continue in a fresh session, before the review round: every call re-reads the whole context.`
 }
 
+// The config text and a warning when it came from the working copy instead of the base branch.
 const readConfigText = (cwd) => {
   let base = 'develop'
   const local = path.join(cwd, '.claude', 'engineering.json')
@@ -111,43 +114,63 @@ const readConfigText = (cwd) => {
     }
   }
   try {
-    return execFileSync('git', ['show', `${base}:.claude/engineering.json`], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    // --end-of-options: a base such as "--output=x" is a revision, never an option.
+    const text = execFileSync('git', ['show', '--end-of-options', `${base}:.claude/engineering.json`], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    return { text, warning: null }
   } catch {
-    return existsSync(local) ? readFileSync(local, 'utf8') : null
+    if (!existsSync(local)) return { text: null, warning: null }
+    return { text: readFileSync(local, 'utf8'), warning: `the base branch "${base}" has no readable .claude/engineering.json; using the working copy` }
   }
 }
 
 /** session.contextAdvisoryTokens from the base-branch .claude/engineering.json (F11), else the working copy, else the default. */
 export const readThreshold = ({ cwd }) => {
-  const fallback = (warning) => ({ threshold: DEFAULT_CONTEXT_TOKENS, warning })
-  const text = readConfigText(cwd)
-  if (text == null) return fallback(null)
+  const { text, warning: source } = readConfigText(cwd)
+  const result = (threshold, problem) => ({ threshold, warning: [source, problem].filter(Boolean).join('; ') || null })
+  if (text == null) return result(DEFAULT_CONTEXT_TOKENS, null)
   let cfg
   try {
     cfg = JSON.parse(text)
   } catch (e) {
-    return fallback(`.claude/engineering.json is not valid JSON (${e.message}); using the ${DEFAULT_CONTEXT_TOKENS} default`)
+    return result(DEFAULT_CONTEXT_TOKENS, `.claude/engineering.json is not valid JSON (${e.message}); using the ${DEFAULT_CONTEXT_TOKENS} default`)
   }
   const session = isPlainObject(cfg) ? cfg.session : undefined
-  if (!isPlainObject(session) || !('contextAdvisoryTokens' in session)) return fallback(null)
+  if (!isPlainObject(session) || !('contextAdvisoryTokens' in session)) return result(DEFAULT_CONTEXT_TOKENS, null)
   const v = session.contextAdvisoryTokens
-  if (Number.isSafeInteger(v) && v > 0) return { threshold: v, warning: null }
-  return fallback(`"session.contextAdvisoryTokens" must be a positive whole number; using the ${DEFAULT_CONTEXT_TOKENS} default`)
+  if (Number.isSafeInteger(v) && v > 0) return result(v, null)
+  return result(DEFAULT_CONTEXT_TOKENS, `"session.contextAdvisoryTokens" must be a positive whole number; using the ${DEFAULT_CONTEXT_TOKENS} default`)
+}
+
+/** Runs each check on its own, so one that throws doesn't hide another's advice. */
+export const runChecks = (checks) => {
+  const lines = []
+  const errors = []
+  for (const check of checks) {
+    try {
+      const line = check()
+      if (line) lines.push(line)
+    } catch (e) {
+      errors.push(e.message)
+    }
+  }
+  return { lines, errors }
 }
 
 if (isMainModule(import.meta.url)) {
-  try {
-    const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-    const projectsDir = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude'), 'projects')
-    const { threshold, warning } = readThreshold({ cwd: process.cwd() })
-    if (warning) console.error(`session-check: ${warning}`)
-    const lines = [
-      pluginVersionWarning({ pluginRoot }),
-      contextAdvisory({ projectsDir, cwd: process.cwd(), threshold, markerDir: path.join(tmpdir(), 'usiatech-session-check') }),
-    ].filter(Boolean)
-    for (const l of lines) console.log(l)
-  } catch (e) {
-    console.error(`session-check: ${e.message}`)
-    process.exitCode = 1
-  }
+  const cwd = process.cwd()
+  const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  const projectsDir = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude'), 'projects')
+  // The guard's private per-project state folder, not a name any local user could create first in a shared /tmp.
+  const markerDir = () => checkedStateDir(stateDir(cwd), { create: true, what: 'session-check marker' })
+  const { lines, errors } = runChecks([
+    () => pluginVersionWarning({ pluginRoot }),
+    () => {
+      const { threshold, warning } = readThreshold({ cwd })
+      if (warning) console.error(`session-check: ${warning}`)
+      return contextAdvisory({ projectsDir, cwd, threshold, markerDir })
+    },
+  ])
+  for (const l of lines) console.log(l)
+  for (const e of errors) console.error(`session-check: ${e}`)
+  if (errors.length) process.exitCode = 1
 }
