@@ -84,9 +84,13 @@ export const ASK_COMMANDS = [
   // ESP-125: truncate as SQL (a table name before ; , a quote, a bracket, a line break, the end or CASCADE, RESTRICT,
   // RESTART IDENTITY, CONTINUE IDENTITY) or as the shell tool (truncate -s), not as a CSS class name.
   // Security re-review: also a quoted or schema-qualified table name, a name before a comment or *, and the shell
-  // tool's size or reference option anywhere after the file, in any form getopt takes (-s0, --si=0, -rref).
-  ['destructive SQL', String.raw`\b(drop\s+table|truncate\s+(?:(?:table|only)\b|-|["` + '`' + String.raw`]\w|[\w."` + '`' + String.raw`]+(?:\s*\.\s*[\w"` + '`' + String.raw`]+)*(?:[ \t]*(,|;|$|"|'|` + '`' + String.raw`|\)|\r?\n|\*|\/\*|(?:cascade|restrict|restart|continue)\b)|[ \t]+--))|truncate\b(?:[^;&|\n]|[<>]&|\\\r?\n)*\s(?:-[a-z]*[sr]|--[sr])|delete\s+from\s+\w+\s*(;|$|"|'))`],
-  ['weakening row-level security', String.raw`(disable\s+row\s+level\s+security|no\s+force\s+row\s+level\s+security|\b(create\s+(role|user|group)|alter\s+(role|user))\b(?=(?:[^;"/]|\/(?!\*)|"[^"]*"|\/\*[\s\S]*?\*\/)*\bbypassrls))`],
+  // tool's size or reference option anywhere later on the line, in any form getopt takes (-s0, --si=0, -rref).
+  // Security review: no two alternatives can match the same text, so the scan stays linear (a guard timeout fails
+  // open); an option of a later command on the same line asks too, which only costs a prompt.
+  ['destructive SQL', String.raw`\b(drop\s+table|truncate\s+(?:(?:table|only)\b|-|["` + '`' + String.raw`]\w|[\w"` + '`' + String.raw`]+(?:\s*\.\s*[\w"` + '`' + String.raw`]+)*(?:[ \t]*(,|;|$|"|'|` + '`' + String.raw`|\)|\r?\n|\*|\/\*|(?:cascade|restrict|restart|continue)\b)|[ \t]+--))|truncate\b(?:[^\n\\]|\\[\s\S])*\s(?:-[a-z]*[sr]|--[sr])|delete\s+from\s+\w+\s*(;|$|"|'))`],
+  // Security review: a role statement and bypassrls anywhere in the command ask, without reading statement bounds
+  // (quotes, comments, dollar quoting); anchored lookaheads keep the scan linear.
+  ['weakening row-level security', String.raw`(disable\s+row\s+level\s+security|no\s+force\s+row\s+level\s+security|^(?=[\s\S]*\b(?:create\s+(?:role|user|group)|alter\s+(?:role|user))\b)(?=[\s\S]*\bbypassrls))`],
   ['resetting/dropping a database', String.raw`\b(prisma\s+migrate\s+reset|drizzle-kit\s+drop|db:reset|db:drop)\b`],
   ['adding a dependency', String.raw`\b(npm\s+(i|install|add)\s+[^-\s]|pnpm\s+(add|install\s+[^-\s])|yarn\s+add|pip3?\s+install|npx\s+-y\s)`],
   ['publishing a package', String.raw`\b(npm|pnpm|yarn)\s+publish\b`],

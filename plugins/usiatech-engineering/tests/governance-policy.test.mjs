@@ -1338,9 +1338,20 @@ describe('evaluate: prompts on text no command runs (ESP-125)', () => {
       ['psql -c "CREATE GROUP admins WITH LOGIN BYPASSRLS"', /row-level security/],
       // Security re-review round 3: a ; in a quoted name or comment, and a redirect or line break before the option.
       [`psql -c 'create role "x;" bypassrls'`, /row-level security/], ['psql -c "create group g /*;*/ bypassrls"', /row-level security/],
-      ['truncate app.db 2>&1 -s0', /destructive SQL/], ['truncate app.db \\\n -s0', /destructive SQL/]]) {
+      ['truncate app.db 2>&1 -s0', /destructive SQL/], ['truncate app.db \\\n -s0', /destructive SQL/],
+      // Security review: other redirects, quoted words and SQL strings before the option or keyword.
+      ['truncate app.db &>/dev/null -s0', /destructive SQL/], ["truncate 'a;b' -s0", /destructive SQL/],
+      [`psql -c "create role x password ';' bypassrls"`, /row-level security/]]) {
       it(`should still ask: ${cmd}`, async () => assert.match((await bash(cmd))?.reason ?? '', why))
     }
+    // Security review: a guard timeout fails open, so these rules must stay linear on long repeated input.
+    it('should check long repeated SQL text quickly', async () => {
+      for (const cmd of [`psql -c "create role x ${'/**/'.repeat(3000)}"`, `psql -c "truncate ${'a.'.repeat(4000)}!"`, `truncate ${'\\x'.repeat(4000)}`]) {
+        const start = performance.now()
+        await bash(cmd)
+        assert.ok(performance.now() - start < 1000, `${cmd.slice(0, 30)} took too long`)
+      }
+    })
   })
 
   describe('quoted heredoc bodies and search patterns (AC11)', () => {
