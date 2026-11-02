@@ -573,7 +573,7 @@ const EXPANSION = /[*?[]|\{\S|[^\s;&|(<>]\(/
 const LEAVES_FOLDER = /(?:^|[;&|(){}\n])[ \t]*cd(?:[ \t]*(?=$|[;&|)}\n])|[ \t]+-)|(?:^|[\s=>&/])\.\.(?=[\\/\s;&|)]|$)/
 // Output sent nowhere (/dev/null, PowerShell's $null, or another stream) isn't a write. `>&file` is: bash sends both
 // streams to the file.
-const DISCARDED_OUTPUT = /\d*>>?[ \t]*(?:\/dev\/null|\$null)(?![\w.\/'"\\-])|\d*>&(?:\d+|-)(?![\w.\/'"\\-])/gi
+const DISCARDED_OUTPUT = /\d*>>?[ \t]*(?:\/dev\/null|\$null)(?=[\s;&|)]|$)|\d*>&(?:\d+|-)(?=[\s;&|)]|$)/gi
 // The simple command before a message heredoc: its text from the command start up to the opening quote.
 const MESSAGE_COMMAND = new RegExp(String.raw`^\s*(?:${GIT_PREFIX}(?:commit|tag)\b[^;&|\n]*\s(?:-[a-z]*m|--message)|gh\s+(?:pr|issue|release)\s+(?:create|edit|comment|review)\b[^;&|\n]*\s(?:-[bt]|--body|--title|--notes))(?:=|\s+)$`, 'i')
 // Governance and silent-failure reviews: a heredoc body stays unless every command beside it is one that can't run

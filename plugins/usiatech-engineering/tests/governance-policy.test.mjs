@@ -1335,7 +1335,10 @@ describe('evaluate: prompts on text no command runs (ESP-125)', () => {
       ['truncate app.db -s0', /destructive SQL/], ['truncate app.db --si=0', /destructive SQL/], ['truncate app.db -rref', /destructive SQL/],
       ['psql -c "TRUNCATE users /**/"', /destructive SQL/], ['psql -c "TRUNCATE users*"', /destructive SQL/], ['psql -c "TRUNCATE public . users"', /destructive SQL/],
       // Code review: CREATE GROUP is CREATE ROLE by another name.
-      ['psql -c "CREATE GROUP admins WITH LOGIN BYPASSRLS"', /row-level security/]]) {
+      ['psql -c "CREATE GROUP admins WITH LOGIN BYPASSRLS"', /row-level security/],
+      // Security re-review round 3: a ; in a quoted name or comment, and a redirect or line break before the option.
+      [`psql -c 'create role "x;" bypassrls'`, /row-level security/], ['psql -c "create group g /*;*/ bypassrls"', /row-level security/],
+      ['truncate app.db 2>&1 -s0', /destructive SQL/], ['truncate app.db \\\n -s0', /destructive SQL/]]) {
       it(`should still ask: ${cmd}`, async () => assert.match((await bash(cmd))?.reason ?? '', why))
     }
   })
@@ -1553,6 +1556,7 @@ describe('evaluate: prompts on text no command runs (ESP-125)', () => {
       assert.equal(await outcome(bash(`grep -rn '${SUDO}' src 2>/dev/null >&2`)), 'allow')
       assert.equal(await outcome(ps(`sls '${SUDO}' x.log 2>$null`)), 'allow')
       assert.equal(await outcome(ps(`sls '${SUDO}' x.log > $null.ps1`)), 'ask')
+      assert.equal(await outcome(ps(`sls '${SUDO}' x.log > $null$PROFILE`)), 'ask')
     })
   })
 })
