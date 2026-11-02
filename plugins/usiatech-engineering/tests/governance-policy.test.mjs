@@ -1324,7 +1324,10 @@ describe('evaluate: prompts on text no command runs (ESP-125)', () => {
       ["psql <<'SQL'\nTRUNCATE users\nSQL", /destructive SQL/], ['node -e "q(`TRUNCATE users`)"', /destructive SQL/], ['node -e "db.exec(raw(TRUNCATE users))"', /destructive SQL/],
       // Governance review: PostgreSQL options after the table name.
       ['psql -c "TRUNCATE users CASCADE"', /destructive SQL/], ['psql -c "TRUNCATE public.users RESTART IDENTITY;"', /destructive SQL/],
-      ['psql -c "truncate x continue identity restrict"', /destructive SQL/], ["mysql -e 'TRUNCATE `users`;'", /destructive SQL/]]) {
+      ['psql -c "truncate x continue identity restrict"', /destructive SQL/], ["mysql -e 'TRUNCATE `users`;'", /destructive SQL/],
+      // Security re-review: a comment or * after the name, a quoted name, and the shell tool's options after the file.
+      ['psql -c "TRUNCATE users -- x"', /destructive SQL/], ['psql -c "TRUNCATE users *"', /destructive SQL/], [`psql -c 'TRUNCATE "My Table"'`, /destructive SQL/],
+      ['truncate app.db -s 0', /destructive SQL/], ['truncate ./x --size=0', /destructive SQL/]]) {
       it(`should still ask: ${cmd}`, async () => assert.match((await bash(cmd))?.reason ?? '', why))
     }
   })
@@ -1428,6 +1431,94 @@ describe('evaluate: prompts on text no command runs (ESP-125)', () => {
       assert.match((await bash('grep x f >"/tmp/usiatech-governance/bash-wf-1.json"'))?.reason ?? '', /after-Bash workflow snapshots/)
     })
     it('should allow a search inside a command group', async () => assert.equal(await outcome(bash(`{ grep '${SUDO}' f; }`)), 'allow'))
+    // Security re-review (bypass probe): bash ends each of these heredocs before the scan does, so a command after it
+    // ran while the scan blanked it as heredoc text.
+    for (const cmd of [
+      `cat <<'EOF'x\nEOFx\n${SUDO}\nEOF`,
+      `cat <<"EOF"x\nEOFx\n${SUDO}\nEOF`,
+      `cat <<\\E'OF'\nEOF\n${SUDO}\nE`,
+      `cat <<\\E\\OF\nEOF\n${SUDO}\nE\\OF`,
+      `cat <<"E\\\\"\nE\\\n${SUDO}\nE\\\\`,
+      `cat <<"E\\"F"\nE"F\n${SUDO}\nE\\`,
+      `cat <<'EOF'\r\nEOF\r\n${SUDO}\nEOF`,
+      `git commit -m "$(cat <<"E\\\\"\nE\\\n)" ; ${SUDO} ; echo "\nE\\\\\n)"`,
+    ]) {
+      it(`should still ask when bash reads the delimiter differently: ${JSON.stringify(cmd)}`, async () => assert.equal(await outcome(bash(cmd)), 'ask'))
+    }
+    it('should still deny a message body that <<- or a leading space leaves as an option', async () => {
+      const noVerify = '--no-v' + 'erify'
+      assert.equal(await outcome(bash(`git commit -F -m "$(cat <<-'EOF'\n\t${noVerify}\n\tEOF\n)"`)), 'deny')
+      assert.equal(await outcome(bash(`git commit -F -m "$(cat <<'EOF'\n ${noVerify}\nEOF\n)"`)), 'deny')
+    })
+    // Security re-review (bypass probe): blanked text a command beside it can run.
+    for (const cmd of [
+      `rg -r '${SUDO}' '^.*$' f | sh`,
+      `echo x | grep --label='${SUDO}' -H . | sh`,
+      `grep -e '${SUDO}' f | pwsh -c -`,
+      `git commit -qm "$(cat <<'EOF'\n${SUDO}\nEOF\n)" && git log -1 --format=%B | sh`,
+      `git commit -qm "$(cat <<'EOF'\n${SUDO}\nEOF\n)" && git -c core.pager=sh log -1 --format=%B`,
+      `git commit -qm "$(cat <<'EOF'\n${SUDO}\nEOF\n)" && git push --rece=sh .`,
+      `git commit -qm "$(cat <<'EOF'\n${SUDO}\nEOF\n)"; git log -1 --format=%B > x.sh; bash x.sh`,
+      `gh pr create --title t --body "$(cat <<'EOF'\n${SUDO}\nEOF\n)" && gh pr view --json body -q .body | sh`,
+      `rg --pr'e'='${SUDO}' x`,
+      `rg --pr\\e '${SUDO}' x`,
+    ]) {
+      it(`should still ask when another command can run the blanked text: ${JSON.stringify(cmd)}`, async () => assert.equal(await outcome(bash(cmd)), 'ask'))
+    }
+    for (const cmd of [
+      `& (sls -InputObject '${SUDO}' -Pattern .)`,
+      `. (sls -InputObject '${SUDO}' -Pattern .)`,
+      `iex (sls -InputObject '${SUDO}' -Pattern .)`,
+      `sls -InputObject '${SUDO}' -Pattern . | iex`,
+      `(sls -InputObject '${SUDO}' -Pattern .).Line | iex`,
+      `sls -InputObject '${SUDO}' -Pattern . > $PROFILE`,
+    ]) {
+      it(`should still ask when PowerShell can run the search text: ${cmd}`, async () => assert.equal(await outcome(ps(cmd)), 'ask'))
+    }
+    // Security re-review (bypass probe): a write target bash reads as a hooks or config folder, or a cd that leaves
+    // the project.
+    for (const cmd of [
+      `cat > .hus\\ky/pre-commit <<'EOF'\n${SUDO}\nEOF`,
+      `cat > .hus''ky/pre-commit <<'EOF'\n${SUDO}\nEOF`,
+      `cat > \\/usr/local/bin/ls <<'EOF'\n${SUDO}\nEOF`,
+      `tee .hus{k,}y/pre-commit <<'EOF'\n${SUDO}\nEOF`,
+      `cat > .hus?y/pre-commit <<'EOF'\n${SUDO}\nEOF`,
+      `cat <<'EOF' > .hus[k]y/pre-commit\n${SUDO}\nEOF`,
+      `cd; cat > .local/bin/ls <<'EOF'\n${SUDO}\nEOF`,
+      `cd -; cat > pre-commit <<'EOF'\n${SUDO}\nEOF`,
+      `cd ../..; cat > x <<'EOF'\n${SUDO}\nEOF`,
+      `cat > "$XDG_CONFIG_HOME/git/config" <<'EOF'\n${SUDO}\nEOF`,
+      `cat > .claude/settings.json <<'EOF'\n${SUDO}\nEOF`,
+      `cat > .mcp.json <<'EOF'\n${SUDO}\nEOF`,
+      `cat > .vscode/tasks.json <<'EOF'\n${SUDO}\nEOF`,
+      `cat > .envrc <<'EOF'\n${SUDO}\nEOF`,
+      `rg -r '${SUDO}' . f | tee .husky/pre-commit`,
+    ]) {
+      it(`should still ask for a write where it runs later: ${JSON.stringify(cmd)}`, async () => assert.equal(await outcome(bash(cmd)), 'ask'))
+    }
+    // Security re-review: bash reads (( as arithmetic, ends a $( ) heredoc at a line like `EOF)"; …`, and PowerShell
+    // runs a script block bound to a pipeline parameter. The deny word is split so the installed guard doesn't read it.
+    it('should still deny text the scan would read as data but the shell runs', async () => {
+      const del = 'rm -r' + 'f ~'
+      assert.equal(await outcome(bash(`(( cat <<'EOF' ))\n${del}\nEOF`)), 'deny')
+      assert.equal(await outcome(bash(`git commit -m "$(cat <<'EOF'\nmsg\nEOF)"; ${del}; : "\nEOF\n)"`)), 'deny')
+      assert.equal(await outcome(ps(`ls | sls -Pattern 'a' -Path {iex 'Remove-Item -Recurse -Force ~'}`)), 'deny')
+    })
+    it('should still ask for a write through >& or out of the project', async () => {
+      assert.equal(await outcome(bash(`rg -r '${SUDO}' . f >&/usr/local/bin/x`)), 'ask')
+      assert.equal(await outcome(bash(`cat > ../../x <<'EOF'\n${SUDO}\nEOF`)), 'ask')
+    })
+    // Security re-review (bypass probe): PowerShell also starts a comment after , so the scan's quotes fell out of step.
+    it('should still ask after a PowerShell comment that follows a comma', async () => {
+      assert.equal(await outcome(ps(`sls x,#'\n'a'; ${SUDO}; 'b',#'\n'c'`)), 'ask')
+    })
+    for (const cmd of [
+      `git add -A && git commit -m "$(cat <<'EOF'\nfix: ${SUDO}\nEOF\n)" && git push -u origin feature/x`,
+      `grep -rn '${SUDO}' src 2>/dev/null | wc -l`,
+      `mkdir -p docs && cat > docs/x.md <<'EOF'\n${SUDO}\nEOF`,
+    ]) {
+      it(`should still allow beside quiet commands: ${JSON.stringify(cmd)}`, async () => assert.equal(await outcome(bash(cmd)), 'allow'))
+    }
     // Governance review: the shell keeps its folder between calls, so an earlier call's cd can move the write.
     it('should keep a heredoc body when the shell is in a hooks folder or outside the project', async () => {
       const root = tempDir()
@@ -1437,6 +1528,18 @@ describe('evaluate: prompts on text no command runs (ESP-125)', () => {
       }
       assert.equal(await outcome(at(root)), 'allow')
       assert.equal(await outcome(at(path.join(root, 'docs'))), 'allow')
+      // Code review: a worktree under .claude/worktrees is a project folder, but .claude itself is not.
+      assert.equal(await outcome(at(path.join(root, '.claude', 'worktrees', 'w'))), 'allow')
+      assert.equal(await outcome(at(path.join(root, '.claude', 'worktrees', 'w', '.husky'))), 'ask')
+      assert.equal(await outcome(at(path.join(root, '.claude'))), 'ask')
+    })
+    // Code review: a redirect that discards output isn't a write, but bash's >&file writes both streams to the file.
+    it('should tell discarded output from a write', async () => {
+      assert.equal(await outcome(bash(`rg -r '${SUDO}' . f >&.husky/pre-commit`)), 'ask')
+      assert.equal(await outcome(bash(`rg -r '${SUDO}' . f &>.husky/pre-commit`)), 'ask')
+      assert.equal(await outcome(bash(`grep -rn '${SUDO}' src 2>/dev/null >&2`)), 'allow')
+      assert.equal(await outcome(ps(`sls '${SUDO}' x.log 2>$null`)), 'allow')
+      assert.equal(await outcome(ps(`sls '${SUDO}' x.log > $null.ps1`)), 'ask')
     })
   })
 })

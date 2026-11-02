@@ -563,33 +563,52 @@ const HEREDOC_WRITERS = ['cat', 'tee']
 // rg --pre and --hostname-bin run a program, so that is no search; the rest could make "grep" or "cat" run something
 // else.
 const REDEFINES = /\b(?:alias|function|filter|set-alias|new-alias|sal|nal|enable|hash)\b|\w\s*\(\s*\)|\bpath\s*\+?=|\$env:path|--(?:pre|hostname-bin)\b/i
-// A heredoc written where it runs later (a git or husky hook, a shell startup file, a home or system folder, any
-// absolute path) stays visible.
-const RUNS_LATER = /\.git\b|\bhooks\b|\.husky\b|~|\$\{?home|(?:^|[\s"'=<>])(?:\/|[a-z]:[\\/])|(?:^|[\s/])\.(?:bash|zsh|profile|config|git)/i
+// A heredoc written where it runs later (a git or husky hook, a shell startup file, agent or editor config that runs
+// commands, a home or system folder, any absolute path or any variable) stays visible.
+const RUNS_LATER = /\.git\b|\bhooks\b|\.husky\b|\.claude\b|\.mcp\.json|\.vscode\b|\.envrc|\b(?:claude|agents)\.md\b|~|\$|(?:^|[\s"'=>&])(?:[\\/]|[a-z]:[\\/])|(?:^|[\s/])\.(?:bash|zsh|profile|config|git)/i
+// Security re-review: a write target bash expands (a glob, a brace list, an extglob) can name a hooks folder that
+// RUNS_LATER doesn't see as written; a cd with no folder, "-" or "..", or a path through "..", can leave the project.
+const EXPANSION = /[*?[]|\{\S|[^\s;&|(<>]\(/
+const LEAVES_FOLDER = /(?:^|[;&|(){}\n])[ \t]*cd(?:[ \t]*(?=$|[;&|)}\n])|[ \t]+-)|(?:^|[\s=>&/])\.\.(?=[\\/\s;&|)]|$)/
+// Output sent nowhere (/dev/null, PowerShell's $null, or another stream) isn't a write. `>&file` is: bash sends both
+// streams to the file.
+const DISCARDED_OUTPUT = /\d*>>?[ \t]*(?:\/dev\/null|\$null)(?![\w.\/-])|\d*>&(?:\d+|-)(?![\w.\/-])/gi
 // The simple command before a message heredoc: its text from the command start up to the opening quote.
 const MESSAGE_COMMAND = new RegExp(String.raw`^\s*(?:${GIT_PREFIX}(?:commit|tag)\b[^;&|\n]*\s(?:-[a-z]*m|--message)|gh\s+(?:pr|issue|release)\s+(?:create|edit|comment|review)\b[^;&|\n]*\s(?:-[bt]|--body|--title|--notes))(?:=|\s+)$`, 'i')
 // Governance and silent-failure reviews: a heredoc body stays unless every command beside it is one that can't run
 // the file it wrote (any other program, such as psql -f, awk -f or go run, might).
 // git is not one: bisect run, -c core.pager, submodule foreach and hooksPath all run a file.
 const QUIET_COMMANDS = ['cat', 'tee', 'echo', 'printf', 'cd', 'pwd', 'ls', 'mkdir', 'touch', 'wc', 'head', 'tail', 'diff', 'true', 'test']
+// Security re-review: beside a message, git and gh may also run, but only commands that can't run the message
+// (git log | sh, git -c core.pager=sh log or git push --receive-pack could). git takes any unique prefix of a long
+// option, so --e, --u and --rece are --exec, --upload-pack and --receive-pack.
+const MESSAGE_PEERS = new RegExp(String.raw`^\s*(?:${GIT_PREFIX}(?:add|commit|push|status|tag)\b|gh\s+(?:pr|issue|release)\s+(?:create|edit|comment|review)\b)`, 'i')
+const RUNS_PROGRAM = /(?:^|\s)(?:-c|--(?:e|u|rece|config-env))/
 // Security review: PowerShell also reads typographic quotes as quotes; the scan only knows the ASCII ones.
 const TYPOGRAPHIC_QUOTES = /[‘-„]/
-const HEREDOC_OP = /<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\([^\s;&|<>()'"]+))/y
-const MESSAGE_OP = /\$\([ \t]*cat[ \t]+<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\([^\s;&|<>()'"]+))[ \t]*\n/y
+// Security re-review: the delimiter is the whole word after <<, so a quoted part must end it, and a backslash, $ or
+// backtick in it is read differently by bash (`<<'EOF'x` ends at EOFx, `<<"E\\"` at E\). Anything else fails closed.
+const DELIMITER = String.raw`(?:'([^'\n]+)'|"([^"\\$` + '`' + String.raw`\n]+)"|\\([^\s;&|<>()'"\\$` + '`' + String.raw`]+))`
+const HEREDOC_OP = new RegExp(String.raw`<<(-?)[ \t]*${DELIMITER}(?=[ \t\n;&|<>()]|$)`, 'y')
+const MESSAGE_OP = new RegExp(String.raw`\$\([ \t]*cat[ \t]+<<(-?)[ \t]*${DELIMITER}[ \t]*\n`, 'y')
 const MESSAGE_END = /\n[ \t]*\)"/y
 const WORD = /[A-Za-z][\w.-]*/y
-const UNREADABLE = ['`', '$(', '${', '$[', "$'", '$"', '<(', '>(', "@'", '@"', '--%', '<#']
+// Security re-review: (( is arithmetic in bash, so a heredoc operator inside it is no heredoc.
+const UNREADABLE = ['`', '$(', '${', '$[', "$'", '$"', '<(', '>(', '((', "@'", '@"', '--%', '<#']
 // A quoted redirect target is a file name the env-file and snapshot checks need to see, never a search pattern.
 const REDIRECT_BEFORE = /[<>][ \t]*$/
 // { and } open or close a command group only as words of their own; attached to text they are part of a word.
 const groupBrace = (cmd, i) => /[\s;&|()]/.test(cmd[i - 1] ?? ' ') && /[\s;&|()]/.test(cmd[i + 1] ?? ' ')
 
 // The heredoc body starting at `from`: where its terminator line starts and ends, or null if there is none.
+// Security re-review: inside $( ) bash also ends the body at a line that starts with the delimiter and holds a ")"
+// (`EOF)"; …`), so any line that starts with the delimiter without being it fails closed.
 const heredocBody = (cmd, from, { delim, strip }) => {
   for (let pos = from; ;) {
     const eol = cmd.indexOf('\n', pos) === -1 ? cmd.length : cmd.indexOf('\n', pos)
-    const line = cmd.slice(pos, eol)
-    if ((strip ? line.replace(/^\t+/, '') : line) === delim) return { terminator: pos, end: eol }
+    const line = strip ? cmd.slice(pos, eol).replace(/^\t+/, '') : cmd.slice(pos, eol)
+    if (line === delim) return { terminator: pos, end: eol }
+    if (line.startsWith(delim)) return null
     if (eol === cmd.length) return null
     pos = eol + 1
   }
@@ -602,7 +621,8 @@ const sticky = (re, cmd, at) => {
 
 // A `"$(cat <<'X' … X)"` message at `at` (the $), quoted from `quote`: its blanked text and the end of the closing
 // quote, or null. The body stays when it starts with "-": an option before -m that takes a value (git commit -F -m)
-// would leave it as an argument of its own, read as an option such as --no-verify.
+// would leave it as an argument of its own, read as an option such as --no-verify. Leading space counts, since <<-
+// strips tabs.
 const messageHeredoc = (cmd, at, quote, cmdStart) => {
   const op = MESSAGE_COMMAND.test(cmd.slice(cmdStart, quote)) && sticky(MESSAGE_OP, cmd, at)
   if (!op) return null
@@ -610,35 +630,48 @@ const messageHeredoc = (cmd, at, quote, cmdStart) => {
   const body = heredocBody(cmd, from, { delim: op[2] ?? op[3] ?? op[4], strip: op[1] === '-' })
   const close = body && sticky(MESSAGE_END, cmd, body.end)
   if (!close) return null
-  const kept = cmd[from] === '-' ? cmd.slice(from, body.terminator) : ''
+  const kept = /^\s*-/.test(cmd.slice(from, body.terminator)) ? cmd.slice(from, body.terminator) : ''
   return { text: `${op[0]}${kept}${cmd.slice(body.terminator, body.end)}${close[0]}`, end: body.end + close[0].length }
 }
 
 // Governance review: Claude Code keeps the shell's folder between calls, so a cd in an earlier call can move a
 // heredoc write into a hooks folder or out of the project. The hook input's cwd says where the shell is.
+// Code review: the project folder stays put when Claude enters a worktree under .claude/worktrees, so the worktree
+// itself is not read as .claude config; what is inside it still is.
 const shellOutsideQuietFolder = (cwd, root, p) => {
   if (typeof cwd !== 'string' || !cwd) return false
   const rel = p.relative(root, cwd)
-  return rel.startsWith('..') || p.isAbsolute(rel) || RUNS_LATER.test(rel.split(p.sep).join('/'))
+  const inWorktree = rel.split(p.sep).join('/').replace(/^\.claude\/worktrees\/[^/]+(?:\/|$)/, '')
+  return rel.startsWith('..') || p.isAbsolute(rel) || RUNS_LATER.test(inWorktree)
 }
+
+// Security re-review: a command beside blanked text must be one that can't run it. Search output piped to sh, or
+// PowerShell's iex, & and . on it, would run the pattern.
+const quietPeer = ({ word, text }, blankedBody) => QUIET_COMMANDS.includes(word) || SEARCH_WORDS.includes(word) ||
+  (!blankedBody && MESSAGE_PEERS.test(text) && !RUNS_PROGRAM.test(text))
 
 // The command with data text blanked, or the command unchanged when the scan can't read it.
 const withoutDataText = (cmd, tool, shellMoved = false) => {
   const bash = tool === 'Bash'
-  if (cmd.length > MAX_COMMAND_CHARS || REDEFINES.test(cmd) || (!bash && TYPOGRAPHIC_QUOTES.test(cmd))) return cmd
-  const words = [] // every simple command's first word, to check what runs beside a blanked heredoc
+  // Security re-review: quotes and backslashes split a word only for the eye (rg --pr'e'=… is --pre).
+  if (cmd.length > MAX_COMMAND_CHARS || [cmd, cmd.replace(/['"\\]/g, '')].some((c) => REDEFINES.test(c)) || (!bash && TYPOGRAPHIC_QUOTES.test(cmd))) return cmd
+  const commands = [] // every simple command's first word and text, to check what runs beside blanked text
   let out = ''
   let cmdStart = 0
+  let commandOut = 0 // where the current simple command starts in out
   let word = null // the current simple command's first word, '' when it isn't a plain word
   const heredocs = []
   let blankedBody = false
+  let blankedOther = false // a search argument or a message
   scan: for (let i = 0; i < cmd.length;) {
     const ch = cmd[i]
     const search = SEARCH_WORDS.includes(word)
     if (ch === "'") {
       const end = cmd.indexOf("'", i + 1)
       if (end === -1) return cmd
-      out += search && !REDIRECT_BEFORE.test(out) ? "''" : cmd.slice(i, end + 1)
+      const blank = search && !REDIRECT_BEFORE.test(out)
+      blankedOther ||= blank
+      out += blank ? "''" : cmd.slice(i, end + 1)
       word ??= ''
       i = end + 1
       continue
@@ -652,6 +685,7 @@ const withoutDataText = (cmd, tool, shellMoved = false) => {
           const message = bash && j === i + 1 && messageHeredoc(cmd, j, i, cmdStart)
           if (!message) return cmd
           out += `"${message.text}`
+          blankedOther = true
           word ??= ''
           i = message.end
           continue scan
@@ -663,13 +697,16 @@ const withoutDataText = (cmd, tool, shellMoved = false) => {
         }
       }
       if (j >= cmd.length) return cmd
-      out += search && plain && !REDIRECT_BEFORE.test(out) ? '""' : cmd.slice(i, j + 1)
+      const blank = search && plain && !REDIRECT_BEFORE.test(out)
+      blankedOther ||= blank
+      out += blank ? '""' : cmd.slice(i, j + 1)
       word ??= ''
       i = j + 1
       continue
     }
     if (UNREADABLE.some((s) => cmd.startsWith(s, i))) return cmd
-    if (ch === '#' && (i === 0 || /[\s;&|()]/.test(cmd[i - 1]))) return cmd
+    // Security re-review: PowerShell also starts a comment after , and {, so any unquoted # there fails closed.
+    if (ch === '#' && (!bash || i === 0 || /[\s;&|()]/.test(cmd[i - 1]))) return cmd
     if (ch === '\\' && bash) {
       out += cmd.slice(i, i + 2)
       word ??= ''
@@ -705,12 +742,18 @@ const withoutDataText = (cmd, tool, shellMoved = false) => {
       }
       continue
     }
-    if (/[;&|\n()]/.test(ch) || (/[{}]/.test(ch) && groupBrace(cmd, i))) {
+    // The & of a redirect (>&2, <&3, &>file) is part of the same command.
+    const redirect = ch === '&' && (/[<>]/.test(cmd[i - 1] ?? '') || cmd[i + 1] === '>')
+    // Security re-review: in PowerShell any { opens a script block, which a parameter bound from the pipeline runs.
+    if ((/[;&|\n()]/.test(ch) && !redirect) || (/[{}]/.test(ch) && (!bash || groupBrace(cmd, i)))) {
+      if (word !== null) commands.push({ word, text: out.slice(commandOut) })
+      // PowerShell's & (not &&) runs whatever follows it.
+      if (!bash && ch === '&' && cmd[i - 1] !== '&' && cmd[i + 1] !== '&') commands.push({ word: '', text: ch })
       out += ch
       i++
-      if (word !== null) words.push(word)
       word = null
       cmdStart = i
+      commandOut = out.length
       continue
     }
     if (word === null && !/\s/.test(ch)) {
@@ -726,9 +769,15 @@ const withoutDataText = (cmd, tool, shellMoved = false) => {
     out += ch
     i++
   }
-  if (word !== null) words.push(word)
+  if (word !== null) commands.push({ word, text: out.slice(commandOut) })
+  if (heredocs.length) return cmd
+  if (!blankedBody && !blankedOther) return out
+  if (!commands.every((c) => quietPeer(c, blankedBody))) return cmd
+  const writes = blankedBody || commands.some((c) => c.word === 'tee') || />/.test(out.replace(DISCARDED_OUTPUT, ''))
   // The whole command, not only the heredoc's own: an earlier cd can move the write into a hooks or system folder.
-  return heredocs.length || (blankedBody && (shellMoved || words.some((w) => !QUIET_COMMANDS.includes(w)) || RUNS_LATER.test(out))) ? cmd : out
+  // Read with quotes and backslashes gone too, as bash reads `.hus''ky` or `\/usr`.
+  const unquoted = out.replace(/['"\\]/g, '')
+  return writes && (shellMoved || RUNS_LATER.test(out) || RUNS_LATER.test(unquoted) || EXPANSION.test(out) || LEAVES_FOLDER.test(unquoted)) ? cmd : out
 }
 
 const decideBash = (cmd, { cfg, gov, repoRules }, git, root, tool, cwd, p = path) => {
