@@ -88,7 +88,7 @@
       }
     ],
     "allowlist": [],
-    "trustedWritePaths": ["$TMP/claude/{project}/**", "~/.claude/projects/{project}/memory/**", "~/.claude/session-data/**"],
+    "trustedWritePaths": ["$TMP/claude/{project}/**", "$TMP/claude-{uid}/{project}/**", "~/.claude/projects/{project}/memory/**", "~/.claude/session-data/**", "~/.claude/plans/**"],
     "planEdits": "allow",
     "rulesFile": ".claude/governance.md",
     "approvalLabel": "governance-approved",
