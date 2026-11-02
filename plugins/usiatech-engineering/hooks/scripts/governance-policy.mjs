@@ -30,11 +30,14 @@ const windowsCanonical = (rel) => rel.split('/').map((seg) => seg.replace(/:.*$/
 
 // ESP-9: writes outside the project that need no prompt (still logged, as decision "trusted"). $TMP is the OS temp
 // folder, ~ the home folder, {project} the project folder as Claude Code names it (each character other than
-// A-Z, a-z, 0-9 becomes "-"). Memory and the scratchpad are trusted for this project only.
-const DEFAULT_TRUSTED_WRITE_PATHS = ['$TMP/claude/{project}/**', '~/.claude/projects/{project}/memory/**', '~/.claude/session-data/**']
+// A-Z, a-z, 0-9 becomes "-"). Memory and the scratchpad are trusted for this project only. ESP-125: {uid} is the
+// user's numeric id, since Claude Code on Linux keeps the scratchpad in /tmp/claude-<uid>; with no uid (Windows) an
+// entry naming it trusts nothing.
+const DEFAULT_TRUSTED_WRITE_PATHS = ['$TMP/claude/{project}/**', '$TMP/claude-{uid}/{project}/**', '~/.claude/projects/{project}/memory/**', '~/.claude/session-data/**', '~/.claude/plans/**']
+const PLACEHOLDERS = /\{(project|uid)\}/g
 // A repo list may only name folders under these roots, with at least minLiteral plain folder names after the root,
 // so it can't trust Claude Code's own config (~/.claude/**), keys (~/.ssh) or the whole temp folder.
-const TRUSTED_ROOTS = [{ prefix: '$TMP/', place: 'tmpDir', minLiteral: 1 }, { prefix: '~/.claude/projects/', place: 'homeDir', minLiteral: 1 }, { prefix: '~/.claude/session-data/', place: 'homeDir', minLiteral: 0 }]
+const TRUSTED_ROOTS = [{ prefix: '$TMP/', place: 'tmpDir', minLiteral: 1 }, { prefix: '~/.claude/projects/', place: 'homeDir', minLiteral: 1 }, { prefix: '~/.claude/session-data/', place: 'homeDir', minLiteral: 0 }, { prefix: '~/.claude/plans/', place: 'homeDir', minLiteral: 0 }]
 // Never trusted inside a trusted folder: agent config, git internals, hooks, plugins and keys (compared lower-case).
 const NEVER_TRUSTED_NAMES = ['settings.json', 'settings.local.json', '.mcp.json', '.claude.json', 'claude.md', 'agents.md']
 const NEVER_TRUSTED_SEGMENTS = ['.git', 'hooks', 'plugins', '.ssh']
@@ -73,7 +76,7 @@ const trustedEntryProblem = (e) => {
   if (/[\\:]/.test(e)) return `must use "/" only, with no "\\" or ":" (${quoted(e)})`
   const segs = e.slice(root.prefix.length).split('/')
   if (segs.some((s) => !s || /[. ]$/.test(s))) return `must not have an empty folder name or one ending in "." or a space (${quoted(e)})`
-  const literal = segs.findIndex((s) => GLOB_CHARS.test(s.replaceAll('{project}', '')))
+  const literal = segs.findIndex((s) => GLOB_CHARS.test(s.replace(PLACEHOLDERS, '')))
   if ((literal === -1 ? segs.length : literal) < root.minLiteral) return `must name a folder below ${root.prefix} (${quoted(e)})`
   if (root.place === 'tmpDir' && segs[0].toLowerCase() === STATE_FOLDER) return `must not name the after-Bash snapshot folder $TMP/${STATE_FOLDER} (${quoted(e)})`
   return null
@@ -136,13 +139,20 @@ const trustedWriteEntry = (file, gov, root, p, ic, places) => {
   if (p === path && (statSync(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1) return null
   const project = root.replace(/[^A-Za-z0-9]/g, '-')
   for (const entry of gov.trustedWritePaths ?? DEFAULT_TRUSTED_WRITE_PATHS) {
+    if (entry.includes('{uid}') && !Number.isInteger(places.uid)) continue
     const { prefix, place } = TRUSTED_ROOTS.find((r) => entry.startsWith(r.prefix))
     // The entry after its "$TMP/" or "~/" marker, relative to the temp or home folder.
-    const segs = entry.slice(prefix.indexOf('/') + 1).replaceAll('{project}', project).split('/')
+    const values = { project, uid: String(places.uid) }
+    const segs = entry.slice(prefix.indexOf('/') + 1).replace(PLACEHOLDERS, (_, name) => values[name]).split('/')
     // The plain folders before the first glob are the base; an entry with no glob names one file in its last folder.
     const firstGlob = segs.findIndex((s) => GLOB_CHARS.test(s))
     const literal = firstGlob === -1 ? segs.length - 1 : firstGlob
     const base = p.join(realOf(places[place], p), ...segs.slice(0, literal))
+    // ESP-125: in a shared temp folder another user could create the entry's first folder before Claude Code does.
+    if (place === 'tmpDir' && p === path && Number.isInteger(places.uid)) {
+      const owner = statSync(p.join(realOf(places.tmpDir, p), segs[0]), { throwIfNoEntry: false })?.uid
+      if (owner !== undefined && owner !== places.uid) continue
+    }
     const rel = p.relative(base, real)
     if (!rel || rel.startsWith('..') || p.isAbsolute(rel)) continue
     const relPosix = rel.split(p.sep).join('/')
@@ -511,35 +521,223 @@ const denyPieces = (c) => {
 }
 
 // ESP-113 item 9: the text of each `-EncodedCommand` (any prefix of the name, or -ec) in a command that names
-// PowerShell, or null for one the guard can't read: a value that isn't literal base64 or clean UTF-16 text.
+// PowerShell, or null for one the guard can't read: a value built at run time, or base64 that isn't clean UTF-16 text.
 // The flag is looked for anywhere, so another tool's -e in the same command fails closed (asked). PowerShell also
 // takes -- and dash characters as the flag prefix, a quoted value may hold whitespace (base64 decoding skips it),
 // and a decoded text is read again for its own encoded command, up to MAX_ENCODED_DEPTH levels, then asked.
 // The value is read in a lookahead, so another -e flag (`-ep -e …`) doesn't swallow the encoded flag as its value.
 // A flag may also be a group or array element, ended by `,`, `;`, `)` or the next group: `@('-e';'…')`, `('-e')('…')`.
-const ENCODED_FLAG = /[\s(,;](?:--?|[\/–—―])(e[a-z]*)(?=(?:\)?\s*[,;(]\s*|\)?\s+|:)("[^"]*"|'[^']*'|[^\s;&|),]*))/gi
+const ENCODED_FLAG = /[\s(,;](?:--?|[\/–—―])(e[a-z]*)(?=(\)?\s*[,;(]\s*|\)?\s+|:)("[^"]*"|'[^']*'|[^\s;&|),]*))/gi
+// ESP-125: what makes a value one PowerShell builds at run time, by how it is quoted (cmd expands %VAR% in any quotes).
+// In the unescaped form the quotes are gone, so a "(" there may have been quoted text; a group is still caught by
+// its separator, and the command as written is checked with "(" too.
+// Security review: bash drops a backslash before any character (and a line break after one), so a backslash outside
+// single quotes can turn text that isn't base64 into base64 PowerShell runs.
+const runTimeValue = (raw, quotesKept) => (raw.startsWith("'") ? /%/ : raw.startsWith('"') ? /[$`%\\]/ : quotesKept ? /[$`%(@{[<*?\\]/ : /[$`%@{[<*?\\]/).test(raw)
 const MAX_ENCODED_DEPTH = 3
-const encodedCommands = (cmd, depth = 0) => {
+const encodedCommands = (cmd, depth = 0, quotesKept = true) => {
   if (!/\b(?:powershell|pwsh)\b/i.test(cmd)) return []
   const values = [...cmd.matchAll(ENCODED_FLAG)]
     .filter(([, flag]) => 'encodedcommand'.startsWith(flag.toLowerCase()) || flag.toLowerCase() === 'ec')
-    .map(([, , value]) => value.replace(/^["']|["']$/g, '').replace(/\s+/g, ''))
+    .map(([, , sep, raw]) => ({ raw, grouped: /[(),;]/.test(sep), b64: raw.replace(/^["']|["']$/g, '').replace(/\s+/g, '') }))
   if (values.length && depth >= MAX_ENCODED_DEPTH) return [null]
-  return values.flatMap((b64) => {
-    if (!/^[a-z0-9+/]+={0,2}$/i.test(b64) || b64.length % 4) return [null]
+  return values.flatMap(({ raw, grouped, b64 }) => {
+    // ESP-125: PowerShell refuses a literal value that isn't base64 (another tool's -e, such as node -e "…"), so it
+    // runs nothing. A value built at run time, or one inside a group or array expression, can't be read: asked.
+    if (!/^[a-z0-9+/]+={0,2}$/i.test(b64) || b64.length % 4) return grouped || runTimeValue(raw, quotesKept) ? [null] : []
     const bytes = Buffer.from(b64, 'base64')
     const text = bytes.toString('utf16le')
     if (bytes.length % 2 || /[\u0000-\u0008\u000e-\u001f�\ud800-\udfff]/.test(text)) return [null]
-    return [text, ...[text, unescaped(text)].flatMap((t) => encodedCommands(t, depth + 1))]
+    return [text, ...encodedCommands(text, depth + 1), ...encodedCommands(unescaped(text), depth + 1, false)]
   })
 }
 
-const decideBash = (cmd, { cfg, gov, repoRules }, git, root) => {
+// ESP-125: text no command runs is blanked before the command rules, so a word in a commit message, a note written
+// with cat or a search pattern doesn't match them: the body of a quoted-delimiter heredoc fed to cat or tee (not
+// piped), a `"$(cat <<'X' … X)"` git commit/tag or gh message, and the quoted arguments of a search command. Quotes,
+// escapes and heredocs are read as the shell reads them. Anything the scan can't read leaves the command unchanged,
+// so the rules see all of it: a backtick, any other $( or ${, an unquoted #, $' or $", <( or >(, a PowerShell
+// here-string or --%, an unquoted-delimiter or unterminated heredoc, or a command that could redefine a name.
+const SEARCH_WORDS = ['grep', 'egrep', 'fgrep', 'rg', 'select-string', 'sls', 'findstr']
+const HEREDOC_WRITERS = ['cat', 'tee']
+// rg --pre and --hostname-bin run a program, so that is no search; the rest could make "grep" or "cat" run something
+// else.
+const REDEFINES = /\b(?:alias|function|filter|set-alias|new-alias|sal|nal|enable|hash)\b|\w\s*\(\s*\)|\bpath\s*\+?=|\$env:path|--(?:pre|hostname-bin)\b/i
+// A heredoc written where it runs later (a git or husky hook, a shell startup file, a home or system folder, any
+// absolute path) stays visible.
+const RUNS_LATER = /\.git\b|\bhooks\b|\.husky\b|~|\$\{?home|(?:^|[\s"'=<>])(?:\/|[a-z]:[\\/])|(?:^|[\s/])\.(?:bash|zsh|profile|config|git)/i
+// The simple command before a message heredoc: its text from the command start up to the opening quote.
+const MESSAGE_COMMAND = new RegExp(String.raw`^\s*(?:${GIT_PREFIX}(?:commit|tag)\b[^;&|\n]*\s(?:-[a-z]*m|--message)|gh\s+(?:pr|issue|release)\s+(?:create|edit|comment|review)\b[^;&|\n]*\s(?:-[bt]|--body|--title|--notes))(?:=|\s+)$`, 'i')
+// Governance and silent-failure reviews: a heredoc body stays unless every command beside it is one that can't run
+// the file it wrote (any other program, such as psql -f, awk -f or go run, might).
+// git is not one: bisect run, -c core.pager, submodule foreach and hooksPath all run a file.
+const QUIET_COMMANDS = ['cat', 'tee', 'echo', 'printf', 'cd', 'pwd', 'ls', 'mkdir', 'touch', 'wc', 'head', 'tail', 'diff', 'true', 'test']
+// Security review: PowerShell also reads typographic quotes as quotes; the scan only knows the ASCII ones.
+const TYPOGRAPHIC_QUOTES = /[‘-„]/
+const HEREDOC_OP = /<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\([^\s;&|<>()'"]+))/y
+const MESSAGE_OP = /\$\([ \t]*cat[ \t]+<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\([^\s;&|<>()'"]+))[ \t]*\n/y
+const MESSAGE_END = /\n[ \t]*\)"/y
+const WORD = /[A-Za-z][\w.-]*/y
+const UNREADABLE = ['`', '$(', '${', '$[', "$'", '$"', '<(', '>(', "@'", '@"', '--%', '<#']
+// A quoted redirect target is a file name the env-file and snapshot checks need to see, never a search pattern.
+const REDIRECT_BEFORE = /[<>][ \t]*$/
+// { and } open or close a command group only as words of their own; attached to text they are part of a word.
+const groupBrace = (cmd, i) => /[\s;&|()]/.test(cmd[i - 1] ?? ' ') && /[\s;&|()]/.test(cmd[i + 1] ?? ' ')
+
+// The heredoc body starting at `from`: where its terminator line starts and ends, or null if there is none.
+const heredocBody = (cmd, from, { delim, strip }) => {
+  for (let pos = from; ;) {
+    const eol = cmd.indexOf('\n', pos) === -1 ? cmd.length : cmd.indexOf('\n', pos)
+    const line = cmd.slice(pos, eol)
+    if ((strip ? line.replace(/^\t+/, '') : line) === delim) return { terminator: pos, end: eol }
+    if (eol === cmd.length) return null
+    pos = eol + 1
+  }
+}
+
+const sticky = (re, cmd, at) => {
+  re.lastIndex = at
+  return re.exec(cmd)
+}
+
+// A `"$(cat <<'X' … X)"` message at `at` (the $), quoted from `quote`: its blanked text and the end of the closing
+// quote, or null. The body stays when it starts with "-": an option before -m that takes a value (git commit -F -m)
+// would leave it as an argument of its own, read as an option such as --no-verify.
+const messageHeredoc = (cmd, at, quote, cmdStart) => {
+  const op = MESSAGE_COMMAND.test(cmd.slice(cmdStart, quote)) && sticky(MESSAGE_OP, cmd, at)
+  if (!op) return null
+  const from = at + op[0].length
+  const body = heredocBody(cmd, from, { delim: op[2] ?? op[3] ?? op[4], strip: op[1] === '-' })
+  const close = body && sticky(MESSAGE_END, cmd, body.end)
+  if (!close) return null
+  const kept = cmd[from] === '-' ? cmd.slice(from, body.terminator) : ''
+  return { text: `${op[0]}${kept}${cmd.slice(body.terminator, body.end)}${close[0]}`, end: body.end + close[0].length }
+}
+
+// Governance review: Claude Code keeps the shell's folder between calls, so a cd in an earlier call can move a
+// heredoc write into a hooks folder or out of the project. The hook input's cwd says where the shell is.
+const shellOutsideQuietFolder = (cwd, root, p) => {
+  if (typeof cwd !== 'string' || !cwd) return false
+  const rel = p.relative(root, cwd)
+  return rel.startsWith('..') || p.isAbsolute(rel) || RUNS_LATER.test(rel.split(p.sep).join('/'))
+}
+
+// The command with data text blanked, or the command unchanged when the scan can't read it.
+const withoutDataText = (cmd, tool, shellMoved = false) => {
+  const bash = tool === 'Bash'
+  if (cmd.length > MAX_COMMAND_CHARS || REDEFINES.test(cmd) || (!bash && TYPOGRAPHIC_QUOTES.test(cmd))) return cmd
+  const words = [] // every simple command's first word, to check what runs beside a blanked heredoc
+  let out = ''
+  let cmdStart = 0
+  let word = null // the current simple command's first word, '' when it isn't a plain word
+  const heredocs = []
+  let blankedBody = false
+  scan: for (let i = 0; i < cmd.length;) {
+    const ch = cmd[i]
+    const search = SEARCH_WORDS.includes(word)
+    if (ch === "'") {
+      const end = cmd.indexOf("'", i + 1)
+      if (end === -1) return cmd
+      out += search && !REDIRECT_BEFORE.test(out) ? "''" : cmd.slice(i, end + 1)
+      word ??= ''
+      i = end + 1
+      continue
+    }
+    if (ch === '"') {
+      let j = i + 1
+      let plain = true
+      for (; j < cmd.length && cmd[j] !== '"'; j++) {
+        if (cmd[j] === '`' || cmd.startsWith('${', j)) return cmd
+        if (cmd.startsWith('$(', j)) {
+          const message = bash && j === i + 1 && messageHeredoc(cmd, j, i, cmdStart)
+          if (!message) return cmd
+          out += `"${message.text}`
+          word ??= ''
+          i = message.end
+          continue scan
+        }
+        if (cmd[j] === '$') plain = false
+        if (cmd[j] === '\\' && bash) {
+          plain = false
+          j++
+        }
+      }
+      if (j >= cmd.length) return cmd
+      out += search && plain && !REDIRECT_BEFORE.test(out) ? '""' : cmd.slice(i, j + 1)
+      word ??= ''
+      i = j + 1
+      continue
+    }
+    if (UNREADABLE.some((s) => cmd.startsWith(s, i))) return cmd
+    if (ch === '#' && (i === 0 || /[\s;&|()]/.test(cmd[i - 1]))) return cmd
+    if (ch === '\\' && bash) {
+      out += cmd.slice(i, i + 2)
+      word ??= ''
+      i += 2
+      continue
+    }
+    if (cmd.startsWith('<<<', i)) {
+      out += '<<<'
+      i += 3
+      continue
+    }
+    if (cmd.startsWith('<<', i)) {
+      const op = bash && sticky(HEREDOC_OP, cmd, i)
+      if (!op) return cmd
+      const eol = cmd.indexOf('\n', i) === -1 ? cmd.length : cmd.indexOf('\n', i)
+      const blank = HEREDOC_WRITERS.includes(word) && !RUNS_LATER.test(cmd.slice(cmdStart, eol))
+      heredocs.push({ delim: op[2] ?? op[3] ?? op[4], strip: op[1] === '-', blank })
+      out += op[0]
+      i += op[0].length
+      continue
+    }
+    // A pipe hands the heredoc text to the next command, which may run it.
+    if (ch === '|') heredocs.forEach((h) => { h.blank = false })
+    if (ch === '\n' && heredocs.length) {
+      out += ch
+      i++
+      for (const h of heredocs.splice(0)) {
+        const body = heredocBody(cmd, i, h)
+        if (!body) return cmd
+        blankedBody ||= h.blank
+        out += `${h.blank ? '' : cmd.slice(i, body.terminator)}${cmd.slice(body.terminator, body.end)}`
+        i = body.end
+      }
+      continue
+    }
+    if (/[;&|\n()]/.test(ch) || (/[{}]/.test(ch) && groupBrace(cmd, i))) {
+      out += ch
+      i++
+      if (word !== null) words.push(word)
+      word = null
+      cmdStart = i
+      continue
+    }
+    if (word === null && !/\s/.test(ch)) {
+      const name = sticky(WORD, cmd, i)
+      const after = name && cmd[i + name[0].length]
+      word = name && (after === undefined || /[\s;&|()<>]/.test(after)) ? name[0].toLowerCase().replace(/\.exe$/, '') : ''
+      if (name) {
+        out += name[0]
+        i += name[0].length
+        continue
+      }
+    }
+    out += ch
+    i++
+  }
+  if (word !== null) words.push(word)
+  // The whole command, not only the heredoc's own: an earlier cd can move the write into a hooks or system folder.
+  return heredocs.length || (blankedBody && (shellMoved || words.some((w) => !QUIET_COMMANDS.includes(w)) || RUNS_LATER.test(out))) ? cmd : out
+}
+
+const decideBash = (cmd, { cfg, gov, repoRules }, git, root, tool, cwd, p = path) => {
   if (squeezeSpaces(cmd).length > MAX_TOTAL_CHARS) return decision('deny', `Blocked: the command is over ${MAX_TOTAL_CHARS / 1024 / 1024} MB, too long for the guard to check. Write it to a script file and run that instead.`, cmd)
+  const text = withoutDataText(cmd, tool, shellOutsideQuietFolder(cwd, root, p))
   // The unescaped form too, so a quoted or split flag or name (`'-enc'`, `-e''nc`, `p''owershell`) is still read.
-  const encoded = [cmd, unescaped(cmd)].flatMap((c) => encodedCommands(c))
+  const encoded = [...encodedCommands(text), ...encodedCommands(unescaped(text), 0, false)]
   const decoded = encoded.filter((t) => t !== null)
-  const forms = [cmd, ...decoded].flatMap((c) => [c, unescaped(c)])
+  const forms = [text, ...decoded].flatMap((c) => [c, unescaped(c)])
   const matches = (re) => forms.some((c) => new RegExp(re, 'i').test(c))
   const pieces = forms.flatMap(denyPieces)
   for (const [why, re] of [...DENY_COMMANDS, ...repoRules.deny]) {
@@ -738,7 +936,7 @@ const decideScope = (rel, gov, root, ic) => {
  *   configWarning (advisory config problems due to be shown; the caller logs configLogReason, which names them all,
  *   then passes configHash to recordAdvice) and markerError never change the decision.
  */
-export const evaluate = async (input, { root, cfg = {}, configError = null, git = gitProbe, pathApi = path, caseInsensitive = CASE_INSENSITIVE_FS, lookups, lookupDeadlineMs, homeDir = os.homedir(), tmpDir = os.tmpdir(), markerFile, longName = pathApi === path ? realpathSync.native : null }) => {
+export const evaluate = async (input, { root, cfg = {}, configError = null, git = gitProbe, pathApi = path, caseInsensitive = CASE_INSENSITIVE_FS, lookups, lookupDeadlineMs, homeDir = os.homedir(), tmpDir = os.tmpdir(), uid = process.getuid?.(), markerFile, longName = pathApi === path ? realpathSync.native : null }) => {
   const tool = input.tool_name || ''
   const ti = input.tool_input || {}
   const safe = sanitizeConfig(cfg)
@@ -749,14 +947,14 @@ export const evaluate = async (input, { root, cfg = {}, configError = null, git 
   let target = ''
   if (SHELL_TOOLS.includes(tool)) {
     target = String(ti.command || '')
-    result = decideBash(target, safe, git, root)
+    result = decideBash(target, safe, git, root, tool, input.cwd, pathApi)
   } else if (EDIT_TOOLS.includes(tool)) {
     target = ti.file_path || ti.notebook_path || ''
     if (!target) return null
     if (typeof target !== 'string') {
       target = JSON.stringify(target)
       result = decision('ask', 'The edit target is not a file path string. Confirm the edit.', target)
-    } else result = await decideEdit(target, safe, git, root, pathApi, caseInsensitive, tool, ti, { lookups, deadlineMs: lookupDeadlineMs }, { homeDir, tmpDir, longName })
+    } else result = await decideEdit(target, safe, git, root, pathApi, caseInsensitive, tool, ti, { lookups, deadlineMs: lookupDeadlineMs }, { homeDir, tmpDir, uid, longName })
   } else return null
 
   // Advisory problems alone (ESP-35 R1) don't change the decision; they are reported beside it, once per change (R4).

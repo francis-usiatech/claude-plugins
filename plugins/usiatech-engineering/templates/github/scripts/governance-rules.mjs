@@ -78,9 +78,13 @@ export const ASK_COMMANDS = [
   // Invoke-Expression wrapper and a delete is asked. Anchored lookaheads keep it linear.
   ['delete inside a command wrapper', String.raw`^(?=[\s\S]*\b(?:cmd|comspec|powershell|pwsh|iex|invoke-expression|start-process|saps)\b)(?=[\s\S]*(?<![-\w])${DELETE_ALIAS})`],
   // ESP-113 item 9: bash ANSI-C quoting with an escape ($'\x72m') can spell any command; the guard doesn't decode it.
-  ['ANSI-C quoted escape', String.raw`\$'[^']*\\`],
-  ['destructive SQL', String.raw`\b(drop\s+table|truncate\s+|delete\s+from\s+\w+\s*(;|$|"|'))`],
-  ['weakening row-level security', String.raw`(disable\s+row\s+level\s+security|no\s+force\s+row\s+level\s+security|bypassrls)`],
+  // ESP-125: only octal, \x, \u, \U and \c escapes spell characters; \r, \n, \t and an escaped quote can't. The
+  // alternatives can't overlap, so the scan stays linear.
+  ['ANSI-C quoted escape', String.raw`\$'(?:[^'\\]|\\[^0-7xuc])*\\[0-7xuc]`],
+  // ESP-125: truncate as SQL (a table name before ; , a quote, a bracket, a line break, the end or CASCADE, RESTRICT,
+  // RESTART IDENTITY, CONTINUE IDENTITY) or as the shell tool (truncate -s), not as a CSS class name.
+  ['destructive SQL', String.raw`\b(drop\s+table|truncate\s+(?:(?:table|only)\b|-|[\w."` + '`' + String.raw`]+[ \t]*(,|;|$|"|'|` + '`' + String.raw`|\)|\r?\n|(?:cascade|restrict|restart|continue)\b))|delete\s+from\s+\w+\s*(;|$|"|'))`],
+  ['weakening row-level security', String.raw`(disable\s+row\s+level\s+security|no\s+force\s+row\s+level\s+security|\b(create|alter)\s+(role|user)\b(?=[^;]*\bbypassrls))`],
   ['resetting/dropping a database', String.raw`\b(prisma\s+migrate\s+reset|drizzle-kit\s+drop|db:reset|db:drop)\b`],
   ['adding a dependency', String.raw`\b(npm\s+(i|install|add)\s+[^-\s]|pnpm\s+(add|install\s+[^-\s])|yarn\s+add|pip3?\s+install|npx\s+-y\s)`],
   ['publishing a package', String.raw`\b(npm|pnpm|yarn)\s+publish\b`],
