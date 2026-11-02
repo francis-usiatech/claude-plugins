@@ -12,7 +12,7 @@ export const SHELL_TOOLS = ['Bash', 'PowerShell']
 export const STATE_FOLDER = 'usiatech-governance'
 
 /**
- * Where the state for a project lives. Deliberately not under a trusted write path ($TMP/claude/{project}/**), so an
+ * Where the state for a project lives. Deliberately not under a trusted write path ($TMP/claude/{project}/** or $TMP/claude-{uid}/{project}/**), so an
  * Edit or Write the guard lets through without asking can't rewrite it. A Bash command still can: the guard asks
  * before one that names the folder or a snapshot file, but a command that builds the path another way is not caught
  * (a known limitation).
