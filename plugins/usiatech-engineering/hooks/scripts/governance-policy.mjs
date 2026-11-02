@@ -533,7 +533,8 @@ const ENCODED_FLAG = /[\s(,;](?:--?|[\/–—―])(e[a-z]*)(?=(\)?\s*[,;(]\s*|\)
 // its separator, and the command as written is checked with "(" too.
 // Security review: bash drops a backslash before any character (and a line break after one), so a backslash outside
 // single quotes can turn text that isn't base64 into base64 PowerShell runs.
-const runTimeValue = (raw, quotesKept) => (raw.startsWith("'") ? /%/ : raw.startsWith('"') ? /[$`%\\]/ : quotesKept ? /[$`%(@{[<*?\\]/ : /[$`%@{[<*?\\]/).test(raw)
+// Code review: cmd with /v:on also expands !VAR!, in any quotes.
+const runTimeValue = (raw, quotesKept) => (raw.startsWith("'") ? /[%!]/ : raw.startsWith('"') ? /[$`%!\\]/ : quotesKept ? /[$`%!(@{[<*?\\]/ : /[$`%!@{[<*?\\]/).test(raw)
 const MAX_ENCODED_DEPTH = 3
 const encodedCommands = (cmd, depth = 0, quotesKept = true) => {
   if (!/\b(?:powershell|pwsh)\b/i.test(cmd)) return []
@@ -572,7 +573,7 @@ const EXPANSION = /[*?[]|\{\S|[^\s;&|(<>]\(/
 const LEAVES_FOLDER = /(?:^|[;&|(){}\n])[ \t]*cd(?:[ \t]*(?=$|[;&|)}\n])|[ \t]+-)|(?:^|[\s=>&/])\.\.(?=[\\/\s;&|)]|$)/
 // Output sent nowhere (/dev/null, PowerShell's $null, or another stream) isn't a write. `>&file` is: bash sends both
 // streams to the file.
-const DISCARDED_OUTPUT = /\d*>>?[ \t]*(?:\/dev\/null|\$null)(?![\w.\/-])|\d*>&(?:\d+|-)(?![\w.\/-])/gi
+const DISCARDED_OUTPUT = /\d*>>?[ \t]*(?:\/dev\/null|\$null)(?![\w.\/'"\\-])|\d*>&(?:\d+|-)(?![\w.\/'"\\-])/gi
 // The simple command before a message heredoc: its text from the command start up to the opening quote.
 const MESSAGE_COMMAND = new RegExp(String.raw`^\s*(?:${GIT_PREFIX}(?:commit|tag)\b[^;&|\n]*\s(?:-[a-z]*m|--message)|gh\s+(?:pr|issue|release)\s+(?:create|edit|comment|review)\b[^;&|\n]*\s(?:-[bt]|--body|--title|--notes))(?:=|\s+)$`, 'i')
 // Governance and silent-failure reviews: a heredoc body stays unless every command beside it is one that can't run
@@ -743,7 +744,8 @@ const withoutDataText = (cmd, tool, shellMoved = false) => {
       continue
     }
     // The & of a redirect (>&2, <&3, &>file) is part of the same command.
-    const redirect = ch === '&' && (/[<>]/.test(cmd[i - 1] ?? '') || cmd[i + 1] === '>')
+    // Security re-review: an escaped \> is text, so the & after it still ends the command.
+    const redirect = ch === '&' && ((/[<>]/.test(cmd[i - 1] ?? '') && cmd[i - 2] !== '\\') || cmd[i + 1] === '>')
     // Security re-review: in PowerShell any { opens a script block, which a parameter bound from the pipeline runs.
     if ((/[;&|\n()]/.test(ch) && !redirect) || (/[{}]/.test(ch) && (!bash || groupBrace(cmd, i)))) {
       if (word !== null) commands.push({ word, text: out.slice(commandOut) })

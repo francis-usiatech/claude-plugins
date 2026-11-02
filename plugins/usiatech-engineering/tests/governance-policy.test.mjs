@@ -1288,10 +1288,14 @@ describe('evaluate: prompts on text no command runs (ESP-125)', () => {
   })
 
   describe('-EncodedCommand values (AC8)', () => {
-    for (const cmd of ['node -e "console.log(1)"; pwsh -File x.ps1', "sed -e 's/a/b/' x; powershell -File y.ps1", 'powershell -EncodedCommand !!!', 'pwsh -c "x" -e abc']) {
+    for (const cmd of ['node -e "console.log(1)"; pwsh -File x.ps1', "sed -e 's/a/b/' x; powershell -File y.ps1", 'powershell -EncodedCommand ...', 'pwsh -c "x" -e abc']) {
       it(`should allow a literal value PowerShell can't decode: ${cmd}`, async () => assert.equal(await outcome(ps(cmd)), 'allow'))
     }
     // Code review: bash expands an unquoted glob to file names before PowerShell sees it.
+    // Code review: cmd /v:on expands !VAR! before PowerShell sees the value.
+    for (const cmd of ['cmd /v:on /c "set E=x&& powershell -e !E!"', "pwsh -e '!E!'", 'pwsh -e "!E!"']) {
+      it(`should ask for a value cmd expands: ${cmd}`, async () => assert.equal(await outcome(ps(cmd)), 'ask'))
+    }
     for (const cmd of ['pwsh -enc $x', 'powershell -e (gc enc.txt)', 'pwsh -e @(x)', 'pwsh -e [Convert]::x', 'pwsh -e %X%', 'pwsh -e {x}', 'pwsh -e <x', 'pwsh -e a`b', 'pwsh -e *', 'pwsh -e A?BC']) {
       it(`should ask for a value the guard can't read: ${cmd}`, async () => assert.equal(await outcome(ps(cmd)), 'ask'))
     }
@@ -1327,7 +1331,11 @@ describe('evaluate: prompts on text no command runs (ESP-125)', () => {
       ['psql -c "truncate x continue identity restrict"', /destructive SQL/], ["mysql -e 'TRUNCATE `users`;'", /destructive SQL/],
       // Security re-review: a comment or * after the name, a quoted name, and the shell tool's options after the file.
       ['psql -c "TRUNCATE users -- x"', /destructive SQL/], ['psql -c "TRUNCATE users *"', /destructive SQL/], [`psql -c 'TRUNCATE "My Table"'`, /destructive SQL/],
-      ['truncate app.db -s 0', /destructive SQL/], ['truncate ./x --size=0', /destructive SQL/]]) {
+      ['truncate app.db -s 0', /destructive SQL/], ['truncate ./x --size=0', /destructive SQL/],
+      ['truncate app.db -s0', /destructive SQL/], ['truncate app.db --si=0', /destructive SQL/], ['truncate app.db -rref', /destructive SQL/],
+      ['psql -c "TRUNCATE users /**/"', /destructive SQL/], ['psql -c "TRUNCATE users*"', /destructive SQL/], ['psql -c "TRUNCATE public . users"', /destructive SQL/],
+      // Code review: CREATE GROUP is CREATE ROLE by another name.
+      ['psql -c "CREATE GROUP admins WITH LOGIN BYPASSRLS"', /row-level security/]]) {
       it(`should still ask: ${cmd}`, async () => assert.match((await bash(cmd))?.reason ?? '', why))
     }
   })
@@ -1503,6 +1511,11 @@ describe('evaluate: prompts on text no command runs (ESP-125)', () => {
       assert.equal(await outcome(bash(`(( cat <<'EOF' ))\n${del}\nEOF`)), 'deny')
       assert.equal(await outcome(bash(`git commit -m "$(cat <<'EOF'\nmsg\nEOF)"; ${del}; : "\nEOF\n)"`)), 'deny')
       assert.equal(await outcome(ps(`ls | sls -Pattern 'a' -Path {iex 'Remove-Item -Recurse -Force ~'}`)), 'deny')
+    })
+    it('should still deny a command after an escaped redirect character', async () => {
+      const del = 'rm -r' + 'f ~'
+      assert.equal(await outcome(bash(`grep x\\>& sh -c '${del}'`)), 'deny')
+      assert.equal(await outcome(bash(`cat x\\>& sh <<'EOF'\n${del}\nEOF`)), 'deny')
     })
     it('should still ask for a write through >& or out of the project', async () => {
       assert.equal(await outcome(bash(`rg -r '${SUDO}' . f >&/usr/local/bin/x`)), 'ask')

@@ -83,10 +83,10 @@ export const ASK_COMMANDS = [
   ['ANSI-C quoted escape', String.raw`\$'(?:[^'\\]|\\[^0-7xuc])*\\[0-7xuc]`],
   // ESP-125: truncate as SQL (a table name before ; , a quote, a bracket, a line break, the end or CASCADE, RESTRICT,
   // RESTART IDENTITY, CONTINUE IDENTITY) or as the shell tool (truncate -s), not as a CSS class name.
-  // Security re-review: also a quoted table name, a name before a -- comment or *, and the shell tool's size or
-  // reference option anywhere after the file (truncate app.db -s 0).
-  ['destructive SQL', String.raw`\b(drop\s+table|truncate\s+(?:(?:table|only)\b|-|["` + '`' + String.raw`]\w|[\w."` + '`' + String.raw`]+(?:[ \t]*(,|;|$|"|'|` + '`' + String.raw`|\)|\r?\n|(?:cascade|restrict|restart|continue)\b)|[ \t]+(?:--|\*)))|truncate\b[^;&|\n]*\s(?:-[a-z]*[sr]\b|--(?:size|reference)\b)|delete\s+from\s+\w+\s*(;|$|"|'))`],
-  ['weakening row-level security', String.raw`(disable\s+row\s+level\s+security|no\s+force\s+row\s+level\s+security|\b(create|alter)\s+(role|user)\b(?=[^;]*\bbypassrls))`],
+  // Security re-review: also a quoted or schema-qualified table name, a name before a comment or *, and the shell
+  // tool's size or reference option anywhere after the file, in any form getopt takes (-s0, --si=0, -rref).
+  ['destructive SQL', String.raw`\b(drop\s+table|truncate\s+(?:(?:table|only)\b|-|["` + '`' + String.raw`]\w|[\w."` + '`' + String.raw`]+(?:\s*\.\s*[\w"` + '`' + String.raw`]+)*(?:[ \t]*(,|;|$|"|'|` + '`' + String.raw`|\)|\r?\n|\*|\/\*|(?:cascade|restrict|restart|continue)\b)|[ \t]+--))|truncate\b[^;&|\n]*\s(?:-[a-z]*[sr]|--[sr])|delete\s+from\s+\w+\s*(;|$|"|'))`],
+  ['weakening row-level security', String.raw`(disable\s+row\s+level\s+security|no\s+force\s+row\s+level\s+security|\b(create\s+(role|user|group)|alter\s+(role|user))\b(?=[^;]*\bbypassrls))`],
   ['resetting/dropping a database', String.raw`\b(prisma\s+migrate\s+reset|drizzle-kit\s+drop|db:reset|db:drop)\b`],
   ['adding a dependency', String.raw`\b(npm\s+(i|install|add)\s+[^-\s]|pnpm\s+(add|install\s+[^-\s])|yarn\s+add|pip3?\s+install|npx\s+-y\s)`],
   ['publishing a package', String.raw`\b(npm|pnpm|yarn)\s+publish\b`],
