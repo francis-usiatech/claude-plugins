@@ -110,6 +110,13 @@ describe('plugin structure: references', () => {
     })
   }
 
+  // ESP-144: release-steps is mechanical; verify judges acceptance criteria, so it stays on the session model.
+  it('should run release-steps on sonnet and leave verify on the session model', () => {
+    assert.equal(frontmatter(read('skills', 'release-steps', 'SKILL.md')).model, 'sonnet')
+    assert.equal(frontmatter(read('skills', 'verify', 'SKILL.md')).model, undefined)
+    assert.match(read('README.md'), /`verify` stays on the session model because it judges acceptance criteria/)
+  })
+
   it('should take AC evidence the repo cannot show from the verify arguments (ESP-118)', () => {
     const text = read('skills', 'verify', 'SKILL.md')
     assert.match(frontmatter(text).description, /pass.*evidence/i)

@@ -4,6 +4,7 @@ description: Runs the mechanical steps of a release in a forked subagent (commit
 context: fork
 agent: general-purpose
 background: false
+model: sonnet
 ---
 
 # Release steps
