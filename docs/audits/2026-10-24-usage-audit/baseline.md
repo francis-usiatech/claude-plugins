@@ -53,10 +53,10 @@ Plugin share here is the baseline's formula plus the two fork rows, since forked
 | Reviewer subagent calls on Opus | 1,502 of 1,516 | 683 of 968 | 547 of 547 | 240 of 340 | ESP-119 |
 | **Plugin share** | **32.1%** | **24.6%** | **15.2%** | **19.0%** | ESP-117: not met |
 
-ESP-118 AC1 asks for main-thread growth under 5k tokens per release in a session above 300k context, measured with `window.cjs`. Francis recorded it as not met on 2026-11-03, and ESP-144 AC7 tracks it. `window.cjs` doesn't report growth, so these numbers come from a one-off script, not saved in this folder, that compares context before and after each `release-steps` call. `release-steps` ran 67 times over 16 `release` runs in heiit and 17 times over 8 in waypointcareer.
+ESP-118 AC1 asks that the forked steps of a release (commit, PR, merge, Jira and tag) grow the main thread by under 5k tokens in a session above 300k context, measured with `window.cjs`. Francis recorded it as not met on 2026-11-03, and ESP-144 AC7 tracks it. `window.cjs` doesn't report growth, so these numbers come from a one-off script, not saved in this folder, that compares context before and after each `release-steps` call. It counts only those calls, not the rest of the main-thread `release` window, which AC1 doesn't cover. `release-steps` ran 67 times over 16 `release` runs in heiit and 17 times over 8 in waypointcareer.
 
-- **At 300k+ context (an estimate):** growth totals 50,085 over 40 calls in heiit and 19,660 over 8 in waypointcareer, a mean of 1,252 and 2,458 per call. Multiplied by the calls per release at any context (about 4.2 and 2.1), a release grows by about 5.2k in both, narrowly over the limit. Medians are 983 and 1,907, and 2 of 48 calls went over 5k on their own.
-- **At any context:** growth totals 77,290 and 30,818, so a release grows by about 4.8k in heiit and 3.9k in waypointcareer.
+- **At 300k+ context (an estimate):** growth totals 50,085 over 40 calls in heiit and 19,660 over 8 in waypointcareer, a mean of 1,252 and 2,458 per call. Multiplied by the calls per release at any context (about 4.2 and 2.1), those steps add about 5.2k per release in both, narrowly over the limit. Medians are 983 and 1,907, and 2 of 48 calls went over 5k on their own.
+- **At any context:** growth totals 77,290 and 30,818, so those steps add about 4.8k per release in heiit and 3.9k in waypointcareer.
 
 How to read these numbers:
 
