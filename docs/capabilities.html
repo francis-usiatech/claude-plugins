@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UsiaTech Engineering Capabilities</title>
+<meta name="description" content="What the usiatech-engineering Claude Code plugin does today (v0.19.3) and the capabilities planned in Jira project ESP.">
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --surface: #ffffff;
+    --surface-2: #f0efeb;
+    --text: #1d1d1b;
+    --muted: #5f5e58;
+    --line: #d9d7cf;
+    --accent: #2f5bd3;
+    --skill: #2f5bd3;
+    --skill-soft: #e0e8fb;
+    --agent: #2e7d4f;
+    --agent-soft: #dcefe3;
+    --hook: #b3402f;
+    --hook-soft: #f8e1dc;
+    --ci: #b26a00;
+    --ci-soft: #f7e7cc;
+    --new: #7b3fb8;
+    --new-soft: #ece1f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141413;
+      --surface: #1d1d1b;
+      --surface-2: #262623;
+      --text: #ecebe6;
+      --muted: #a9a79e;
+      --line: #3a3934;
+      --accent: #8aa8ff;
+      --skill: #8aa8ff;
+      --skill-soft: #222c45;
+      --agent: #6cc795;
+      --agent-soft: #1f3a2a;
+      --hook: #f08a78;
+      --hook-soft: #3f2420;
+      --ci: #f0b45a;
+      --ci-soft: #3d2f17;
+      --new: #c49af0;
+      --new-soft: #33264a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141413;
+    --surface: #1d1d1b;
+    --surface-2: #262623;
+    --text: #ecebe6;
+    --muted: #a9a79e;
+    --line: #3a3934;
+    --accent: #8aa8ff;
+    --skill: #8aa8ff;
+    --skill-soft: #222c45;
+    --agent: #6cc795;
+    --agent-soft: #1f3a2a;
+    --hook: #f08a78;
+    --hook-soft: #3f2420;
+    --ci: #f0b45a;
+    --ci-soft: #3d2f17;
+    --new: #c49af0;
+    --new-soft: #33264a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1040px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 8px; }
+  h2 { font-size: 1.35rem; margin: 48px 0 8px; }
+  p.lede { color: var(--muted); margin: 0 0 24px; max-width: 70ch; }
+  p { max-width: 75ch; }
+  a { color: var(--accent); }
+  code { font: 0.9em ui-monospace, "Cascadia Code", Consolas, monospace; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+  .figure { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; overflow-x: auto; }
+  .figure svg { display: block; width: 100%; min-width: 640px; height: auto; }
+  .caption { color: var(--muted); font-size: 0.9rem; margin: 8px 0 0; }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 12px 0 0; font-size: 0.9rem; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+  .legend .skill::before { background: var(--skill); }
+  .legend .agent::before { background: var(--agent); }
+  .legend .hook::before { background: var(--hook); }
+  .legend .ci::before { background: var(--ci); }
+  .legend .new::before { background: var(--new); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin: 0 0 8px; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .stat b { display: block; font-size: 1.6rem; line-height: 1.1; }
+  .stat span { color: var(--muted); font-size: 0.9rem; }
+  table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; font-size: 0.95rem; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--surface-2); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  .table-wrap { overflow-x: auto; }
+  footer { color: var(--muted); font-size: 0.85rem; margin-top: 48px; }
+  /* SVG classes */
+  .t { fill: var(--text); font: 13px system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .t-s { fill: var(--muted); font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .t-b { fill: var(--text); font: 600 13px system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .ln { stroke: var(--line); stroke-width: 1.5; fill: none; }
+  .arrow { stroke: var(--muted); stroke-width: 1.5; fill: none; marker-end: url(#arr); }
+  .head { fill: var(--muted); }
+  .box { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.2; }
+  .b-skill { fill: var(--skill-soft); stroke: var(--skill); stroke-width: 1.4; }
+  .b-agent { fill: var(--agent-soft); stroke: var(--agent); stroke-width: 1.4; }
+  .b-hook { fill: var(--hook-soft); stroke: var(--hook); stroke-width: 1.4; }
+  .b-ci { fill: var(--ci-soft); stroke: var(--ci); stroke-width: 1.4; }
+  .b-new { fill: var(--new-soft); stroke: var(--new); stroke-width: 1.4; stroke-dasharray: 5 3; }
+</style>
+</head>
+<body>
+<main>
+  <h1>UsiaTech Engineering capabilities</h1>
+  <p class="lede">What the <code>usiatech-engineering</code> Claude Code plugin does today (v0.19.3, 2026-11-02) and what is planned. The text version is <a href="capabilities.md">capabilities.md</a>; the order of work is in <a href="roadmap.html">roadmap.html</a>; every rule and config key is in the <a href="../plugins/usiatech-engineering/README.md">plugin README</a>.</p>
+
+  <div class="stats">
+    <div class="stat"><b>12</b><span>skills</span></div>
+    <div class="stat"><b>6</b><span>read-only reviewer agents</span></div>
+    <div class="stat"><b>2</b><span>guard hooks</span></div>
+    <div class="stat"><b>4</b><span>CI jobs</span></div>
+    <div class="stat"><b>5</b><span>governance layers</span></div>
+  </div>
+
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker>
+    </defs>
+  </svg>
+
+  <h2>1. From request to release</h2>
+  <div class="figure">
+    <svg viewBox="0 0 980 280" role="img" aria-labelledby="fl-title fl-desc">
+      <title id="fl-title">Request-to-release flow</title>
+      <desc id="fl-desc">Large route: clarify, to-spec, to-tickets, then approve-plan. Small route goes straight to approve-plan. Then tdd or debug, verify, release and release-steps. Each step leaves a record.</desc>
+      <rect class="b-skill" x="10" y="30" width="110" height="52" rx="10"/><text class="t-b" x="65" y="54" text-anchor="middle">clarify</text><text class="t-s" x="65" y="71" text-anchor="middle">note</text>
+      <rect class="b-skill" x="150" y="30" width="110" height="52" rx="10"/><text class="t-b" x="205" y="54" text-anchor="middle">to-spec</text><text class="t-s" x="205" y="71" text-anchor="middle">docs/specs/</text>
+      <rect class="b-skill" x="290" y="30" width="110" height="52" rx="10"/><text class="t-b" x="345" y="54" text-anchor="middle">to-tickets</text><text class="t-s" x="345" y="71" text-anchor="middle">Jira / GitHub</text>
+      <path class="arrow" d="M120,56 H146"/><path class="arrow" d="M260,56 H286"/>
+      <text class="t-s" x="10" y="20">Large route</text>
+
+      <rect class="box" x="10" y="160" width="110" height="52" rx="10"/><text class="t-b" x="65" y="184" text-anchor="middle">Request</text><text class="t-s" x="65" y="201" text-anchor="middle">with a reference</text>
+      <path class="arrow" d="M65,160 V86"/>
+      <text class="t-s" x="76" y="125">large</text>
+
+      <rect class="b-skill" x="430" y="110" width="130" height="60" rx="10"/><text class="t-b" x="495" y="135" text-anchor="middle">approve-plan</text><text class="t-s" x="495" y="153" text-anchor="middle">plans/active.md</text>
+      <path class="arrow" d="M400,56 H440 V106"/>
+      <path class="arrow" d="M120,186 H426" />
+      <text class="t-s" x="200" y="180">small: ≤ 5 files, cited requirement</text>
+
+      <rect class="b-agent" x="430" y="20" width="130" height="44" rx="10"/><text class="t" x="495" y="40" text-anchor="middle">pre-flight</text><text class="t-s" x="495" y="56" text-anchor="middle">governance-reviewer</text>
+      <path class="ln" d="M495,64 V106" stroke-dasharray="3 3"/>
+
+      <rect class="b-skill" x="590" y="110" width="110" height="60" rx="10"/><text class="t-b" x="645" y="135" text-anchor="middle">tdd / debug</text><text class="t-s" x="645" y="153" text-anchor="middle">tests + code</text>
+      <rect class="b-skill" x="730" y="110" width="100" height="60" rx="10"/><text class="t-b" x="780" y="135" text-anchor="middle">verify</text><text class="t-s" x="780" y="153" text-anchor="middle">gate + ACs</text>
+      <rect class="b-skill" x="860" y="110" width="110" height="60" rx="10"/><text class="t-b" x="915" y="135" text-anchor="middle">release</text><text class="t-s" x="915" y="153" text-anchor="middle">review, PR, tag</text>
+      <path class="arrow" d="M560,140 H586"/><path class="arrow" d="M700,140 H726"/><path class="arrow" d="M830,140 H856"/>
+
+      <rect class="b-hook" x="590" y="210" width="240" height="44" rx="10"/><text class="t-b" x="710" y="230" text-anchor="middle">Governance guard</text><text class="t-s" x="710" y="246" text-anchor="middle">deny · ask · log every tool call</text>
+      <path class="ln" d="M645,170 V206" stroke-dasharray="3 3"/><path class="ln" d="M780,170 V206" stroke-dasharray="3 3"/>
+      <rect class="b-ci" x="860" y="210" width="110" height="44" rx="10"/><text class="t-b" x="915" y="230" text-anchor="middle">CI gate</text><text class="t-s" x="915" y="246" text-anchor="middle">on the PR</text>
+      <path class="arrow" d="M915,170 V206"/>
+    </svg>
+    <div class="legend"><span class="skill">Skill</span><span class="agent">Reviewer agent</span><span class="hook">Hook</span><span class="ci">CI</span></div>
+  </div>
+
+  <h2>2. Governance layers</h2>
+  <div class="figure">
+    <svg viewBox="0 0 980 330" role="img" aria-labelledby="gl-title gl-desc">
+      <title id="gl-title">Five governance layers</title>
+      <desc id="gl-desc">Layer 1 before work: plan and pre-flight. Layer 2 during work: guard hook. Layer 3 before commit: two-stage review. Layer 4 on the PR: CI jobs read from the base branch. Layer 5 after: archived plans and the governance log.</desc>
+      <g>
+        <rect class="b-skill" x="20" y="10" width="940" height="52" rx="10"/>
+        <text class="t-b" x="40" y="33">1 · Before work</text><text class="t-s" x="40" y="51">approve-plan + governance-reviewer pre-flight</text>
+        <text class="t" x="560" y="42">Plan cites a requirement · scope, ACs and tasks recorded</text>
+
+        <rect class="b-hook" x="20" y="72" width="940" height="52" rx="10"/>
+        <text class="t-b" x="40" y="95">2 · During work</text><text class="t-s" x="40" y="113">guard (PreToolUse) + after-Bash workflow check</text>
+        <text class="t" x="560" y="104">Deny catastrophic · ask risky or out-of-plan · log all</text>
+
+        <rect class="b-agent" x="20" y="134" width="940" height="52" rx="10"/>
+        <text class="t-b" x="40" y="157">3 · Before commit</text><text class="t-s" x="40" y="175">release: governance-reviewer, then the other reviewers</text>
+        <text class="t" x="560" y="166">BLOCK stops the commit · FLAG needs a decision</text>
+
+        <rect class="b-ci" x="20" y="196" width="940" height="52" rx="10"/>
+        <text class="t-b" x="40" y="219">4 · Pull request</text><text class="t-s" x="40" y="237">governance-checks · verify-gate · ai-governance-review · governance-gate</text>
+        <text class="t" x="560" y="228">Rules read from the base branch, not the PR</text>
+
+        <rect class="box" x="20" y="258" width="940" height="52" rx="10"/>
+        <text class="t-b" x="40" y="281">5 · After</text><text class="t-s" x="40" y="299">plans/archive/ · governance-log.jsonl · PR verdict comments</text>
+        <text class="t" x="560" y="290">Audit trail of scope and approvals</text>
+      </g>
+    </svg>
+  </div>
+
+  <h2>3. Component map</h2>
+  <div class="figure">
+    <svg viewBox="0 0 980 400" role="img" aria-labelledby="cm-title cm-desc">
+      <title id="cm-title">Plugin components grouped by type</title>
+      <desc id="cm-desc">Twelve skills in three groups (plan, build, ship), six reviewer agents, two hooks and the CI kit, plus shared rule modules used by the hooks, reviewers and CI.</desc>
+      <text class="t-b" x="20" y="24">Skills</text>
+      <rect class="b-skill" x="20" y="36" width="300" height="150" rx="10"/>
+      <text class="t-s" x="36" y="58">Plan</text>
+      <text class="t" x="36" y="78">clarify · to-spec · to-tickets</text>
+      <text class="t" x="36" y="98">approve-plan</text>
+      <text class="t-s" x="36" y="124">Build</text>
+      <text class="t" x="36" y="144">tdd · debug · mutation-test</text>
+      <text class="t-s" x="36" y="170">Setup: setup-engineering</text>
+
+      <rect class="b-skill" x="340" y="36" width="300" height="150" rx="10"/>
+      <text class="t-s" x="356" y="58">Ship</text>
+      <text class="t" x="356" y="78">verify (gate.mjs, forked)</text>
+      <text class="t" x="356" y="98">release → release-steps (forked)</text>
+      <text class="t" x="356" y="118">user-guide-update</text>
+      <text class="t-s" x="356" y="148">Jira: jira-tracker.mjs or Atlassian MCP</text>
+      <text class="t-s" x="356" y="166">Session: session-check.mjs</text>
+
+      <text class="t-b" x="660" y="24">Reviewer agents (read-only)</text>
+      <rect class="b-agent" x="660" y="36" width="300" height="150" rx="10"/>
+      <text class="t" x="676" y="60">governance-reviewer</text>
+      <text class="t" x="676" y="80">convention-reviewer</text>
+      <text class="t" x="676" y="100">security-reviewer</text>
+      <text class="t" x="676" y="120">silent-failure-reviewer</text>
+      <text class="t" x="676" y="140">supply-chain-reviewer</text>
+      <text class="t" x="676" y="160">workflow-reviewer</text>
+
+      <text class="t-b" x="20" y="222">Hooks</text>
+      <rect class="b-hook" x="20" y="234" width="460" height="70" rx="10"/>
+      <text class="t" x="36" y="258">Governance guard · PreToolUse on Bash, PowerShell, edits</text>
+      <text class="t" x="36" y="282">After-Bash workflow check · PostToolUse(+Failure) on Bash, PowerShell</text>
+
+      <text class="t-b" x="500" y="222">CI kit (templates/github/)</text>
+      <rect class="b-ci" x="500" y="234" width="460" height="70" rx="10"/>
+      <text class="t" x="516" y="258">pr-governance.yml · 4 jobs · PR template</text>
+      <text class="t" x="516" y="282">CODEOWNERS · ruleset (Code Owner review on .github/**)</text>
+
+      <rect class="box" x="20" y="326" width="940" height="56" rx="10"/>
+      <text class="t-b" x="36" y="350">Shared rule modules</text>
+      <text class="t" x="36" y="370">governance-rules · workflow-rules (wf-*) · supply-chain (sc-*) · fake-pass-rules (fp-*) · secret guard</text>
+      <path class="ln" d="M250,304 V322"/><path class="ln" d="M730,304 V322"/>
+    </svg>
+    <div class="legend"><span class="skill">Skill</span><span class="agent">Reviewer agent</span><span class="hook">Hook</span><span class="ci">CI</span></div>
+  </div>
+
+  <h2>4. Release review in two stages</h2>
+  <div class="figure">
+    <svg viewBox="0 0 980 266" role="img" aria-labelledby="rv-title rv-desc">
+      <title id="rv-title">Two-stage release review</title>
+      <desc id="rv-desc">Scoped staging and the verify gate, then stage 1 governance-reviewer checks the diff matches the plan, then stage 2 runs the other reviewers in parallel, with supply-chain and workflow reviewers only when their files change. BLOCK stops; FLAG asks; then one commit, PR, merge and tag.</desc>
+      <rect class="b-skill" x="10" y="90" width="130" height="60" rx="10"/><text class="t-b" x="75" y="115" text-anchor="middle">Stage + verify</text><text class="t-s" x="75" y="133" text-anchor="middle">scoped files, gate</text>
+      <rect class="b-agent" x="180" y="90" width="160" height="60" rx="10"/><text class="t-b" x="260" y="115" text-anchor="middle">Stage 1</text><text class="t-s" x="260" y="133" text-anchor="middle">governance-reviewer</text>
+      <path class="arrow" d="M140,120 H176"/>
+      <rect class="b-agent" x="390" y="10" width="200" height="40" rx="8"/><text class="t" x="490" y="35" text-anchor="middle">convention-reviewer</text>
+      <rect class="b-agent" x="390" y="58" width="200" height="40" rx="8"/><text class="t" x="490" y="83" text-anchor="middle">silent-failure-reviewer</text>
+      <rect class="b-agent" x="390" y="106" width="200" height="40" rx="8"/><text class="t" x="490" y="131" text-anchor="middle">security-reviewer</text>
+      <rect class="b-agent" x="390" y="154" width="200" height="40" rx="8"/><text class="t" x="490" y="179" text-anchor="middle">supply-chain-reviewer</text>
+      <rect class="b-agent" x="390" y="202" width="200" height="40" rx="8"/><text class="t" x="490" y="227" text-anchor="middle">workflow-reviewer</text>
+      <text class="t-s" x="600" y="179">if package files change</text>
+      <text class="t-s" x="600" y="227">if workflows change</text>
+      <path class="arrow" d="M340,120 H362 V30 H386"/><path class="arrow" d="M362,78 H386"/><path class="arrow" d="M362,120 V126 H386"/><path class="arrow" d="M362,120 V174 H386"/><path class="arrow" d="M362,120 V222 H386"/>
+      <text class="t-s" x="390" y="260">Stage 2 (parallel)</text>
+      <path class="ln" d="M590,30 H730 M590,78 H730 M590,126 H730 M715,174 H730 M715,222 H730 M730,30 V222"/>
+      <rect class="box" x="760" y="40" width="210" height="56" rx="10"/><text class="t-b" x="865" y="64" text-anchor="middle">BLOCK → stop</text><text class="t-s" x="865" y="82" text-anchor="middle">FLAG → one batched decision</text>
+      <rect class="b-skill" x="760" y="130" width="210" height="56" rx="10"/><text class="t-b" x="865" y="154" text-anchor="middle">release-steps</text><text class="t-s" x="865" y="172" text-anchor="middle">commit · PR · merge · tag · Jira</text>
+      <path class="arrow" d="M730,68 H756"/>
+      <path class="arrow" d="M865,96 V126"/>
+    </svg>
+    <p class="caption">On a docs-only diff two stage-2 reviewers are skipped and convention-reviewer runs on Sonnet. Each PR gets one full review round.</p>
+  </div>
+
+  <h2>5. Planned capabilities and where they plug in</h2>
+  <div class="figure">
+    <svg viewBox="0 0 980 360" role="img" aria-labelledby="pl-title pl-desc">
+      <title id="pl-title">Planned capabilities mapped onto the existing flow</title>
+      <desc id="pl-desc">Product challenge (ESP-129) extends clarify, to-spec and approve-plan. Security audit (ESP-126) and design review (ESP-127) are new on-demand skills whose findings go to to-tickets and approve-plan. Retro (ESP-128) reads the governance log, archived plans and Jira. Orchestration (ESP-80) runs approved plans in parallel worktrees.</desc>
+      <rect class="b-skill" x="20" y="150" width="130" height="50" rx="10"/><text class="t-b" x="85" y="180" text-anchor="middle">clarify</text>
+      <rect class="b-skill" x="180" y="150" width="130" height="50" rx="10"/><text class="t-b" x="245" y="180" text-anchor="middle">to-spec</text>
+      <rect class="b-skill" x="340" y="150" width="130" height="50" rx="10"/><text class="t-b" x="405" y="180" text-anchor="middle">to-tickets</text>
+      <rect class="b-skill" x="500" y="150" width="140" height="50" rx="10"/><text class="t-b" x="570" y="180" text-anchor="middle">approve-plan</text>
+      <rect class="b-skill" x="670" y="150" width="120" height="50" rx="10"/><text class="t-b" x="730" y="180" text-anchor="middle">build + verify</text>
+      <rect class="b-skill" x="820" y="150" width="140" height="50" rx="10"/><text class="t-b" x="890" y="180" text-anchor="middle">release</text>
+      <path class="arrow" d="M150,175 H176"/><path class="arrow" d="M310,175 H336"/><path class="arrow" d="M470,175 H496"/><path class="arrow" d="M640,175 H666"/><path class="arrow" d="M790,175 H816"/>
+
+      <rect class="b-new" x="20" y="20" width="620" height="70" rx="10"/>
+      <text class="t-b" x="40" y="46">ESP-129 Product challenge</text>
+      <text class="t-s" x="40" y="66">premise check (clarify) · alternatives with effort (to-spec) · scope mode by rule (approve-plan)</text>
+      <path class="arrow" d="M85,90 V146"/><path class="arrow" d="M245,90 V146"/><path class="arrow" d="M570,90 V146"/>
+
+      <rect class="b-new" x="670" y="20" width="290" height="70" rx="10"/>
+      <text class="t-b" x="690" y="46">ESP-80 Orchestration</text>
+      <text class="t-s" x="690" y="66">parallel worktree streams · runner · dashboard</text>
+      <path class="arrow" d="M730,90 V146"/>
+
+      <rect class="b-new" x="20" y="260" width="300" height="80" rx="10"/>
+      <text class="t-b" x="40" y="286">ESP-126 security-audit</text>
+      <text class="t-s" x="40" y="306">whole codebase · evidence-graded findings</text>
+      <text class="t-s" x="40" y="324">on demand, no fixes</text>
+
+      <rect class="b-new" x="340" y="260" width="300" height="80" rx="10"/>
+      <text class="t-b" x="360" y="286">ESP-127 design-review</text>
+      <text class="t-s" x="360" y="306">live pages · A–F grades · AI Slop Score</text>
+      <text class="t-s" x="360" y="324">on demand, no fixes</text>
+      <path class="arrow" d="M170,260 V230 H400 V204"/><path class="arrow" d="M490,260 V230 H405"/>
+      <text class="t-s" x="190" y="225">findings → tickets → plan</text>
+
+      <rect class="b-new" x="670" y="260" width="290" height="80" rx="10"/>
+      <text class="t-b" x="690" y="286">ESP-128 retro</text>
+      <text class="t-s" x="690" y="306">git + governance log + plans + Jira</text>
+      <text class="t-s" x="690" y="324">read-only, weekly</text>
+      <path class="arrow" d="M890,204 V256" stroke-dasharray="4 3"/>
+      <text class="t-s" x="896" y="236">reads history</text>
+    </svg>
+    <div class="legend"><span class="skill">Exists today</span><span class="new">Planned</span></div>
+  </div>
+
+  <h2>Skills</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Skill</th><th>Capability</th></tr></thead>
+    <tbody>
+      <tr><td><code>clarify</code></td><td>One question at a time until purpose, success, constraints and scope edges are clear; ends with an understanding note. Writes no files.</td></tr>
+      <tr><td><code>to-spec</code></td><td>Writes the understanding to <code>docs/specs/</code> with requirements R1…, acceptance criteria AC1… and open questions.</td></tr>
+      <tr><td><code>to-tickets</code></td><td>Splits an approved spec into small tickets with blockers, filed in GitHub or Jira.</td></tr>
+      <tr><td><code>approve-plan</code></td><td>Routes small or large, records the plan after a governance pre-flight, handles scope changes, archives the plan.</td></tr>
+      <tr><td><code>tdd</code></td><td>Red → green → refactor with evidence for each cycle.</td></tr>
+      <tr><td><code>debug</code></td><td>Reproduce → localize → reduce → approved fix → regression guard test.</td></tr>
+      <tr><td><code>mutation-test</code></td><td>Breaks each fix point on purpose and reports surviving mutations as missing tests.</td></tr>
+      <tr><td><code>verify</code></td><td>Runs the gate (steps, conditional steps, fake-pass check, timeouts) and checks each acceptance criterion.</td></tr>
+      <tr><td><code>release</code></td><td>Scoped staging, gate, two-stage review, conventional commit, PR, merge, tag, clean-up.</td></tr>
+      <tr><td><code>release-steps</code></td><td>The mechanical release steps in a forked subagent; returns a short summary.</td></tr>
+      <tr><td><code>setup-engineering</code></td><td>Creates <code>.claude/engineering.json</code>, checks the AGENTS.md layout, installs the CI kit after approval.</td></tr>
+      <tr><td><code>user-guide-update</code></td><td>Updates affected user-guide pages and the changelog after a user-visible change.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Planned</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Epic</th><th>Capability</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td><a href="https://usiatech.atlassian.net/browse/ESP-8">ESP-8</a></td><td>Session efficiency: scoped checks while iterating, batched approvals, gate runner reporting</td><td>Partly shipped</td></tr>
+      <tr><td><a href="https://usiatech.atlassian.net/browse/ESP-117">ESP-117</a></td><td>Plugin under 15% of session usage</td><td>P1 shipped v0.19.0</td></tr>
+      <tr><td><a href="https://usiatech.atlassian.net/browse/ESP-80">ESP-80</a></td><td>Parallel agent orchestration with governed merge and an unattended runner</td><td>Not started</td></tr>
+      <tr><td><a href="https://usiatech.atlassian.net/browse/ESP-126">ESP-126</a></td><td><code>security-audit</code>: whole-codebase threat model, scoped phases, evidence rubric, honest coverage</td><td>Not started</td></tr>
+      <tr><td><a href="https://usiatech.atlassian.net/browse/ESP-127">ESP-127</a></td><td><code>design-review</code>: 10-category visual audit, grades, AI Slop Score, regression compare</td><td>Not started</td></tr>
+      <tr><td><a href="https://usiatech.atlassian.net/browse/ESP-128">ESP-128</a></td><td><code>retro</code>: git, governance and delivery metrics, deferred-debt ledger, trends</td><td>Not started</td></tr>
+      <tr><td><a href="https://usiatech.atlassian.net/browse/ESP-129">ESP-129</a></td><td>Product challenge: premise check, alternatives, scope mode</td><td>Not started</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <footer>Snapshot for plugin v0.19.3 on 2026-11-02. This page is static; the plugin README and Jira are the source of truth.</footer>
+</main>
+</body>
+</html>

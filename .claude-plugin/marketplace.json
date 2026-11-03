@@ -1,7 +1,7 @@
 {
   "name": "usiatech",
   "owner": { "name": "Francis Amalraj" },
-  "metadata": { "description": "UsiaTech private plugin marketplace" },
+  "metadata": { "description": "UsiaTech Claude Code plugin marketplace" },
   "plugins": [
     {
       "name": "usiatech-engineering",

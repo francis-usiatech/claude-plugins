@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UsiaTech Engineering Roadmap</title>
+<meta name="description" content="Roadmap for the usiatech-engineering Claude Code plugin: shipped steps, open epics and planned work, as of 2026-11-02 (v0.19.3).">
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --surface: #ffffff;
+    --surface-2: #f0efeb;
+    --text: #1d1d1b;
+    --muted: #5f5e58;
+    --line: #d9d7cf;
+    --accent: #2f5bd3;
+    --shipped: #2e7d4f;
+    --shipped-soft: #dcefe3;
+    --progress: #b26a00;
+    --progress-soft: #f7e7cc;
+    --planned: #5a5f73;
+    --planned-soft: #e4e6ee;
+    --new: #7b3fb8;
+    --new-soft: #ece1f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141413;
+      --surface: #1d1d1b;
+      --surface-2: #262623;
+      --text: #ecebe6;
+      --muted: #a9a79e;
+      --line: #3a3934;
+      --accent: #8aa8ff;
+      --shipped: #6cc795;
+      --shipped-soft: #1f3a2a;
+      --progress: #f0b45a;
+      --progress-soft: #3d2f17;
+      --planned: #a6abbf;
+      --planned-soft: #2b2d36;
+      --new: #c49af0;
+      --new-soft: #33264a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141413;
+    --surface: #1d1d1b;
+    --surface-2: #262623;
+    --text: #ecebe6;
+    --muted: #a9a79e;
+    --line: #3a3934;
+    --accent: #8aa8ff;
+    --shipped: #6cc795;
+    --shipped-soft: #1f3a2a;
+    --progress: #f0b45a;
+    --progress-soft: #3d2f17;
+    --planned: #a6abbf;
+    --planned-soft: #2b2d36;
+    --new: #c49af0;
+    --new-soft: #33264a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1040px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 8px; }
+  h2 { font-size: 1.35rem; margin: 48px 0 8px; }
+  p.lede { color: var(--muted); margin: 0 0 24px; max-width: 70ch; }
+  a { color: var(--accent); }
+  code { font: 0.9em ui-monospace, "Cascadia Code", Consolas, monospace; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+  .figure { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; overflow-x: auto; }
+  .figure svg { display: block; width: 100%; min-width: 640px; height: auto; }
+  .caption { color: var(--muted); font-size: 0.9rem; margin: 8px 0 0; }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 12px 0 0; font-size: 0.9rem; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+  .legend .shipped::before { background: var(--shipped); }
+  .legend .progress::before { background: var(--progress); }
+  .legend .planned::before { background: var(--planned); }
+  .legend .new::before { background: var(--new); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 0 0 8px; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .stat b { display: block; font-size: 1.6rem; line-height: 1.1; }
+  .stat span { color: var(--muted); font-size: 0.9rem; }
+  table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; font-size: 0.95rem; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--surface-2); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  .table-wrap { overflow-x: auto; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
+  .pill.shipped { background: var(--shipped-soft); color: var(--shipped); }
+  .pill.progress { background: var(--progress-soft); color: var(--progress); }
+  .pill.planned { background: var(--planned-soft); color: var(--planned); }
+  footer { color: var(--muted); font-size: 0.85rem; margin-top: 48px; }
+  /* SVG classes */
+  .t { fill: var(--text); font: 13px system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .t-s { fill: var(--muted); font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .t-b { fill: var(--text); font: 600 13px system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .ln { stroke: var(--line); stroke-width: 1.5; fill: none; }
+  .arrow { stroke: var(--muted); stroke-width: 1.5; fill: none; marker-end: url(#arr); }
+  .box { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.2; }
+  .b-shipped { fill: var(--shipped-soft); stroke: var(--shipped); stroke-width: 1.4; }
+  .b-progress { fill: var(--progress-soft); stroke: var(--progress); stroke-width: 1.4; }
+  .b-planned { fill: var(--planned-soft); stroke: var(--planned); stroke-width: 1.4; }
+  .b-new { fill: var(--new-soft); stroke: var(--new); stroke-width: 1.4; stroke-dasharray: 5 3; }
+  .f-shipped { fill: var(--shipped); }
+  .f-progress { fill: var(--progress); }
+  .f-planned { fill: var(--planned); }
+  .f-new { fill: var(--new); }
+  .head { fill: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>UsiaTech Engineering roadmap</h1>
+  <p class="lede">Where the <code>usiatech-engineering</code> Claude Code plugin has been and where it is going. Status as of 2026-11-02, plugin v0.19.3. Work is tracked in Jira project ESP. The text version is <a href="roadmap.md">roadmap.md</a>; what the plugin does today is in <a href="capabilities.html">capabilities.html</a>.</p>
+
+  <div class="stats">
+    <div class="stat"><b>9</b><span>steps shipped (1–4.4, 4.6)</span></div>
+    <div class="stat"><b>4</b><span>in progress (4.5, 4.7, 4.8, 4.9)</span></div>
+    <div class="stat"><b>4</b><span>planned steps (5–8)</span></div>
+    <div class="stat"><b>8</b><span>Jira epics</span></div>
+    <div class="stat"><b>47</b><span>open epic children</span></div>
+  </div>
+
+  <h2>1. Step timeline</h2>
+  <div class="figure">
+    <svg viewBox="0 0 980 496" role="img" aria-labelledby="tl-title tl-desc">
+      <title id="tl-title">Roadmap step timeline</title>
+      <desc id="tl-desc">Steps 1 to 4.9 by plugin version, then planned steps 5 to 8. Steps 1 to 4.4 and 4.6 shipped between v0.5 and v0.16; 4.5, 4.7, 4.8 and 4.9 are partly shipped and still in progress; 5 to 8 are not started.</desc>
+      <!-- version axis -->
+      <line class="ln" x1="200" y1="30" x2="960" y2="30"/>
+      <text class="t-s" x="200" y="20">v0.5</text>
+      <text class="t-s" x="340" y="20">v0.8</text>
+      <text class="t-s" x="470" y="20">v0.10</text>
+      <text class="t-s" x="600" y="20">v0.14</text>
+      <text class="t-s" x="720" y="20">v0.17</text>
+      <text class="t-s" x="820" y="20">v0.19.3</text>
+      <text class="t-s" x="900" y="20">next</text>
+      <!-- rows: label at x=10, bar from version positions -->
+      <g>
+        <text class="t" x="10" y="58">1 Hardening</text>
+        <rect class="b-shipped" x="200" y="46" width="40" height="16" rx="4"/>
+        <text class="t" x="10" y="84">2 Test-first, review depth</text>
+        <rect class="b-shipped" x="240" y="72" width="40" height="16" rx="4"/>
+        <text class="t" x="10" y="110">3 Clarify → spec → tickets</text>
+        <rect class="b-shipped" x="280" y="98" width="40" height="16" rx="4"/>
+        <text class="t" x="10" y="136">4 Security, supply chain</text>
+        <rect class="b-shipped" x="320" y="124" width="50" height="16" rx="4"/>
+        <text class="t" x="10" y="162">4.1 Hardening follow-ups</text>
+        <rect class="b-shipped" x="370" y="150" width="30" height="16" rx="4"/>
+        <text class="t" x="10" y="188">4.2 Fake-pass, mutation</text>
+        <rect class="b-shipped" x="400" y="176" width="40" height="16" rx="4"/>
+        <text class="t" x="10" y="214">4.3 Guard gaps (ESP-2)</text>
+        <rect class="b-shipped" x="440" y="202" width="40" height="16" rx="4"/>
+        <text class="t" x="10" y="240">4.4 Plan edits, config</text>
+        <rect class="b-shipped" x="480" y="228" width="110" height="16" rx="4"/>
+        <text class="t" x="10" y="266">4.5 Efficiency (ESP-8)</text>
+        <rect class="b-shipped" x="590" y="254" width="50" height="16" rx="4"/>
+        <rect class="b-progress" x="640" y="254" width="300" height="16" rx="4"/>
+        <text class="t" x="10" y="292">4.6 Jira tracker</text>
+        <rect class="b-shipped" x="640" y="280" width="60" height="16" rx="4"/>
+        <text class="t" x="10" y="318">4.7 Delivery speed-up</text>
+        <rect class="b-shipped" x="700" y="306" width="70" height="16" rx="4"/>
+        <rect class="b-progress" x="770" y="306" width="170" height="16" rx="4"/>
+        <text class="t" x="10" y="344">4.8 Audit fixes (ESP-105 open)</text>
+        <rect class="b-shipped" x="760" y="332" width="100" height="16" rx="4"/>
+        <rect class="b-progress" x="860" y="332" width="80" height="16" rx="4"/>
+        <text class="t" x="10" y="370">4.9 Usage cut (ESP-117)</text>
+        <rect class="b-shipped" x="810" y="358" width="30" height="16" rx="4"/>
+        <rect class="b-progress" x="840" y="358" width="100" height="16" rx="4"/>
+        <text class="t" x="10" y="396">5 Delivery, operations</text>
+        <rect class="b-planned" x="880" y="384" width="60" height="16" rx="4"/>
+        <text class="t" x="10" y="422">6 Plugin health</text>
+        <rect class="b-planned" x="880" y="410" width="60" height="16" rx="4"/>
+        <text class="t" x="10" y="448">7 Orchestration (ESP-80)</text>
+        <rect class="b-planned" x="880" y="436" width="60" height="16" rx="4"/>
+        <text class="t" x="10" y="474">8 gstack ideas (ESP-126–129)</text>
+        <rect class="b-new" x="880" y="462" width="60" height="16" rx="4"/>
+      </g>
+      <line class="ln" x1="862" y1="36" x2="862" y2="486" stroke-dasharray="3 4"/>
+      <text class="t-s" x="866" y="490">today</text>
+    </svg>
+    <div class="legend"><span class="shipped">Shipped</span><span class="progress">In progress</span><span class="planned">Planned</span><span class="new">Filed 2026-11-02</span></div>
+  </div>
+  <p class="caption">Bar positions are approximate: one column per group of releases, not to scale in time.</p>
+
+  <h2>2. Epics and their open work</h2>
+  <div class="figure">
+    <svg viewBox="0 0 980 400" role="img" aria-labelledby="ep-title ep-desc">
+      <title id="ep-title">Jira epics with open child counts</title>
+      <desc id="ep-desc">Eight ESP epics as horizontal bars, length equal to open child tickets. ESP-80 has 20, ESP-8 has 10, ESP-126 and ESP-128 have 4 each, ESP-127, ESP-129 and ESP-2 have 3 each, ESP-117 is in progress pending a re-measure.</desc>
+      <text class="t-s" x="330" y="20">open children →</text>
+      <g>
+        <text class="t-b" x="10" y="52">ESP-80</text><text class="t-s" x="80" y="52">Orchestration · step 7</text>
+        <rect class="f-planned" x="330" y="40" width="600" height="18" rx="4"/><text class="t" x="938" y="54">20</text>
+
+        <text class="t-b" x="10" y="92">ESP-8</text><text class="t-s" x="80" y="92">Session efficiency · 4.5</text>
+        <rect class="f-progress" x="330" y="80" width="300" height="18" rx="4"/><text class="t" x="638" y="94">10</text>
+
+        <text class="t-b" x="10" y="132">ESP-126</text><text class="t-s" x="80" y="132">Security audit · B29</text>
+        <rect class="f-new" x="330" y="120" width="120" height="18" rx="4"/><text class="t" x="458" y="134">4</text>
+
+        <text class="t-b" x="10" y="172">ESP-128</text><text class="t-s" x="80" y="172">Retro · B31</text>
+        <rect class="f-new" x="330" y="160" width="120" height="18" rx="4"/><text class="t" x="458" y="174">4</text>
+
+        <text class="t-b" x="10" y="212">ESP-127</text><text class="t-s" x="80" y="212">Design review · B30</text>
+        <rect class="f-new" x="330" y="200" width="90" height="18" rx="4"/><text class="t" x="428" y="214">3</text>
+
+        <text class="t-b" x="10" y="252">ESP-129</text><text class="t-s" x="80" y="252">Product challenge · B32</text>
+        <rect class="f-new" x="330" y="240" width="90" height="18" rx="4"/><text class="t" x="428" y="254">3</text>
+
+        <text class="t-b" x="10" y="292">ESP-2</text><text class="t-s" x="80" y="292">Workflow checks · 4.3</text>
+        <rect class="f-shipped" x="330" y="280" width="90" height="18" rx="4"/><text class="t" x="428" y="294">3 follow-ups (epic released)</text>
+
+        <text class="t-b" x="10" y="332">ESP-117</text><text class="t-s" x="80" y="332">Usage reduction · 4.9</text>
+        <rect class="b-progress" x="330" y="320" width="12" height="18" rx="4"/><text class="t" x="350" y="334">P1 shipped v0.19.0; re-measure pending</text>
+      </g>
+      <line class="ln" x1="330" y1="360" x2="930" y2="360"/>
+      <text class="t-s" x="330" y="378">0</text><text class="t-s" x="472" y="378">5</text><text class="t-s" x="622" y="378">10</text><text class="t-s" x="772" y="378">15</text><text class="t-s" x="918" y="378">20</text>
+    </svg>
+  </div>
+
+  <h2>3. Planning flow with the product challenge (ESP-129)</h2>
+  <div class="figure">
+    <svg viewBox="0 0 980 300" role="img" aria-labelledby="pf-title pf-desc">
+      <title id="pf-title">Large-route planning flow with planned product-challenge steps</title>
+      <desc id="pf-desc">clarify gains a premise check (ESP-141), to-spec gains alternatives with effort (ESP-142), approve-plan gains a scope mode recommendation (ESP-143). The small route skips all three.</desc>
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+      <rect class="box" x="10" y="110" width="120" height="56" rx="10"/>
+      <text class="t-b" x="70" y="135" text-anchor="middle">Request</text>
+      <text class="t-s" x="70" y="153" text-anchor="middle">user's framing</text>
+
+      <rect class="b-shipped" x="180" y="110" width="150" height="56" rx="10"/>
+      <text class="t-b" x="255" y="135" text-anchor="middle">clarify</text>
+      <text class="t-s" x="255" y="153" text-anchor="middle">understanding note</text>
+
+      <rect class="b-shipped" x="380" y="110" width="150" height="56" rx="10"/>
+      <text class="t-b" x="455" y="135" text-anchor="middle">to-spec</text>
+      <text class="t-s" x="455" y="153" text-anchor="middle">R1… AC1…</text>
+
+      <rect class="b-shipped" x="580" y="110" width="150" height="56" rx="10"/>
+      <text class="t-b" x="655" y="135" text-anchor="middle">to-tickets</text>
+      <text class="t-s" x="655" y="153" text-anchor="middle">Jira / GitHub</text>
+
+      <rect class="b-shipped" x="780" y="110" width="180" height="56" rx="10"/>
+      <text class="t-b" x="870" y="135" text-anchor="middle">approve-plan</text>
+      <text class="t-s" x="870" y="153" text-anchor="middle">plan + pre-flight</text>
+
+      <path class="arrow" d="M130,138 H176"/>
+      <path class="arrow" d="M330,138 H376"/>
+      <path class="arrow" d="M530,138 H576"/>
+      <path class="arrow" d="M730,138 H776"/>
+
+      <rect class="b-new" x="170" y="20" width="170" height="62" rx="10"/>
+      <text class="t-b" x="255" y="44" text-anchor="middle">Premise check</text>
+      <text class="t-s" x="255" y="62" text-anchor="middle">real problem · do-nothing cost</text>
+      <text class="t-s" x="255" y="76" text-anchor="middle">ESP-141</text>
+      <path class="arrow" d="M255,82 V106"/>
+
+      <rect class="b-new" x="370" y="20" width="170" height="62" rx="10"/>
+      <text class="t-b" x="455" y="44" text-anchor="middle">Alternatives</text>
+      <text class="t-s" x="455" y="62" text-anchor="middle">2–3 options with effort</text>
+      <text class="t-s" x="455" y="76" text-anchor="middle">ESP-142</text>
+      <path class="arrow" d="M455,82 V106"/>
+
+      <rect class="b-new" x="785" y="20" width="170" height="62" rx="10"/>
+      <text class="t-b" x="870" y="44" text-anchor="middle">Scope mode</text>
+      <text class="t-s" x="870" y="62" text-anchor="middle">expand · selective · hold · reduce</text>
+      <text class="t-s" x="870" y="76" text-anchor="middle">ESP-143</text>
+      <path class="arrow" d="M870,82 V106"/>
+
+      <path class="arrow" d="M70,166 V240 H866 V170" stroke-dasharray="5 4"/>
+      <text class="t-s" x="380" y="260">Small route (cited requirement, ≤ 5 files, no new skill or interface) skips the large-route steps</text>
+    </svg>
+    <div class="legend"><span class="shipped">Exists today</span><span class="new">Planned (ESP-129)</span></div>
+  </div>
+
+  <h2>4. Orchestration architecture (ESP-80)</h2>
+  <div class="figure">
+    <svg viewBox="0 0 980 380" role="img" aria-labelledby="or-title or-desc">
+      <title id="or-title">Planned parallel agent orchestration</title>
+      <desc id="or-desc">A runner CLI reads Epics from Jira and starts one parent agent per feature. Each parent splits its plan into streams in separate worktrees, then merges them through the verify gate. A progress store feeds a dashboard. Human gates pause a ticket.</desc>
+      <rect class="b-planned" x="20" y="20" width="200" height="70" rx="10"/>
+      <text class="t-b" x="120" y="48" text-anchor="middle">Jira epics</text>
+      <text class="t-s" x="120" y="68" text-anchor="middle">feature queue · ESP-94</text>
+
+      <rect class="b-planned" x="290" y="20" width="400" height="70" rx="10"/>
+      <text class="t-b" x="490" y="44" text-anchor="middle">Runner CLI · ESP-93</text>
+      <text class="t-s" x="490" y="62" text-anchor="middle">lifecycle + limit waits ESP-95 · admission ESP-96 · kill switch ESP-97</text>
+      <text class="t-s" x="490" y="78" text-anchor="middle">decision gates ESP-99 · metrics + diffs ESP-98</text>
+
+      <rect class="b-planned" x="760" y="20" width="200" height="70" rx="10"/>
+      <text class="t-b" x="860" y="48" text-anchor="middle">Dashboard · ESP-89</text>
+      <text class="t-s" x="860" y="68" text-anchor="middle">progress store ESP-87 / 90</text>
+
+      <path class="arrow" d="M220,55 H286"/>
+      <path class="arrow" d="M690,55 H756"/>
+
+      <rect class="box" x="70" y="140" width="380" height="200" rx="12"/>
+      <text class="t-b" x="90" y="164">Parent agent: feature A</text>
+      <text class="t-s" x="90" y="182">orchestrate ESP-84 · roles ESP-86 · handoff ESP-83</text>
+      <rect class="b-planned" x="90" y="198" width="100" height="54" rx="8"/><text class="t" x="140" y="222" text-anchor="middle">stream 1</text><text class="t-s" x="140" y="240" text-anchor="middle">worktree</text>
+      <rect class="b-planned" x="210" y="198" width="100" height="54" rx="8"/><text class="t" x="260" y="222" text-anchor="middle">stream 2</text><text class="t-s" x="260" y="240" text-anchor="middle">worktree</text>
+      <rect class="b-planned" x="330" y="198" width="100" height="54" rx="8"/><text class="t" x="380" y="222" text-anchor="middle">stream 3</text><text class="t-s" x="380" y="240" text-anchor="middle">worktree</text>
+      <rect class="b-shipped" x="150" y="276" width="220" height="48" rx="8"/><text class="t-b" x="260" y="298" text-anchor="middle">Merge + verify gate</text><text class="t-s" x="260" y="314" text-anchor="middle">ESP-88 · reviewers · governance log</text>
+      <path class="arrow" d="M140,252 V272 H160"/><path class="arrow" d="M260,252 V272"/><path class="arrow" d="M380,252 V272 H360"/>
+
+      <rect class="box" x="530" y="140" width="380" height="200" rx="12"/>
+      <text class="t-b" x="550" y="164">Parent agent: feature B</text>
+      <text class="t-s" x="550" y="182">same shape, runs in parallel</text>
+      <rect class="b-planned" x="550" y="198" width="160" height="54" rx="8"/><text class="t" x="630" y="222" text-anchor="middle">stream 1</text><text class="t-s" x="630" y="240" text-anchor="middle">worktree</text>
+      <rect class="b-planned" x="730" y="198" width="160" height="54" rx="8"/><text class="t" x="810" y="222" text-anchor="middle">stream 2</text><text class="t-s" x="810" y="240" text-anchor="middle">worktree</text>
+      <rect class="b-shipped" x="610" y="276" width="220" height="48" rx="8"/><text class="t-b" x="720" y="298" text-anchor="middle">Merge + verify gate</text><text class="t-s" x="720" y="314" text-anchor="middle">human gates pause the ticket</text>
+      <path class="arrow" d="M630,252 V272 H650"/><path class="arrow" d="M810,252 V272 H790"/>
+
+      <path class="arrow" d="M400,90 V136"/>
+      <path class="arrow" d="M600,90 V136"/>
+    </svg>
+    <div class="legend"><span class="shipped">Existing governance reused</span><span class="planned">Planned</span></div>
+  </div>
+
+  <h2>Steps</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Step</th><th>Theme</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Hardening (A1–A5, A11, A12)</td><td><span class="pill shipped">Shipped v0.5.0</span></td></tr>
+      <tr><td>2</td><td>Test-first and review depth (B4, B5, B7, B8, A8, A9)</td><td><span class="pill shipped">Shipped v0.6.0</span></td></tr>
+      <tr><td>3</td><td>Clarify → spec → tickets → plan → approve (B1, B2, B3, A10)</td><td><span class="pill shipped">Shipped v0.7.0</span></td></tr>
+      <tr><td>4</td><td>Security and supply chain (B9, B10)</td><td><span class="pill shipped">Shipped v0.8.0</span></td></tr>
+      <tr><td>4.1</td><td>Hardening follow-ups</td><td><span class="pill shipped">Shipped v0.8.1</span></td></tr>
+      <tr><td>4.2</td><td>Fake-pass checks and mutation testing (A6, B26)</td><td><span class="pill shipped">Shipped v0.9.0</span></td></tr>
+      <tr><td>4.3</td><td>Guard enforcement gaps (ESP-2)</td><td><span class="pill shipped">Shipped v0.10.0</span></td></tr>
+      <tr><td>4.4</td><td>Plan edits and config validation (ESP-21, ESP-22, ESP-12, ESP-35)</td><td><span class="pill shipped">Shipped v0.10.1–v0.13.0</span></td></tr>
+      <tr><td>4.5</td><td>Session efficiency (ESP-8)</td><td><span class="pill progress">Partly shipped v0.14–v0.15</span></td></tr>
+      <tr><td>4.6</td><td>Jira as the ticket tracker (ESP-27)</td><td><span class="pill shipped">Shipped v0.16.0–v0.16.1</span></td></tr>
+      <tr><td>4.7</td><td>Delivery speed-up (ESP-63)</td><td><span class="pill progress">In progress, v0.17–v0.18.1</span></td></tr>
+      <tr><td>4.8</td><td>Audit fixes (ESP-76, ESP-105–115, ESP-124, ESP-125)</td><td><span class="pill progress">Mostly shipped v0.18.2–v0.19.3; ESP-105 open</span></td></tr>
+      <tr><td>4.9</td><td>Plugin usage reduction (ESP-117)</td><td><span class="pill progress">P1 shipped v0.19.0</span></td></tr>
+      <tr><td>5</td><td>Delivery and operations (B13–B19; B15 and B16 have no ticket yet)</td><td><span class="pill planned">Not started</span></td></tr>
+      <tr><td>6</td><td>Plugin health (B20–B25)</td><td><span class="pill planned">Not started</span></td></tr>
+      <tr><td>7</td><td>Parallel agent orchestration (ESP-80, B11, B12)</td><td><span class="pill planned">Not started</span></td></tr>
+      <tr><td>8</td><td>Ideas adopted from gstack (ESP-126–129, B29–B32)</td><td><span class="pill planned">Not started</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Step 8 stories</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Epic</th><th>Stories</th></tr></thead>
+    <tbody>
+      <tr><td><a href="https://usiatech.atlassian.net/browse/ESP-126">ESP-126</a> Security audit</td><td>ESP-130 application model and attack surface · ESP-131 scoped phases · ESP-132 evidence rubric and independent challenge · ESP-133 honest report, tickets, recheck</td></tr>
+      <tr><td><a href="https://usiatech.atlassian.net/browse/ESP-127">ESP-127</a> Design review</td><td>ESP-134 10-category audit of live pages · ESP-135 A–F grades and AI Slop Score · ESP-136 baseline, regression, diff-aware</td></tr>
+      <tr><td><a href="https://usiatech.atlassian.net/browse/ESP-128">ESP-128</a> Retro</td><td>ESP-137 git metrics · ESP-138 governance and delivery metrics · ESP-139 deferred-debt ledger · ESP-140 history and cross-repo</td></tr>
+      <tr><td><a href="https://usiatech.atlassian.net/browse/ESP-129">ESP-129</a> Product challenge</td><td>ESP-141 premise check · ESP-142 alternatives with effort · ESP-143 scope mode by rule</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <footer>Snapshot of Jira project ESP on 2026-11-02. This page is static; Jira is the source of truth for status.</footer>
+</main>
+</body>
+</html>
