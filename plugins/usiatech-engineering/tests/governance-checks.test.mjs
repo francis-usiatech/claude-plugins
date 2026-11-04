@@ -1,4 +1,4 @@
-import { describe, it, after } from 'node:test'
+import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
@@ -465,12 +465,22 @@ describe('governance-checks: dependency content with stub lookups (R1–R6, R13;
     }
   })
 
-  it('should fail closed when a lookup misses the deadline', { timeout: 5000 }, async () => {
-    const repo = makeRepo({ headFiles: { 'package.json': manifest({ 'left-pad': '1.3.0' }) } })
-    const never = () => new Promise(() => {})
-    const r = await runGovernanceChecks({ env: env(), lookups: { registry: never, advisories: never }, lookupDeadlineMs: 50, cwd: repo, govRoot: path.resolve(makeGovTree(noAsk), '..', '..') })
-    assert.equal(r.exitCode, 1)
-    assert.match(r.report, /lookup unavailable: registry .*timed out after 50 ms/)
+  describe('lookup deadline', () => {
+    let repo
+    let govRoot
+    // Set-up runs here because a test's timeout doesn't cover its hooks. makeRepo takes seconds on a busy machine, and
+    // inside the test it used up the limit with nothing wrong (ESP-146).
+    before(() => {
+      repo = makeRepo({ headFiles: { 'package.json': manifest({ 'left-pad': '1.3.0' }) } })
+      govRoot = path.resolve(makeGovTree(noAsk), '..', '..')
+    })
+
+    it('should fail closed when a lookup misses the deadline', { timeout: 5000 }, async () => {
+      const never = () => new Promise(() => {})
+      const r = await runGovernanceChecks({ env: env(), lookups: { registry: never, advisories: never }, lookupDeadlineMs: 50, cwd: repo, govRoot })
+      assert.equal(r.exitCode, 1)
+      assert.match(r.report, /lookup unavailable: registry .*timed out after 50 ms/)
+    })
   })
 
   it('should look up the exact lockfile version when the manifest and lockfile change together, without a drift warning', async () => {
