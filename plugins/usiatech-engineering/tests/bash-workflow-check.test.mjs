@@ -18,8 +18,19 @@ const readLog = (root) => {
   const f = path.join(root, '.claude', 'governance-log.jsonl')
   return existsSync(f) ? readFileSync(f, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []
 }
+// Claude Code's Bash tool runs Git Bash on Windows; `bash` on PATH may be WSL, which can't read C:/ paths.
+// A Git install without bin/bash.exe, such as MinGit, falls back to `bash` on PATH and can still hit that.
+const gitBash = () => {
+  const found = path.resolve(git(process.cwd(), '--exec-path'), '../../../bin/bash.exe')
+  return existsSync(found) ? found : 'bash'
+}
+const BASH = process.platform === 'win32' ? gitBash() : 'bash'
 const sh = (root, command) => {
-  try { execFileSync('bash', ['-c', command], { cwd: root, stdio: 'pipe' }); return 0 } catch (e) { return e.status ?? 1 }
+  try { execFileSync(BASH, ['-c', command], { cwd: root, stdio: 'pipe' }); return 0 } catch (e) {
+    // No shell to start is not a command failure: expectFail callers would pass without running anything.
+    if (e.code === 'ENOENT') throw e
+    return e.status ?? 1
+  }
 }
 
 // Runs one Bash call the way Claude Code does: guard (PreToolUse), the command, then the after-Bash hook.

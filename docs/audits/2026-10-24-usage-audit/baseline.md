@@ -9,7 +9,7 @@ node docs/audits/2026-10-24-usage-audit/window.cjs <from YYYY-MM-DD> <to YYYY-MM
 
 Pass every folder of one project together (for waypointcareer, the main folder and each `--claude-worktrees-*` folder). Days are local time and `to` is exclusive. A session counts whole when any of its records falls in the week.
 
-The scripts now report dollars at each call's model (see [Scripts updated](#scripts-updated-esp-144-run-2026-11-03)). The two sections before that one were measured with the earlier scripts: cost-weighted tokens at Opus price ratios (cache read 0.1, 5m cache write 1.25, 1h cache write 2, output 5), with `FROM`/`TO` set in the file. Compare later runs with the new section, not with those.
+The scripts now report dollars at each call's model (see [Scripts updated](#scripts-updated-esp-144-run-2026-11-03)). The two sections before that one were measured with the earlier scripts: cost-weighted tokens at Opus price ratios (cache read 0.1, 5m cache write 1.25, 1h cache write 2, output 5), with `FROM`/`TO` set in the file. Compare later runs with the new section, not with those, and compare plugin share with [Plugin share without fixing work](#plugin-share-without-fixing-work-esp-144-run-2026-11-03), since the formula changed again.
 
 ## Numbers (run 2026-10-25)
 
@@ -132,3 +132,19 @@ Weighted units, as on the ticket, to compare with its numbers.
 No plugin text was changed for this. The only plugin-owned fix available is the agent files' 170 tokens, too small to matter.
 
 Separately, `usage.cjs` shows forks starting far larger than reviewers: `release-steps` first-call context averages 60k in heiit and 88k in waypointcareer, against about 25k and 29k for reviewers. This was not looked into.
+
+## Plugin share without fixing work (ESP-144, run 2026-11-03)
+
+Francis decided on 2026-11-03 that fixing review findings inside the `release` window isn't plugin overhead (ESP-144 AC5, recorded on ESP-117). `usage.cjs` now prints plugin share as `release` overhead + `verify` window + reviewers + forks. Writes under `.claude/projects` and `.claude/session-data`, such as memory and session files, now count as overhead rather than fixing, since they aren't repo work. The sections above keep the formula and split they were measured with.
+
+| Measure | heiit before | heiit after | waypointcareer before | waypointcareer after | Both before | Both after |
+| --- | --- | --- | --- | --- | --- | --- |
+| Plugin share with fixing work | 32.4% | 25.5% | 16.2% | 20.1% | 27.7% | 23.8% |
+| Fixing work | 3.2% | 1.0% | 0.4% | 1.0% | 2.4% | 1.0% |
+| **Plugin share without fixing work** | **29.2%** | **24.4%** | **15.8%** | **19.1%** | **25.3%** | **22.8%** |
+
+Weeks are as in [Scripts updated](#scripts-updated-esp-144-run-2026-11-03).
+
+- **The drop shrinks.** Across both repos it is now 2.5 points, not 3.9, because fixing work fell between the weeks (2.4% to 1.0% of total).
+- **The share now rests on an estimate.** The split errs both ways, as [Release window split](#release-window-split) says, and that error now feeds plugin share.
+- **Forks:** the "after" week's forks ran on Opus, so this doesn't yet show `release-steps` on Sonnet; ESP-144 AC6 measures that.

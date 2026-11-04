@@ -7,7 +7,8 @@ const args = parseArgs('usage.cjs')
 const isUsia = s => /usiatech/i.test(s || '')
 const isFork = s => /\(fork\)$/.test(s)
 // The release flow itself writes commit message and PR body files to the scratchpad and edits the plan; that isn't fixing.
-const RELEASE_FLOW_PATH = /[\\/](temp|tmp)[\\/]|scratchpad|\.claude[\\/]plans/i
+// Neither are memory and session files, which sit outside the repo under ~/.claude.
+const RELEASE_FLOW_PATH = /[\\/](temp|tmp)[\\/]|scratchpad|\.claude[\\/](plans|projects|session-data)/i
 const isFixing = c => ['Edit', 'Write'].includes(c.name) && !RELEASE_FLOW_PATH.test(c.input?.file_path || '')
 
 const unpriced = {}
@@ -79,11 +80,12 @@ const pct = x => (tot.all ? 100 * x / tot.all : 0).toFixed(1) + '%'
 const dollars = x => '$' + x.toFixed(2)
 const subCost = test => Object.entries(subByType).filter(([k]) => test(k)).reduce((s, [, v]) => s + v.cost, 0)
 const usiaSub = subCost(isUsia), forks = subCost(isFork)
-const pluginShare = (win.release || 0) + (win.verify || 0) + usiaSub + forks
+// Fixing review findings is real work, not plugin overhead (ESP-117, 2026-11-03).
+const pluginShare = releaseSplit.overhead + (win.verify || 0) + usiaSub + forks
 console.log('sessions', sessions, 'total', dollars(tot.all), 'main', pct(tot.main), 'sub', pct(tot.sub))
-console.log('plugin share (release + verify + reviewers + forks):', pct(pluginShare), dollars(pluginShare))
+console.log('plugin share (release overhead + verify + reviewers + forks):', pct(pluginShare), dollars(pluginShare))
 console.log('release window: fixing work', pct(releaseSplit.fixing), dollars(releaseSplit.fixing) + ', overhead', pct(releaseSplit.overhead), dollars(releaseSplit.overhead))
-console.log('  a release-window call is fixing work when it has an Edit or Write tool use outside temp folders and .claude/plans; reads between edits fall in overhead')
+console.log('  a release-window call is fixing work when it has an Edit or Write tool use outside temp folders and .claude/plans, projects and session-data; reads between edits fall in overhead')
 console.log('\nSubagents by type, forks under their skill (count, cost share, avg first-call context tokens):')
 Object.entries(subByType).sort((a, b) => b[1].cost - a[1].cost).forEach(([k, v]) => console.log(' ', k, v.n, pct(v.cost), Math.round(v.firstCtx / v.n)))
 console.log('\nusiatech subagents total', pct(usiaSub), ' forks total', pct(forks))

@@ -168,10 +168,10 @@ describe('usage.cjs', () => {
     assert.match(r.stdout, /usiatech-engineering:verify 1 /)
   })
 
-  it('should print a plugin share of release, verify, reviewers and forks', () => {
+  it('should print a plugin share of release overhead, verify, reviewers and forks', () => {
     const r = run('usage.cjs', [FROM, TO, usageFixture()])
     assert.match(r.stdout, /sessions 1 total \$100\.00/)
-    assert.match(r.stdout, /plugin share \(release \+ verify \+ reviewers \+ forks\): 50\.0% \$50\.00/)
+    assert.match(r.stdout, /plugin share \(release overhead \+ verify \+ reviewers \+ forks\): 30\.0% \$30\.00/)
   })
 
   it('should split the release window, counting an Edit in a later record of the call', () => {
@@ -188,6 +188,19 @@ describe('usage.cjs', () => {
       write('w1', 'C:\\Users\\me\\AppData\\Local\\Temp\\claude\\x\\commit-msg.txt'),
       write('w2', '/home/me/.claude/plans/active.md'),
       write('w3', 'C:\\repo\\.claude\\plans\\archive\\done.md'),
+      write('w4', 'C:\\repo\\src\\fixed.js'),
+    ]) })
+    assert.match(run('usage.cjs', [FROM, TO, root]).stdout, /release window: fixing work 25\.0% \$4\.00, overhead 75\.0% \$12\.00/)
+  })
+
+  it('should count writes to memory and session files as overhead', () => {
+    const root = tempDir('audit-split-nonrepo-')
+    const write = (id, file_path) => assistant(id, OPUS, { input_tokens: 1e6 }, [tool('Write', { file_path })])
+    writeFiles(root, { 's.jsonl': jsonl([
+      skillText('release'),
+      write('w1', 'C:\\Users\\me\\.claude\\projects\\C--repo\\memory\\note.md'),
+      write('w2', '/home/me/.claude/projects/repo/memory/MEMORY.md'),
+      write('w3', 'C:\\Users\\me\\.claude\\session-data\\2026-11-03-session.tmp'),
       write('w4', 'C:\\repo\\src\\fixed.js'),
     ]) })
     assert.match(run('usage.cjs', [FROM, TO, root]).stdout, /release window: fixing work 25\.0% \$4\.00, overhead 75\.0% \$12\.00/)
