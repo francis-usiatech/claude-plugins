@@ -760,7 +760,7 @@ describe('plugin structure: release metadata', () => {
 
   it('should keep the version bump steps in the release skill, in order (ESP-23 AC6)', () => {
     const release = body(read('skills', 'release', 'SKILL.md'))
-    const steps = [/scripts\/next-version\.mjs/, /wait for the user to confirm or override the level/, /`chore\(release\): <next>` PR into the base branch/, /Once that PR has merged, promote and tag/, /phase `release`/]
+    const steps = [/scripts\/next-version\.mjs/, /wait for the user to confirm or override the level/, /runs the `verify` gate with no reviewer round/, /`chore\(release\): <next>` PR into the base branch/, /Once that PR has merged, promote and tag/, /phase `release`/]
     let from = release.indexOf('## 3. Release')
     assert.notEqual(from, -1, 'release section')
     for (const step of steps) {
