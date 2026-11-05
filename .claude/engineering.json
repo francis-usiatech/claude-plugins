@@ -13,6 +13,24 @@
       "run": "claude plugin validate plugins/usiatech-engineering"
     }
   ],
+  "verifyIterate": [
+    {
+      "name": "gate tests",
+      "run": "node --test plugins/usiatech-engineering/tests/gate.test.mjs",
+      "when": [
+        "plugins/usiatech-engineering/skills/verify/",
+        "plugins/usiatech-engineering/tests/gate.test.mjs"
+      ]
+    },
+    {
+      "name": "plugin structure tests",
+      "run": "node --test plugins/usiatech-engineering/tests/plugin-structure.test.mjs",
+      "when": [
+        "plugins/usiatech-engineering/skills/",
+        "plugins/usiatech-engineering/tests/plugin-structure.test.mjs"
+      ]
+    }
+  ],
   "git": {
     "tagFormat": "vX.Y.Z",
     "versionFiles": [

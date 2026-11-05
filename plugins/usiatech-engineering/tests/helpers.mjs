@@ -72,9 +72,9 @@ export const makeGovTree = (config) => {
  * Runs a node script asynchronously (so an in-process HTTP stub can answer it).
  * Returns { code, stdout, stderr, summary } where summary is what the script wrote to GITHUB_STEP_SUMMARY.
  */
-export const runNode = (script, { cwd, env = {}, input } = {}) => new Promise((resolve) => {
+export const runNode = (script, { cwd, env = {}, input, args = [] } = {}) => new Promise((resolve) => {
   const summaryFile = path.join(tempDir('usiatech-summary-'), 'summary.md')
-  const child = execFile(process.execPath, [script], {
+  const child = execFile(process.execPath, [script, ...args], {
     cwd,
     env: { ...process.env, GITHUB_STEP_SUMMARY: summaryFile, CLAUDE_PROJECT_DIR: '', ...env },
     encoding: 'utf8',
