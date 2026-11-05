@@ -11,12 +11,12 @@ import { isMainModule } from '../templates/github/scripts/main-module.mjs'
 import { isPlainObject } from '../templates/github/scripts/governance-rules.mjs'
 
 export const DEFAULT_CONTEXT_TOKENS = 300000
-const SEMVER = /^(\d+)\.(\d+)\.(\d+)$/
+export const SEMVER = /^(\d+)\.(\d+)\.(\d+)$/
 // The last usage record sits near the end; reading only the tail keeps a long session's transcript cheap.
 const TAIL_BYTES = 4 * 1024 * 1024
 
 const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'))
-const compareVersions = (a, b) => {
+export const compareVersions = (a, b) => {
   const [x, y] = [a.match(SEMVER), b.match(SEMVER)]
   for (let i = 1; i <= 3; i++) if (Number(x[i]) !== Number(y[i])) return Number(x[i]) - Number(y[i])
   return 0
@@ -101,8 +101,8 @@ export const contextAdvisory = ({ projectsDir, cwd, threshold, markerDir }) => {
   return `This session's context is ${kTokens(tokens)}, above the ${kTokens(threshold)} advisory threshold. Compact, or save the session and continue in a fresh session, before the review round: every call re-reads the whole context.`
 }
 
-// The config text and a warning when it came from the working copy instead of the base branch.
-const readConfigText = (cwd) => {
+/** The config text, the base branch it was read for, and a warning when it came from the working copy instead. */
+export const readConfigText = (cwd) => {
   let base = 'develop'
   const local = path.join(cwd, '.claude', 'engineering.json')
   if (existsSync(local)) {
@@ -116,10 +116,10 @@ const readConfigText = (cwd) => {
   try {
     // --end-of-options: a base such as "--output=x" is a revision, never an option.
     const text = execFileSync('git', ['show', '--end-of-options', `${base}:.claude/engineering.json`], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-    return { text, warning: null }
+    return { text, warning: null, base }
   } catch {
-    if (!existsSync(local)) return { text: null, warning: null }
-    return { text: readFileSync(local, 'utf8'), warning: `the base branch "${base}" has no readable .claude/engineering.json; using the working copy` }
+    if (!existsSync(local)) return { text: null, warning: null, base }
+    return { text: readFileSync(local, 'utf8'), warning: `the base branch "${base}" has no readable .claude/engineering.json; using the working copy`, base }
   }
 }
 

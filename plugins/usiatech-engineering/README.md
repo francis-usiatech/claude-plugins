@@ -7,7 +7,7 @@ Shared engineering workflow **and governance** for UsiaTech repositories (Waypoi
 | Type | Name | What it does |
 |---|---|---|
 | Skill | `verify` | Runs the repo's definition-of-done gate (from `.claude/engineering.json` or AGENTS.md) and reports PASS/FAIL; checks the active plan's acceptance criteria against evidence from this session (unshown criteria warn, they don't fail the gate) |
-| Skill | `release` | Scoped staging → verify → reviewers → one conventional commit → PR → merge → `DDMMMYYYY-XX` tag → branch cleanup; the steps after the review run in `release-steps` |
+| Skill | `release` | Scoped staging → verify → reviewers → one conventional commit → PR → merge → `DDMMMYYYY-XX` or `vX.Y.Z` tag (with a semver bump PR when the repo lists `git.versionFiles`) → branch cleanup; the steps after the review run in `release-steps` |
 | Skill | `release-steps` | Called by `release`, runs in a forked subagent with no session history: commit, push and PR; merge and the Jira merged update; release-branch merge, tag, Jira released update and branch clean-up. Runs on `sonnet`, since the steps are mechanical. Returns a short summary and open decisions as a list. `verify` also runs forked; pass it evidence for criteria the repo state can't show. `verify` stays on the session model because it judges acceptance criteria |
 | Skill | `user-guide-update` | Finds and updates affected user-guide pages and the changelog |
 | Skill | `setup-engineering` | Creates `.claude/engineering.json` for a repo and checks the AGENTS.md/CLAUDE.md layout |
@@ -47,7 +47,7 @@ Start from `templates/engineering.json` (or run the `setup-engineering` skill).
 |---|---|
 | `verify` | Commands always run by `verify`, in order. A step may carry `"timeoutMs"` (see "Gate runner"; default 10 minutes) |
 | `verifyConditional` | Extra commands run only when changed files start with a `when` prefix |
-| `git` | Base/release branch, tag format, commit style |
+| `git` | Base/release branch, tag format (`tagFormat`), commit style, and the semver bump keys `versionFiles` and `changelogFile` (see "Semver bump") |
 | `protectedPaths` | Globs the agent may never edit |
 | `immutableWhenCommitted` | Globs editable only until committed (e.g. migrations) |
 | `allowEnvExample` | Allow edits to `.env.example` (default `true`) |
@@ -327,11 +327,31 @@ Tests use Node's built-in runner and have no dependencies. From the marketplace 
 ## Requirements
 Node ≥ 20 on the machine running Claude Code (used by the hook). Git.
 
+## Semver bump
+A repo opts in by listing its version files in `.claude/engineering.json`, on the base branch. Repos that don't list them keep their tag format and get no bump.
+
+- `git.versionFiles`: the files that hold the version. Each must contain the last tag's version, so don't list a file whose history keeps old versions.
+- `git.changelogFile` (optional): the file that gets a new row for each release.
+- `git.tagFormat`: must be `vX.Y.Z` when `git.versionFiles` is set.
+
+Every release bumps the version once, by the largest change since the last `vX.Y.Z` tag:
+
+| Level | Change | Commits |
+|---|---|---|
+| Patch | third number | fixes, docs, chores, and any subject that isn't conventional |
+| Minor | second number, patch reset | at least one `feat` |
+| Major | first number, minor and patch reset | `!` after the type, or a `BREAKING CHANGE:` or `BREAKING-CHANGE:` footer |
+
+`scripts/next-version.mjs` computes the level and next version, and `--level` overrides the level. The `release` skill shows the result, waits for you to confirm or override it, opens a `chore(release)` PR into the base branch, then promotes and tags. An override is recorded in that PR's commit body.
+
+The script finds the last tag with `git tag -l`, not `git describe`, because tags sit on promotion merges the base branch may not contain. A `chore(release): X.Y.Z` commit since the tag, with a newer version, means the bump has merged: the script reports `"bumpMerged":true` and the skill goes on to promote. When `commitsAfterBump` is above zero, the skill shows those commits and asks first, because the bumped version doesn't account for them. It exits 2 when a listed file doesn't hold the expected version, when there are no commits since the tag, when there is no `vX.Y.Z` tag, or when the config is bad or found only in the working copy. A repo moving from date tags needs its first `vX.Y.Z` tag made by hand.
+
 ## Versioning
 Semver. Record changes below.
 
 | Version | Change |
 |---|---|
+| 0.21.0 | **Semver bump on every release (ESP-23, PR #172):** in a repo that lists `git.versionFiles`, `release` works out the level from the conventional commits since the last `vX.Y.Z` tag with the new `scripts/next-version.mjs`, waits for you to confirm or override it, and ships it in one `chore(release)` PR into the base branch before promoting and tagging. A bump PR that changes only version strings and one changelog row runs the gate with no reviewer round. `release-steps` tags `vX.Y.Z` from the version files. **Upgrade:** none. Repos on date tags don't change. A repo moving from date tags needs a first `vX.Y.Z` tag by hand. |
 | 0.20.2 | **The lookup deadline test no longer fails the gate under load (ESP-146, PR #169):** `should fail closed when a lookup misses the deadline` runs its set-up in a `before` hook, so its 5000 ms limit no longer counts `makeRepo`, which took about 90% of its time. It still fails if a lookup hangs past its deadline. **Limit:** the full gate is proven with 6 busy-loop processes on 8 CPUs. With all CPUs saturated it can still fail on `bash-workflow-timing.perf.mjs`, whose 100 ms budget stays as written. **Upgrade:** none. |
 | 0.20.1 | **The gate gives the same result from PowerShell and Git Bash (ESP-145, PR #166):** `bash-workflow-check.test.mjs` runs its commands in Git Bash on Windows, found through `git --exec-path`, because `bash` on PATH can be WSL there, which fails 21 tests. A shell that can't start now fails the test rather than counting as a failed command. **Limit:** a Git install without `bin/bash.exe`, such as MinGit, falls back to `bash` on PATH and can still fail this way. **Known flake:** `should fail closed when a lookup misses the deadline` can time out under machine load (ESP-146). Also includes the audit script change that leaves fixing work out of plugin share (ESP-144, PR #165). **Upgrade:** none. |
 | 0.20.0 | **`release-steps` on Sonnet and audit scripts that price correctly (ESP-144, PR #162):** `release-steps` runs on `model: sonnet`, and `verify` stays on the session model because it judges acceptance criteria. The audit scripts in `docs/audits/2026-10-24-usage-audit/` price each call at its model's published rates through a shared `audit-common.cjs`, read each call's final output count, report forks under their skill names, and take required `<from> <to>` arguments. `usage.cjs` splits the `release` window into fixing work and overhead, and `window.cjs` reports main-thread growth across `release-steps` per release. Also includes the ESP-117 re-measure record (PR #161). |

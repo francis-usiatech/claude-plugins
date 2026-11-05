@@ -26,6 +26,7 @@
     }
   ],
   "git": {
+    "$comment": "Optional semver bump on every release: set versionFiles (the files that hold the version, e.g. [\"package.json\"]), optionally changelogFile (gets a new row per release), and tagFormat \"vX.Y.Z\". The repo needs a first vX.Y.Z tag made by hand. Leave versionFiles out to keep date tags and no bump. See the README under Semver bump.",
     "baseBranch": "develop",
     "releaseBranch": "main",
     "tagFormat": "DDMMMYYYY-XX",

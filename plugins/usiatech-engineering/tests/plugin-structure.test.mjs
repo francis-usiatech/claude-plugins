@@ -757,6 +757,31 @@ describe('plugin structure: release metadata', () => {
     assert.match(readFileSync(path.join(repo, 'README.md'), 'utf8'), new RegExp(`\\| UsiaTech Engineering \\| ${v}\\s*\\|`), 'root README table')
     assert.match(version, /^\d+\.\d+\.\d+$/, 'plugin version is semver (M9)')
   })
+
+  it('should keep the version bump steps in the release skill, in order (ESP-23 AC6)', () => {
+    const release = body(read('skills', 'release', 'SKILL.md'))
+    const steps = [/scripts\/next-version\.mjs/, /wait for the user to confirm or override the level/, /runs the `verify` gate with no reviewer round/, /`chore\(release\): <next>` PR into the base branch/, /Once that PR has merged, promote and tag/, /phase `release`/]
+    let from = release.indexOf('## 3. Release')
+    assert.notEqual(from, -1, 'release section')
+    for (const step of steps) {
+      const at = release.slice(from).search(step)
+      assert.notEqual(at, -1, `missing or out of order: ${step}`)
+      from += at
+    }
+    assert.match(release, /`"bumpMerged":true`[^\n]*go on to promote, and don't bump again/, 'a merged bump is promoted, not bumped twice')
+    assert.match(release, /`commitsAfterBump` is above zero[^\n]*ask the user before promoting/, 'commits after the bump need a decision')
+    assert.match(release, /record the computed level, the chosen level and the reason in the commit body/, 'an override is recorded')
+    assert.match(release, /only the listed version files and the changelog row runs the `verify` gate with no reviewer round/, 'bump PR review path')
+    assert.match(release, /each changed line in a version file differs by the version string alone and the changelog change is one added row/, 'the review skip is scoped by content, not only by file')
+  })
+
+  it('should tag vX.Y.Z from the version files in release-steps (ESP-23 AC6)', () => {
+    assert.match(body(read('skills', 'release-steps', 'SKILL.md')), /For `vX\.Y\.Z`, use the version the merged bump PR wrote to the files in `git\.versionFiles`/)
+  })
+
+  it('should take the previous vX.Y.Z tag from next-version, not git describe (ESP-23)', () => {
+    assert.match(body(read('skills', 'release-steps', 'SKILL.md')), /`vX\.Y\.Z`:\*\*[^\n]*`previousTag`[^\n]*next-version\.mjs/)
+  })
 })
 
 describe('plugin structure: gate runner (ESP-44 AC7)', () => {

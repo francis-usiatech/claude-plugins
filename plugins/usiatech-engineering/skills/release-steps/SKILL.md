@@ -39,8 +39,9 @@ Repo `AGENTS.md` rules win on conflict.
 
 ## Release (phase `release`, only when the user asked)
 1. Confirm CI is green on the base branch. Merge base → release branch.
-2. Tag with the configured format. For `DDMMMYYYY-XX`, use the date in upper-case (e.g. `12JAN2027`) plus a two-digit sequence for that day. Check `git tag -l` to pick the next number.
-   - **Jira tracker only:** before creating the tag, find the previous one with `git describe --tags --abbrev=0`. If git says "No names found", there's no earlier tag, and step 4 below scans the whole history. Any other error is a failure: report it, and don't guess a tag.
+2. Tag with the configured format. For `DDMMMYYYY-XX`, use the date in upper-case (e.g. `12JAN2027`) plus a two-digit sequence for that day. Check `git tag -l` to pick the next number. For `vX.Y.Z`, use the version the merged bump PR wrote to the files in `git.versionFiles`; if those files disagree, or that tag already exists, stop and report it.
+   - **Jira tracker only, `git.tagFormat` of `vX.Y.Z`:** before creating the tag, take the previous one from `previousTag` in the output of `node "${CLAUDE_PLUGIN_ROOT}/scripts/next-version.mjs"`, because `git describe` misses tags the current branch can't reach. A non-zero exit is a failure: report it, and don't guess a tag.
+   - **Jira tracker only, any other tag format:** before creating the tag, find the previous one with `git describe --tags --abbrev=0`. If git says "No names found", there's no earlier tag, and step 4 below scans the whole history. Any other error is a failure: report it, and don't guess a tag.
 3. Push the branch and tag. Follow the repo's deploy runbook: migrations as a separate step before switching; smoke-test staging, then production; check the status page and health endpoints.
 4. **Jira tracker only:** mark the released tickets. Skip this step when `jira.statuses` in the `check` output has no `released`, and say so.
    - From a POSIX shell (Git Bash on Windows; a PowerShell 5.1 redirect writes UTF-16, which `keys` refuses with exit 2), run `git log "<previous tag>..<new tag>" --format=%B > "<file>"`, or `git log "<new tag>" --format=%B > "<file>"` with no previous tag. The file goes in the session scratchpad.

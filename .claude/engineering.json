@@ -13,6 +13,15 @@
       "run": "claude plugin validate plugins/usiatech-engineering"
     }
   ],
+  "git": {
+    "tagFormat": "vX.Y.Z",
+    "versionFiles": [
+      "plugins/usiatech-engineering/.claude-plugin/plugin.json",
+      ".claude-plugin/marketplace.json",
+      "README.md"
+    ],
+    "changelogFile": "plugins/usiatech-engineering/README.md"
+  },
   "governance": {
     "planEdits": "all"
   },
