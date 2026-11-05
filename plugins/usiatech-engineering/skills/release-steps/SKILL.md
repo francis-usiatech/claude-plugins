@@ -67,5 +67,6 @@ The `release` phase has already merged, tagged and pushed. Never merge, tag or p
   - Don't retry silently, and don't report the release as fully done while a Jira step has failed.
 
 ## Rules
+- Run `git commit` and `git push` through the Bash tool, not PowerShell, in every phase. The `security-guidance` plugin (tested on 2.0.17, [upstream issue](https://github.com/anthropics/claude-plugins-official/issues/7005)) skips PowerShell commits and pushes with no message. A Bash run can skip too, so this doesn't replace checking its log. If Bash refuses a git command, stop and return that as an open decision.
 - The plan is already archived in the work's PR by the `release` skill. Don't open a PR just to update it.
 - Never force-push, rewrite published history or delete unmerged branches.
