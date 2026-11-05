@@ -117,6 +117,11 @@ describe('plugin structure: references', () => {
     assert.match(read('README.md'), /`verify` stays on the session model because it judges acceptance criteria/)
   })
 
+  // security-guidance reviews commits and pushes only when they run through the Bash tool.
+  it('should tell release-steps to commit and push through the Bash tool', () => {
+    assert.match(read('skills', 'release-steps', 'SKILL.md'), /`git commit` and `git push` through the Bash tool/)
+  })
+
   it('should take AC evidence the repo cannot show from the verify arguments (ESP-118)', () => {
     const text = read('skills', 'verify', 'SKILL.md')
     assert.match(frontmatter(text).description, /pass.*evidence/i)
