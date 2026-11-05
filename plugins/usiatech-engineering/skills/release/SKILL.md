@@ -42,6 +42,15 @@ Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/session-check.mjs"` from the repo root 
 - When the user approves the merge (or a standing merge rule applies), run `release-steps` with phase `merge` and the PR number. It merges and does the Jira merged update.
 
 ## 3. Release (only when the user asks)
+- **Version bump (repos that list `git.versionFiles`):** every release bumps the version once, before promotion.
+  1. Update the base branch and fetch tags: `git fetch origin --tags`, then bring the local base branch up to date.
+  2. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/next-version.mjs"` from the repo root. It prints JSON with the computed level and the next version. `{"enabled":false}` means the repo hasn't opted in: skip the rest of this bump.
+  3. `"bumpMerged":true` means the bump has already merged: go on to promote, and don't bump again. When `commitsAfterBump` is above zero, those commits aren't counted in the bumped version: show them and ask the user before promoting. A non-zero exit stops the release: show its message.
+  4. Show the level and the next version, and wait for the user to confirm or override the level. For an override, run the script again with `--level <patch|minor|major>`.
+  5. On a branch off the base branch, change the version in each of `versionFiles` and add the new row to `changelogFile`. Change nothing else.
+  6. A bump PR whose diff touches only the listed version files and the changelog row runs the `verify` gate with no reviewer round, and says so in the PR. This holds only when each changed line in a version file differs by the version string alone and the changelog change is one added row, so read the diff to confirm it. Any other diff gets the full review in section 1.
+  7. Open one `chore(release): <next>` PR into the base branch through `release-steps` phases `commit` and `merge`. When `override` is true, record the computed level, the chosen level and the reason in the commit body.
+  8. Once that PR has merged, promote and tag as below.
 - Run `release-steps` with phase `release`. It merges base → release branch, tags and pushes. It cleans up the branch only when the commits name no Jira keys.
 - Otherwise it returns the Jira keys found in the commits as an open decision. Ask the user once to confirm the list, then run phase `release-jira` with the confirmed keys and the feature branch name so it marks them released and cleans up the branch, with no second merge or tag.
 

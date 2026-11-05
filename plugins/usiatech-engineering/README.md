@@ -7,7 +7,7 @@ Shared engineering workflow **and governance** for UsiaTech repositories (Waypoi
 | Type | Name | What it does |
 |---|---|---|
 | Skill | `verify` | Runs the repo's definition-of-done gate (from `.claude/engineering.json` or AGENTS.md) and reports PASS/FAIL; checks the active plan's acceptance criteria against evidence from this session (unshown criteria warn, they don't fail the gate) |
-| Skill | `release` | Scoped staging → verify → reviewers → one conventional commit → PR → merge → `DDMMMYYYY-XX` tag → branch cleanup; the steps after the review run in `release-steps` |
+| Skill | `release` | Scoped staging → verify → reviewers → one conventional commit → PR → merge → `DDMMMYYYY-XX` or `vX.Y.Z` tag (with a semver bump PR when the repo lists `git.versionFiles`) → branch cleanup; the steps after the review run in `release-steps` |
 | Skill | `release-steps` | Called by `release`, runs in a forked subagent with no session history: commit, push and PR; merge and the Jira merged update; release-branch merge, tag, Jira released update and branch clean-up. Runs on `sonnet`, since the steps are mechanical. Returns a short summary and open decisions as a list. `verify` also runs forked; pass it evidence for criteria the repo state can't show. `verify` stays on the session model because it judges acceptance criteria |
 | Skill | `user-guide-update` | Finds and updates affected user-guide pages and the changelog |
 | Skill | `setup-engineering` | Creates `.claude/engineering.json` for a repo and checks the AGENTS.md/CLAUDE.md layout |
@@ -47,7 +47,7 @@ Start from `templates/engineering.json` (or run the `setup-engineering` skill).
 |---|---|
 | `verify` | Commands always run by `verify`, in order. A step may carry `"timeoutMs"` (see "Gate runner"; default 10 minutes) |
 | `verifyConditional` | Extra commands run only when changed files start with a `when` prefix |
-| `git` | Base/release branch, tag format, commit style |
+| `git` | Base/release branch, tag format (`tagFormat`), commit style, and the semver bump keys `versionFiles` and `changelogFile` (see "Semver bump") |
 | `protectedPaths` | Globs the agent may never edit |
 | `immutableWhenCommitted` | Globs editable only until committed (e.g. migrations) |
 | `allowEnvExample` | Allow edits to `.env.example` (default `true`) |
@@ -326,6 +326,25 @@ Tests use Node's built-in runner and have no dependencies. From the marketplace 
 
 ## Requirements
 Node ≥ 20 on the machine running Claude Code (used by the hook). Git.
+
+## Semver bump
+A repo opts in by listing its version files in `.claude/engineering.json`, on the base branch. Repos that don't list them keep their tag format and get no bump.
+
+- `git.versionFiles`: the files that hold the version. Each must contain the last tag's version, so don't list a file whose history keeps old versions.
+- `git.changelogFile` (optional): the file that gets a new row for each release.
+- `git.tagFormat`: must be `vX.Y.Z` when `git.versionFiles` is set.
+
+Every release bumps the version once, by the largest change since the last `vX.Y.Z` tag:
+
+| Level | Change | Commits |
+|---|---|---|
+| Patch | third number | fixes, docs, chores, and any subject that isn't conventional |
+| Minor | second number, patch reset | at least one `feat` |
+| Major | first number, minor and patch reset | `!` after the type, or a `BREAKING CHANGE:` or `BREAKING-CHANGE:` footer |
+
+`scripts/next-version.mjs` computes the level and next version, and `--level` overrides the level. The `release` skill shows the result, waits for you to confirm or override it, opens a `chore(release)` PR into the base branch, then promotes and tags. An override is recorded in that PR's commit body.
+
+The script finds the last tag with `git tag -l`, not `git describe`, because tags sit on promotion merges the base branch may not contain. A `chore(release): X.Y.Z` commit since the tag, with a newer version, means the bump has merged: the script reports `"bumpMerged":true` and the skill goes on to promote. When `commitsAfterBump` is above zero, the skill shows those commits and asks first, because the bumped version doesn't account for them. It exits 2 when a listed file doesn't hold the expected version, when there are no commits since the tag, when there is no `vX.Y.Z` tag, or when the config is bad or found only in the working copy. A repo moving from date tags needs its first `vX.Y.Z` tag made by hand.
 
 ## Versioning
 Semver. Record changes below.
