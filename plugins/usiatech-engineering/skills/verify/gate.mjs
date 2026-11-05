@@ -9,6 +9,9 @@
 // Exits 0 when the gate passed, 1 when a step or the fake-pass check failed, and 2 when the gate could not start or
 // finish (no usable config, git can't list the changed files, the log can't be written): a gate that ran nothing
 // fails closed rather than pass.
+// With --iterate (ESP-69) it runs only the `verifyIterate` steps whose `when` prefixes match a changed file, lists the
+// changed files no step covers, and skips the fake-pass check. That is a partial run, never the done gate: it writes
+// no `Gate:` verdict, and its last line says it is partial.
 // This file is an entry point only and runs whenever it is loaded. It has no "am I the main module" check, because
 // that check fails without a word when the plugin is reached through a link.
 import { execFileSync } from 'node:child_process'
@@ -55,11 +58,7 @@ const checkSteps = (steps, key, needsWhen) => {
   return steps.map(({ name, run, when, timeoutMs = DEFAULT_STEP_TIMEOUT_MS }) => (needsWhen ? { name, run, when, timeoutMs } : { name, run, timeoutMs }))
 }
 
-/**
- * The steps for this repo, in order; throws on a config the gate can't be built from.
- * @returns {{ name: string, run: string, timeoutMs: number, skipped?: string }[]} skipped holds the reason a conditional step isn't run
- */
-const loadSteps = (root) => {
+const readConfig = (root) => {
   const configPath = path.join(root, '.claude/engineering.json')
   if (!existsSync(configPath)) throw new Error('.claude/engineering.json was not found, so there are no gate steps to run.')
   let cfg
@@ -69,19 +68,47 @@ const loadSteps = (root) => {
     throw new Error(`.claude/engineering.json could not be parsed: ${e.message}`)
   }
   if (!isPlainObject(cfg)) throw new Error('.claude/engineering.json is not a JSON object.')
+  return cfg
+}
+
+const listChanged = (root) => {
+  try {
+    return changedFiles(root)
+  } catch (e) {
+    throw new Error(`git could not list the changed files (${(e.stderr || e.message).trim()}).`)
+  }
+}
+
+// The match is exact, as in the CI gate: case matters.
+const covers = (step, file) => step.when.some((prefix) => file.startsWith(prefix))
+const selectByChanged = (steps, changed) => steps.map((s) => (changed.some((file) => covers(s, file)) ? s : { ...s, skipped: `no changed file under ${s.when.join(', ')}` }))
+
+/**
+ * The steps for this repo, in order; throws on a config the gate can't be built from.
+ * @returns {{ steps: { name: string, run: string, timeoutMs: number, skipped?: string }[], notes: string[] }} skipped holds the reason a conditional step isn't run
+ */
+const loadGate = (root) => {
+  const cfg = readConfig(root)
   const always = checkSteps(cfg.verify ?? null, 'verify', false)
   if (!always.length) throw new Error('.claude/engineering.json "verify" is empty, so there are no gate steps to run.')
   const conditional = checkSteps(cfg.verifyConditional ?? [], 'verifyConditional', true)
   // Listed even with no conditional step: the fake-pass check needs the same list, so a repo git can't diff stops here.
-  let changed
-  try {
-    changed = changedFiles(root)
-  } catch (e) {
-    throw new Error(`git could not list the changed files (${(e.stderr || e.message).trim()}).`)
-  }
-  // The match is exact, as in the CI gate: case matters.
-  const matches = (s) => s.when.some((prefix) => changed.some((file) => file.startsWith(prefix)))
-  return [...always, ...conditional.map((s) => (matches(s) ? s : { ...s, skipped: `no changed file under ${s.when.join(', ')}` }))]
+  return { steps: [...always, ...selectByChanged(conditional, listChanged(root))], notes: [] }
+}
+
+// A file name or an argument can hold a line break, and a summary line is one line. JSON.stringify isn't enough: it
+// leaves U+2028, U+2029, NEL and DEL as they are.
+const printable = (text) => [...text].map((c) => (hasControlChar(c) ? `\\u{${c.codePointAt(0).toString(16)}}` : c)).join('')
+
+// The same shape as loadGate, for an --iterate run: `verify` isn't read, so only a bad map or config stops the run.
+const loadIterate = (root) => {
+  const mapped = checkSteps(readConfig(root).verifyIterate ?? [], 'verifyIterate', true)
+  const changed = listChanged(root)
+  const steps = selectByChanged(mapped, changed)
+  const notes = changed.filter((file) => !mapped.some((s) => covers(s, file))).map((file) => `NOT COVERED  ${printable(file)}`)
+  if (!changed.length) notes.push('No changed files, so there is nothing to run.')
+  else if (steps.every((s) => s.skipped)) notes.push('No verifyIterate step matches a changed file, so there is nothing to run.')
+  return { steps, notes }
 }
 
 // A new folder only this user can read, and a log no one else could have put there: step output can hold secrets.
@@ -130,8 +157,8 @@ const runStep = async (log, name, command, { args = null, cwd, timeoutMs, signal
 
 const stepLine = (ok, name, step) => `${ok ? 'PASS' : 'FAIL'}  ${name} (${step.result}, ${step.seconds} s)`
 
-// Runs the selected steps and then the fake-pass check; returns the summary lines and whether anything failed.
-const runSteps = async (root, steps, log, signal) => {
+// Runs the selected steps; returns the summary lines and whether anything failed.
+const runSelected = async (root, steps, log, signal) => {
   const lines = []
   let failed = false
   for (const s of steps) {
@@ -144,28 +171,44 @@ const runSteps = async (root, steps, log, signal) => {
       lines.push(`--- last ${TAIL_LINES} lines of "${s.name}"`, ...step.output(TAIL_BYTES).slice(-TAIL_LINES), '---')
     }
   }
+  return { failed, lines }
+}
+
+// Runs the selected steps and then the fake-pass check; returns the summary lines and whether anything failed.
+const runSteps = async (root, steps, log, signal) => {
+  const { failed, lines } = await runSelected(root, steps, log, signal)
   if (failed) return { failed, lines: [...lines, `NOT RUN  ${FAKE_PASS_NAME}`] }
   // The check prints every finding, warnings and suppressed ones included; `verify` reports them all, so none is cut.
   const check = await runStep(log, FAKE_PASS_NAME, process.execPath, { args: [FAKE_PASS_SCRIPT], cwd: root, timeoutMs: DEFAULT_STEP_TIMEOUT_MS, signal })
   return { failed: !check.ok, lines: [...lines, stepLine(check.ok, FAKE_PASS_NAME, check), ...check.output()] }
 }
 
+// The two ways to run. `stamp` adds the run time that `verify` copies into evidence, which a partial run never gives.
+const FULL = { label: 'The gate', load: loadGate, run: runSteps, stamp: true, verdict: (failed) => `Gate: ${failed ? 'FAIL' : 'PASS'}` }
+const ITERATE = { label: 'The partial run', load: loadIterate, run: runSelected, stamp: false, verdict: (failed) => `Partial run: ${failed ? 'FAIL' : 'PASS'}. This is not the done gate.` }
+
 /**
- * Runs the gate for the repo that contains cwd, from its root.
+ * Runs the gate, or the partial run, for the repo that contains cwd, from its root.
  * @returns {Promise<{ exitCode: number, lines: string[] }>}
  */
-const runGate = async (cwd) => {
-  const cannotStart = (reason) => ({ exitCode: 2, lines: [`The gate could not start: ${reason}`, 'Gate: FAIL'] })
-  let root, steps, log
+const runGate = async (cwd, mode) => {
+  const cannotStart = (reason) => ({ exitCode: 2, lines: [`${mode.label} could not start: ${reason}`, mode.verdict(true)] })
+  let root, loaded, log
   try {
     root = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   } catch (e) {
     return cannotStart(`git could not find a repository here (${(e.stderr || e.message).trim()}).`)
   }
   try {
-    steps = loadSteps(root)
+    loaded = mode.load(root)
   } catch (e) {
     return cannotStart(e.message)
+  }
+  const { steps, notes } = loaded
+  // Only a partial run gets here: the full gate refuses an empty `verify` list. No step means no log to write, and
+  // no PASS: nothing was checked.
+  if (steps.every((s) => s.skipped)) {
+    return { exitCode: 0, lines: [...notes, ...steps.map((s) => `SKIPPED  ${s.name} (${s.skipped})`), 'Partial run: nothing ran. This is not the done gate.'] }
   }
   try {
     log = openLog()
@@ -177,21 +220,31 @@ const runGate = async (cwd) => {
   const interrupt = new AbortController()
   const removeHandlers = handleInterrupts(interrupt, () => {})
   try {
-    const { failed, lines } = await runSteps(root, steps, log, interrupt.signal)
-    return { exitCode: failed ? 1 : 0, lines: [...lines, `Log: ${log.file}`, `Gate run: ${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}`, `Gate: ${failed ? 'FAIL' : 'PASS'}`] }
+    const { failed, lines } = await mode.run(root, steps, log, interrupt.signal)
+    const stamp = mode.stamp ? [`Gate run: ${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}`] : []
+    return { exitCode: failed ? 1 : 0, lines: [...notes, ...lines, `Log: ${log.file}`, ...stamp, mode.verdict(failed)] }
   } finally {
     removeHandlers()
     closeSync(log.fd)
   }
 }
 
-// Anything unexpected, such as a log write that fails part-way, is a gate that did not finish: never a pass.
-try {
-  const { exitCode, lines } = await runGate(process.cwd())
-  for (const l of lines) console.log(l)
-  process.exitCode = exitCode
-} catch (e) {
-  console.log(`The gate could not finish: ${e.message}`)
-  console.log('Gate: FAIL')
+const args = process.argv.slice(2)
+const mode = args.length === 0 ? FULL : (args.length === 1 && args[0] === '--iterate' ? ITERATE : null)
+if (!mode) {
+  // A misspelt flag must not run the slow full gate, or pass for a partial run.
+  console.log(`The gate could not start: the only argument it takes is --iterate, not ${args.map((a) => `"${printable(a)}"`).join(' ')}.`)
+  console.log(FULL.verdict(true))
   process.exitCode = 2
+} else {
+  // Anything unexpected, such as a log write that fails part-way, is a run that did not finish: never a pass.
+  try {
+    const { exitCode, lines } = await runGate(process.cwd(), mode)
+    for (const l of lines) console.log(l)
+    process.exitCode = exitCode
+  } catch (e) {
+    console.log(`${mode.label} could not finish: ${e.message}`)
+    console.log(mode.verdict(true))
+    process.exitCode = 2
+  }
 }

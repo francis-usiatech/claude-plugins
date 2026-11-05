@@ -789,6 +789,35 @@ describe('plugin structure: release metadata', () => {
   })
 })
 
+describe('plugin structure: verify --iterate and one full gate (ESP-69 AC3)', () => {
+  const verify = () => body(read('skills', 'verify', 'SKILL.md'))
+  const iteratePart = () => verify().match(/\*\*When the arguments are `--iterate`:\*\*[\s\S]*?(?=^1\. \*\*)/m)?.[0]
+
+  it('should say an --iterate run writes no evidence, makes no Jira move and reports as partial', () => {
+    const part = iteratePart()
+    assert.ok(part, 'verify has no --iterate section')
+    assert.match(part, /gate\.mjs" --iterate/)
+    assert.match(part, /no AC evidence/)
+    assert.match(part, /no Jira move/)
+    assert.match(part, /say the run is partial/)
+    assert.match(part, /never counts as the done gate/)
+  })
+
+  it('should say the AGENTS.md path has no iterate mode', () => {
+    assert.match(iteratePart(), /`AGENTS\.md` path has no iterate mode/)
+    assert.match(iteratePart(), /exit 2/)
+  })
+
+  for (const skill of ['verify', 'release']) {
+    it(`should state the one-full-gate rule in ${skill}`, () => {
+      const text = body(read('skills', skill, 'SKILL.md'))
+      assert.match(text, /--iterate` while building/)
+      assert.match(text, /full gate once per PR, after the last code change and before the commit/)
+      assert.match(text, /tests-only included, needs the full gate again before the commit/)
+    })
+  }
+})
+
 describe('plugin structure: gate runner (ESP-44 AC7)', () => {
   const verify = () => body(read('skills', 'verify', 'SKILL.md'))
   const step = (title) => verify().match(new RegExp(`^\\d+\\. \\*\\*${title}[\\s\\S]*?(?=^\\d+\\. \\*\\*)`, 'm'))?.[0]

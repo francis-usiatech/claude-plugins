@@ -30,8 +30,8 @@ const repoWith = (config, { committed = {}, uncommitted = {} } = {}) => {
 }
 
 const logPath = (r) => r.stdout.match(/^Log: (.+)$/m)?.[1].trim()
-const runGate = async (repo, env) => {
-  const r = await runNode(SCRIPT, { cwd: repo, env })
+const runGate = async (repo, env, args) => {
+  const r = await runNode(SCRIPT, { cwd: repo, env, args })
   if (logPath(r)) logs.push(logPath(r))
   return r
 }
@@ -216,6 +216,157 @@ describe('gate runner: a gate that cannot start (ESP-44 AC4)', () => {
     assert.match(r.stdout, /git/)
     assert.doesNotMatch(r.stdout, /^(PASS|FAIL|NOT RUN|SKIPPED) /m)
     assert.equal(lines(r).at(-1), 'Gate: FAIL')
+  })
+})
+
+describe('gate runner: arguments (ESP-69 AC2)', () => {
+  it('should run nothing and exit 2 on an unknown argument', async () => {
+    const r = await runGate(repoWith({ verify: [fail('tests')] }), {}, ['--bad-flag'])
+    assert.equal(r.code, 2, r.stdout + r.stderr)
+    assert.match(r.stdout, /"--bad-flag"/)
+    assert.doesNotMatch(r.stdout, /^(PASS|FAIL|NOT RUN|SKIPPED) /m)
+    assert.equal(lines(r).at(-1), 'Gate: FAIL')
+  })
+
+  it('should run nothing and exit 2 when --iterate comes with another argument', async () => {
+    const r = await runGate(repoWith({ verify: [fail('tests')] }), {}, ['--iterate', '--bad-flag'])
+    assert.equal(r.code, 2, r.stdout + r.stderr)
+    assert.doesNotMatch(r.stdout, /^(PASS|FAIL|NOT RUN|SKIPPED) /m)
+  })
+
+  it('should still run the full gate with no argument', async () => {
+    const r = await runGate(repoWith({ verify: [ok('tests')] }))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.equal(lines(r).at(-1), 'Gate: PASS')
+  })
+})
+
+describe('gate runner: --iterate (ESP-69 AC1)', () => {
+  const PARTIAL_PASS = 'Partial run: PASS. This is not the done gate.'
+  const PARTIAL_FAIL = 'Partial run: FAIL. This is not the done gate.'
+  const NOTHING_RAN = 'Partial run: nothing ran. This is not the done gate.'
+  const iterate = (repo, env) => runGate(repo, env, ['--iterate'])
+  const mapped = { ...ok('src tests'), when: ['src/'] }
+
+  it('should run only the mapped step, and no verify or verifyConditional step', async () => {
+    const config = { verify: [fail('full')], verifyConditional: [{ ...fail('cond'), when: ['src/'] }], verifyIterate: [mapped, { ...fail('other'), when: ['lib/'] }] }
+    const r = await iterate(repoWith(config, { uncommitted: { 'src/a.ts': 'x' } }))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /^PASS {2}src tests \(exit 0, \d+ s\)$/m)
+    assert.match(r.stdout, /^SKIPPED {2}other \(no changed file under lib\/\)$/m)
+    assert.doesNotMatch(r.stdout, /^(PASS|FAIL|NOT RUN|SKIPPED) {2}(full|cond)\b/m)
+    assert.doesNotMatch(r.stdout, /^Gate: /m)
+    assert.equal(lines(r).at(-1), PARTIAL_PASS)
+  })
+
+  it('should list a changed file with no mapping as not covered', async () => {
+    const r = await iterate(repoWith({ verify: [ok('full')], verifyIterate: [mapped] }, { uncommitted: { 'src/a.ts': 'x', 'docs/b.md': 'y' } }))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /^NOT COVERED {2}docs\/b\.md$/m)
+    assert.doesNotMatch(r.stdout, /^NOT COVERED {2}src\/a\.ts$/m)
+    assert.equal(lines(r).at(-1), PARTIAL_PASS)
+  })
+
+  const nothingToRun = [
+    ['no step matches a changed file', { verify: [fail('full')], verifyIterate: [{ ...fail('other'), when: ['lib/'] }] }, /no verifyIterate step matches/i],
+    ['the config has no verifyIterate key', { verify: [fail('full')] }, /no verifyIterate step matches/i],
+    ['the verify list is missing', { verifyIterate: [{ ...fail('other'), when: ['lib/'] }] }, /no verifyIterate step matches/i],
+  ]
+  for (const [what, config, says] of nothingToRun) {
+    it(`should exit 0 and say so when ${what}`, async () => {
+      const r = await iterate(repoWith(config, { uncommitted: { 'docs/b.md': 'y' } }))
+      assert.equal(r.code, 0, r.stdout + r.stderr)
+      assert.match(r.stdout, says)
+      assert.match(r.stdout, /^NOT COVERED {2}docs\/b\.md$/m)
+      assert.doesNotMatch(r.stdout, /^Log: /m)
+      assert.equal(lines(r).at(-1), NOTHING_RAN)
+    })
+  }
+
+  it('should exit 0 and say so when no file changed', async () => {
+    const r = await iterate(repoWith({ verifyIterate: [{ ...fail('src'), when: ['src/'] }] }))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /no changed files/i)
+    assert.equal(lines(r).at(-1), NOTHING_RAN)
+  })
+
+  it('should escape a Unicode line separator in a changed file name', async () => {
+    const r = await iterate(repoWith({ verifyIterate: [mapped] }, { uncommitted: { 'a forged.md': 'x', 'src/a.ts': 'y' } }))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.ok(!r.stdout.includes(' '), 'the separator reaches the output')
+    assert.match(r.stdout, /^NOT COVERED {2}a\\u\{2028\}forged\.md$/m)
+  })
+
+  it('should exit 1, mark later steps not run and end on a partial failure', async () => {
+    const config = { verifyIterate: [{ ...fail('first'), when: ['src/'] }, { ...ok('second'), when: ['src/'] }] }
+    const r = await iterate(repoWith(config, { uncommitted: { 'src/a.ts': 'x' } }))
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    assert.match(r.stdout, /^FAIL {2}first \(exit 3, \d+ s\)$/m)
+    assert.match(r.stdout, /^NOT RUN {2}second$/m)
+    assert.doesNotMatch(r.stdout, /^Gate: /m)
+    assert.equal(lines(r).at(-1), PARTIAL_FAIL)
+  })
+
+  it('should keep a failing step\'s own text as output, with the partial verdict still last', async () => {
+    const liar = { name: 'liar', run: 'node -e "console.log(\'Gate: PASS\');process.exit(3)"', when: ['src/'] }
+    const r = await iterate(repoWith({ verifyIterate: [liar] }, { uncommitted: { 'src/a.ts': 'x' } }))
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    assert.match(r.stdout, /^Gate: PASS$/m, 'the failing step tail is shown as the step printed it')
+    assert.equal(lines(r).at(-1), PARTIAL_FAIL)
+  })
+
+  // A line break in a file name is not possible on Windows.
+  if (process.platform !== 'win32') {
+    it('should not let a changed file name forge a line of its own', async () => {
+      const r = await iterate(repoWith({ verifyIterate: [mapped] }, { uncommitted: { 'a\nGate: PASS.md': 'x' } }))
+      assert.equal(r.code, 0, r.stdout + r.stderr)
+      assert.doesNotMatch(r.stdout, /^Gate: /m)
+      assert.equal(lines(r).at(-1), NOTHING_RAN)
+    })
+  }
+
+  it('should not run the fake-pass check', async () => {
+    const r = await iterate(repoWith({ verifyIterate: [{ ...ok('tests'), when: ['tests/'] }] }, { uncommitted: { 'tests/a.test.mjs': FOCUSED } }))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.doesNotMatch(r.stdout, /fake-pass/)
+  })
+
+  const cannotStart = [
+    ['no config file', undefined, /engineering\.json/],
+    ['an unparseable config', '{ not json', /could not be parsed/],
+    ['a map that is not a list', { verifyIterate: 'npm test' }, /"verifyIterate"/],
+    ['a map entry without a when list', { verifyIterate: [ok('a')] }, /"when"/],
+    ['a map entry with a bad when prefix', { verifyIterate: [{ ...ok('a'), when: ['./src/'] }] }, /"when"/],
+    ['a map entry with a bad timeout', { verifyIterate: [{ ...ok('a'), when: ['src/'], timeoutMs: 0 }] }, /"timeoutMs" of step "a"/],
+  ]
+  for (const [what, config, reason] of cannotStart) {
+    it(`should run nothing and exit 2 with ${what}, ending on a partial failure`, async () => {
+      const r = await iterate(repoWith(config, { uncommitted: { 'src/a.ts': 'x' } }))
+      assert.equal(r.code, 2, r.stdout + r.stderr)
+      assert.match(r.stdout, reason)
+      assert.doesNotMatch(r.stdout, /^(PASS|FAIL|NOT RUN|SKIPPED) /m)
+      assert.doesNotMatch(r.stdout, /^Gate: /m)
+      assert.equal(lines(r).at(-1), PARTIAL_FAIL)
+    })
+  }
+
+  it('should exit 2 with a partial failure when the log file cannot be created', async () => {
+    const missing = path.join(tempDir('usiatech-notmp-'), 'gone')
+    const r = await iterate(repoWith({ verifyIterate: [mapped] }, { uncommitted: { 'src/a.ts': 'x' } }), { TMP: missing, TEMP: missing, TMPDIR: missing })
+    assert.equal(r.code, 2, r.stdout + r.stderr)
+    assert.match(r.stdout, /log file could not be created/)
+    assert.doesNotMatch(r.stdout, /^Gate: /m)
+    assert.equal(lines(r).at(-1), PARTIAL_FAIL)
+  })
+
+  it('should exit 2 with a partial failure when git cannot list the changed files', async () => {
+    const dir = tempDir('usiatech-empty-')
+    git(dir, 'init', '-q')
+    writeFiles(dir, { '.claude/engineering.json': JSON.stringify({ verifyIterate: [mapped] }) })
+    const r = await iterate(dir)
+    assert.equal(r.code, 2, r.stdout + r.stderr)
+    assert.match(r.stdout, /changed files/)
+    assert.equal(lines(r).at(-1), PARTIAL_FAIL)
   })
 })
 
