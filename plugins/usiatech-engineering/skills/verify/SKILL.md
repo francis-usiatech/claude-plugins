@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Runs the repository's verification gate (typecheck, tests, build and any conditional suites), checks the active plan's acceptance criteria against the gate run and the evidence you pass in, and reports pass/fail with evidence. Use when the user says "verify", "run the gate", "is it done", "check before commit", or before reporting any code task as complete. It runs in a forked subagent, so pass as the argument the evidence for each acceptance criterion the repo state can't show, one `AC<n>` line each.
+description: Runs the repository's verification gate (typecheck, tests, build and any conditional suites), checks the active plan's acceptance criteria against the gate run and the evidence you pass in, and reports pass/fail with evidence. Use when the user says "verify", "run the gate", "is it done", "check before commit", or before reporting any code task as complete. It runs in a forked subagent, so pass as the argument the evidence for each acceptance criterion the repo state can't show, one `AC<n>` line each. While building, pass `--iterate` instead, for a partial run of the suites mapped to the changed files, never the done gate. Run the full gate once per PR, after the last code change.
 context: fork
 agent: general-purpose
 background: false
@@ -8,7 +8,15 @@ background: false
 
 # Verify (definition-of-done gate)
 
-This skill runs in a forked subagent with no session history. Its input is the arguments: an evidence list (`AC<n>: <evidence>`) for criteria that the repo state can't show. Never ask the user yourself: return the step 9 report and any open decisions as a list, for the main thread to ask.
+This skill runs in a forked subagent with no session history. Its input is the arguments: an evidence list (`AC<n>: <evidence>`) for criteria that the repo state can't show, or `--iterate` for a partial run. Never ask the user yourself: return the step 9 report and any open decisions as a list, for the main thread to ask.
+
+**One full gate per PR:** use `--iterate` while building. Run the full gate once per PR, after the last code change and before the commit. Any code change after a full gate, tests-only included, needs the full gate again before the commit.
+
+**When the arguments are `--iterate`:** this is a partial run, not the gate, and the numbered steps below don't apply.
+- Run `node "${CLAUDE_PLUGIN_ROOT}/skills/verify/gate.mjs" --iterate` from the repo root, in the foreground, in one call. Don't pipe or filter it.
+- It runs only the `verifyIterate` steps in `.claude/engineering.json` whose `when` prefixes match a changed file. The `AGENTS.md` path has no iterate mode, so a repo with no `.claude/engineering.json` gets exit 2: report the reason it printed.
+- Report the step lines and every `NOT COVERED` file, and say the run is partial. The last line and the exit code are its result.
+- It writes no AC evidence, makes no Jira move and runs no fake-pass check. It never counts as the done gate, so never report work as done from it.
 
 1. **Load the gate.**
    - Read `.claude/engineering.json` → `verify` (always run) and `verifyConditional` (run when changed files match any `when` prefix).
