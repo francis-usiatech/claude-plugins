@@ -10,10 +10,10 @@ import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import {
-  matchAny, isSecretEnvFile, escapeRegExp, isPlainObject, isStringArray, findSecret, DENY_COMMANDS, ASK_COMMANDS,
+  matchAny, isSecretEnvFile, escapeRegExp, isPlainObject, isStringArray, findSecret, DENY_COMMANDS, DROP_DATABASE_RULE, ASK_COMMANDS,
   DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH, parseAllowlist, allowlistWarnings,
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, applyAllowlist, blockingFindings, formatFinding, oneLine, TIER,
-  isPathPrefix, hasControlChar, GIT_PREFIX,
+  isPathPrefix, CONTROL_CODE_POINTS, GIT_PREFIX,
 } from '../../templates/github/scripts/governance-rules.mjs'
 import { STATE_FOLDER, stateDir, checkedStateDir, SHELL_TOOLS } from './governance-state.mjs'
 import { lookupTargets, runLookups, createLookups } from '../../templates/github/scripts/supply-chain-lookups.mjs'
@@ -174,7 +174,52 @@ export const gitProbe = {
   isTracked: (root, rel) => {
     try { execFileSync('git', ['ls-files', '--error-unmatch', '--', rel], { cwd: root, stdio: 'ignore' }); return true } catch { return false }
   },
+  // ESP-82 R12: the top level of the linked worktree of this repository that holds `file`, or null. A worktree counts
+  // only when git confirms all three: its common directory is the main checkout's, it isn't the main checkout, and
+  // `git worktree list` from the main checkout names it (a hand-made .git file isn't listed). Any git failure is null,
+  // so the edit gets the asks it had before.
+  linkedWorktree: (root, file) => {
+    const read = (cwd, args) => execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'ignore'] }).toString()
+    const dir = existingFolder(path.resolve(root, file))
+    if (!dir) return null
+    try {
+      // Cheapest check first: a folder outside any repo fails here, after one git call.
+      const top = read(dir, ['rev-parse', '--show-toplevel']).trim()
+      if (samePath(top, root)) return null
+      const commonDir = (cwd) => read(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']).trim()
+      if (!samePath(commonDir(dir), commonDir(root))) return null
+      // AGENTS.md F6: paths read raw, split on \0.
+      const listed = read(root, ['-c', 'core.quotePath=false', 'worktree', 'list', '--porcelain', '-z']).split('\0')
+        .filter((line) => line.startsWith('worktree ')).map((line) => line.slice('worktree '.length))
+      if (!listed.some((w) => samePath(w, top))) return null
+      return top
+    } catch {
+      return null
+    }
+  },
 }
+
+// The real path (long names, links followed). A path that can't be resolved (gone, no access) is kept as written,
+// which can only make it not match.
+const realPath = (p) => {
+  const full = path.resolve(p)
+  try { return realpathSync.native(full) } catch { return full }
+}
+// The nearest folder above `file` that exists, or null.
+const existingFolder = (file) => {
+  let dir = path.dirname(file)
+  while (!existsSync(dir)) {
+    if (path.dirname(dir) === dir) return null
+    dir = path.dirname(dir)
+  }
+  return dir
+}
+// git prints forward slashes and the real path; the hook gets the project folder as Claude Code spells it.
+const canonicalPath = (p) => {
+  const slashed = realPath(p).split(path.sep).join('/')
+  return CASE_INSENSITIVE_FS ? slashed.toLowerCase() : slashed
+}
+const samePath = (a, b) => canonicalPath(a) === canonicalPath(b)
 
 // Returns { cfg, error }. A missing file is not an error; an unreadable or malformed one is,
 // because silently dropping repo rules would weaken the guard without anyone noticing.
@@ -193,13 +238,16 @@ export const loadConfig = (root) => {
 /**
  * ESP-67 (spec R9, R12): `planning.preflightReviewers` is read by the approve-plan skill, not by the guard, so every
  * problem is advisory. A bad `planning` or list is dropped; a bad entry is dropped on its own.
- * ESP-72: the skill names the agent in its pre-flight report, so a name with a control character or surrounding spaces
- * is a bad entry. A null `when` and an unknown key are reported, and the entry is kept (it then runs on every plan).
+ * ESP-72, ESP-73: the skill names the agent in its pre-flight report, so an agent name may hold only letters, digits,
+ * ".", "_", ":" and "-"; any other name (a control, bidi or format character, a space) is a bad entry.
+ * An unknown key is reported and the entry is kept. A null `when` is reported and the entry is kept without it, so it
+ * runs on every plan.
  */
 const ENTRY_KEYS = ['agent', 'when', '$comment']
-// JSON.stringify leaves U+0085, U+2028 and U+2029 raw, and oneLine keeps them, so they are escaped here.
+const AGENT_NAME = /^[A-Za-z0-9._:-]+$/
+// JSON.stringify leaves DEL, U+0085, U+2028 and U+2029 raw, and oneLine keeps some of them, so they are escaped here.
 const quoteKey = (key) => [...JSON.stringify(key)]
-  .map((c) => ([133, 8232, 8233].includes(c.codePointAt(0)) ? `\\u${c.codePointAt(0).toString(16).padStart(4, '0')}` : c))
+  .map((c) => (CONTROL_CODE_POINTS.includes(c.codePointAt(0)) ? `\\u${c.codePointAt(0).toString(16).padStart(4, '0')}` : c))
   .join('')
 
 const checkPlanning = (cfg, advise) => {
@@ -224,13 +272,14 @@ const checkPlanning = (cfg, advise) => {
       advise(`${label}" needs a non-empty string "agent"`)
       return []
     }
-    if (hasControlChar(entry.agent) || entry.agent !== entry.agent.trim()) {
-      advise(`${label}.agent" must have no control characters and no spaces at either end`)
+    if (!AGENT_NAME.test(entry.agent)) {
+      advise(`${label}.agent" may hold only letters, digits, ".", "_", ":" and "-"`)
       return []
     }
     if (entry.when === null) {
       advise(`${label}.when" is null, so the reviewer runs on every plan; remove it or list path prefixes`)
-      const { when, ...rest } = entry
+      const rest = { ...entry }
+      delete rest.when
       return [rest]
     }
     if (entry.when !== undefined && !(Array.isArray(entry.when) && entry.when.length && entry.when.every(isPathPrefix))) {
@@ -782,6 +831,109 @@ const withoutDataText = (cmd, tool, shellMoved = false) => {
   return writes && (shellMoved || RUNS_LATER.test(out) || RUNS_LATER.test(unquoted) || EXPANSION.test(out) || LEAVES_FOLDER.test(unquoted)) ? cmd : out
 }
 
+// ESP-70: the database-drop deny skips a command made only of read-only commands, where the phrase can only be data:
+// a search, a display command that writes nothing, or git log, grep, show or diff with listed options only. Any other
+// program might run SQL, so it keeps the deny. The split fails closed: a $, a backtick, an escape outside quotes, a
+// line break, a comment, a heredoc or input redirect, a write, a variable assignment, an unquoted wildcard, or a
+// PowerShell block, group or call keeps the deny too.
+// The quiet commands, less those that write a file or change the folder.
+const READ_ONLY_WORDS = [...SEARCH_WORDS, ...QUIET_COMMANDS.filter((w) => !['tee', 'cd', 'mkdir', 'touch'].includes(w))]
+// Full names only, since git takes any unique prefix of a long option. -O (open files in a pager), --output and
+// --ext-diff are not listed, nor is any global option before the subcommand.
+const GIT_FLAGS = ['-i', '-E', '-F', '-P', '-n', '-l', '-w', '-v', '-h', '-H', '-p', '--all', '--oneline', '--stat',
+  '--name-only', '--name-status', '--ignore-case', '--regexp-ignore-case', '--fixed-strings', '--extended-regexp',
+  '--perl-regexp', '--line-number', '--files-with-matches', '--all-match', '--invert-grep', '--no-merges', '--reverse',
+  '--cached', '--patch', '--word-regexp', '--invert-match']
+// Per subcommand: `values` always take a value, as the next word or attached; `equals` take one only after "=".
+// An option that may take no value can't skip the next word, or that word could be -O or --output: in git grep -G
+// is --basic-regexp, and a bare --pretty is valid in log and show.
+const LOG_VALUES = ['-n', '-S', '-G', '--grep', '--author', '--committer', '--since', '--until', '--max-count']
+const GIT_READS = {
+  log: { values: LOG_VALUES, equals: ['--format', '--pretty'] },
+  show: { values: LOG_VALUES, equals: ['--format', '--pretty'] },
+  grep: { values: ['-e', '--max-count'], equals: [] },
+  diff: { values: ['-S', '-G'], equals: [] },
+}
+// Output thrown away (>/dev/null, 2>&1) is not a write: DISCARDED_OUTPUT, read where the split stands.
+const DISCARD_AT = new RegExp(`^(?:${DISCARDED_OUTPUT.source})`, 'i')
+
+const readOnlyGit = (args) => {
+  const read = Object.hasOwn(GIT_READS, args[0]) && GIT_READS[args[0]]
+  if (!read) return false
+  for (let i = 1; i < args.length; i++) {
+    const arg = args[i]
+    if (arg === '--') return true
+    // Values first: -n is a flag in git grep but takes the count in log and show.
+    if (read.values.includes(arg)) { i++; continue }
+    if (!arg.startsWith('-') || GIT_FLAGS.includes(arg) || /^-\d+$/.test(arg)) continue
+    if (/^-[^-]./.test(arg) && read.values.includes(arg.slice(0, 2))) continue
+    if (arg.startsWith('--') && arg.includes('=') && [...read.values, ...read.equals].includes(arg.slice(0, arg.indexOf('=')))) continue
+    return false
+  }
+  return true
+}
+
+const readOnlySimple = (words) => {
+  if (!words.length) return true
+  // A variable assignment before a command (GIT_PAGER=… git log) is a first word with "=", which no listed name has.
+  const name = words[0].toLowerCase().replace(/\.exe$/, '')
+  return name === 'git' ? readOnlyGit(words.slice(1)) : READ_ONLY_WORDS.includes(name)
+}
+
+// The command split into simple commands of unquoted words, or null when the split can't read it.
+const simpleCommands = (cmd, bash) => {
+  const commands = [[]]
+  let word = null
+  const endWord = () => {
+    if (word !== null) commands.at(-1).push(word)
+    word = null
+  }
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+    if (ch === "'" || ch === '"') {
+      const close = cmd.indexOf(ch, i + 1)
+      if (close === -1) return null
+      const body = cmd.slice(i + 1, close)
+      // In bash double quotes a backslash can escape the closing quote; $ and the backtick expand in both shells.
+      if (ch === '"' && (/[$`]/.test(body) || (bash && body.includes('\\')))) return null
+      // Windows PowerShell 5.1 (and legacy argument passing) rebuilds a native argument with quotes, so a `\"` inside
+      // single quotes reaches git as more than one argument.
+      if (!bash && /["\\]/.test(body)) return null
+      word = (word ?? '') + body
+      i = close
+      continue
+    }
+    if (ch === ' ' || ch === '\t') { endWord(); continue }
+    // PowerShell also splits words on other whitespace (NBSP, vertical tab, form feed, U+2002), so outside quotes
+    // only printable ASCII is read.
+    if (ch < ' ' || ch > '~') return null
+    if (ch === '>') {
+      const discard = DISCARD_AT.exec(cmd.slice(i))
+      if (!discard || (word !== null && !/^\d+$/.test(word))) return null
+      word = null
+      i += discard[0].length - 1
+      continue
+    }
+    if (ch === '|' || ch === ';' || (ch === '&' && (bash || cmd[i + 1] === '&')) || (bash && (ch === '(' || ch === ')'))) {
+      endWord()
+      if ((ch === '|' || ch === '&') && cmd[i + 1] === ch) i++
+      commands.push([])
+      continue
+    }
+    // An unquoted wildcard can expand to a file named like an option (`-O<pager>`, `--pre=<program>`).
+    if (/[\n\r`$#<{}()&*?[]/.test(ch) || (bash && ch === '\\') || (!bash && ch === '@')) return null
+    word = (word ?? '') + ch
+  }
+  endWord()
+  return commands
+}
+
+const readOnlyCommand = (cmd, tool) => {
+  if (cmd.length > MAX_COMMAND_CHARS || [cmd, cmd.replace(/['"\\]/g, '')].some((c) => REDEFINES.test(c)) || TYPOGRAPHIC_QUOTES.test(cmd)) return false
+  const commands = simpleCommands(cmd, tool === 'Bash')
+  return commands !== null && commands.every(readOnlySimple)
+}
+
 const decideBash = (cmd, { cfg, gov, repoRules }, git, root, tool, cwd, p = path) => {
   if (squeezeSpaces(cmd).length > MAX_TOTAL_CHARS) return decision('deny', `Blocked: the command is over ${MAX_TOTAL_CHARS / 1024 / 1024} MB, too long for the guard to check. Write it to a script file and run that instead.`, cmd)
   const text = withoutDataText(cmd, tool, shellOutsideQuietFolder(cwd, root, p))
@@ -791,8 +943,11 @@ const decideBash = (cmd, { cfg, gov, repoRules }, git, root, tool, cwd, p = path
   const forms = [text, ...decoded].flatMap((c) => [c, unescaped(c)])
   const matches = (re) => forms.some((c) => new RegExp(re, 'i').test(c))
   const pieces = forms.flatMap(denyPieces)
-  for (const [why, re] of [...DENY_COMMANDS, ...repoRules.deny]) {
-    if (pieces.some((piece) => new RegExp(re, 'i').test(piece))) return decision('deny', `Blocked: ${why}.`, cmd)
+  for (const rule of [...DENY_COMMANDS, ...repoRules.deny]) {
+    const [why, re] = rule
+    if (!pieces.some((piece) => new RegExp(re, 'i').test(piece))) continue
+    if (rule === DROP_DATABASE_RULE && readOnlyCommand(cmd, tool)) continue
+    return decision('deny', `Blocked: ${why}.`, cmd)
   }
   if (forms.some((c) => c.length > MAX_COMMAND_CHARS)) return decision('ask', `The command is over ${MAX_COMMAND_CHARS / 1024} KB, too long for the guard to check fully. Confirm it is part of the approved plan.`, cmd)
   if (encoded.includes(null)) return decision('ask', 'The command has a PowerShell -EncodedCommand the guard could not decode. Confirm it is part of the approved plan.', cmd)
@@ -838,6 +993,34 @@ const decideOutsideEdit = (file, gov, root, p, ic, tool, ti, places, cfg) => {
   return { ...decision(null, `Trusted write path "${entry}".`, file), trusted: true }
 }
 
+// ESP-82: where Claude Code puts the worktrees of isolated agents.
+const WORKTREES_PATH = '.claude/worktrees/**'
+
+// ESP-82 R13: an edit in a linked worktree is decided as a project edit relative to the worktree's top level, with
+// the main checkout's config, and the worktree's plan or else the main checkout's. Returns null when git doesn't
+// confirm a linked worktree (R14), else { result } with the decision (null allows). `fallback` is the decision the
+// edit gets otherwise; a lookup that throws keeps an ask and says why.
+const decideWorktreeEdit = async (file, safe, git, root, p, ic, tool, ti, net, places, fallback) => {
+  let top = null
+  try {
+    top = git.linkedWorktree?.(root, file) ?? null
+  } catch (e) {
+    const why = `The guard could not check whether it is in a linked worktree: ${e?.message || e}.`
+    return { result: decision('ask', fallback?.decision === 'ask' ? `${fallback.reason} ${why}` : `Edit ${file}. ${why}`, file) }
+  }
+  if (!top) return null
+  // git gives the real path; compare the file's real folder with it, so an 8.3 name (C:\Users\RUNNER~1) or a link
+  // (/var as /private/var) in the spelling Claude Code passes still reads as inside the worktree.
+  const abs = p.resolve(root, file)
+  const folder = existingFolder(abs)
+  const realAbs = folder ? p.join(realPath(folder), p.relative(folder, abs)) : abs
+  const realTop = realPath(top)
+  const inner = p.relative(realTop, realAbs)
+  if (inner.startsWith('..') || p.isAbsolute(inner)) return null
+  const result = await decideEdit(realAbs, safe, git, realTop, p, ic, tool, ti, net, { ...places, planRoot: places.planRoot ?? root })
+  return { result: result && { ...result, target: file, worktree: top } }
+}
+
 const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, places) => {
   // ESP-113 item 7: an existing 8.3 path is decided as its long name, if that stays in the project; otherwise the
   // short-name asks below apply. The path as written is resolved, so a short spelling of the project folder itself
@@ -853,8 +1036,20 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
   }
   const relNative = p.relative(root, p.resolve(root, file))
   // On Windows a path on another drive comes back absolute rather than starting with "..".
-  if (relNative.startsWith('..') || p.isAbsolute(relNative)) return decideOutsideEdit(file, gov, root, p, ic, tool, ti, places, cfg)
+  const outside = relNative.startsWith('..') || p.isAbsolute(relNative)
   const rel = relNative.split(p.sep).join('/')
+  const worktreeEdit = (fallback) => decideWorktreeEdit(file, { cfg, gov }, git, root, p, ic, tool, ti, net, places, fallback)
+  if (outside) {
+    // The git probes run only for an outside edit that would ask: a trusted write or a deny needs no worktree check.
+    const result = decideOutsideEdit(file, gov, root, p, ic, tool, ti, places, cfg)
+    if (result?.decision !== 'ask') return result
+    const worktree = await worktreeEdit(result)
+    return worktree ? worktree.result : result
+  }
+  if (matchAny(rel, [WORKTREES_PATH], ic)) {
+    const worktree = await worktreeEdit(null)
+    if (worktree) return worktree.result
+  }
   // R2 (ESP-106): decide a variant as the file it writes; the decision keeps the name as written, so the log shows it.
   if (p.sep === '\\' && windowsCanonical(rel) !== rel) {
     const result = await decideEdit(windowsCanonical(rel), { cfg, gov }, git, root, p, ic, tool, ti, net, places)
@@ -889,7 +1084,7 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
     : allPlan ? { ...decision(null, 'Plan or archive write trusted by governance.planEdits "all".', rel), trusted: true }
     : matchAny(rel, [PLAN_PATH], ic) && gov.planEdits !== 'ask' && evidenceOnlyPlanEdit(rel, tool, ti, root, p)
       ? { ...decision(null, 'The plan edit only changes evidence, task ticks or the change log.', rel), trusted: true }
-      : decideScope(rel, gov, root, ic)
+      : decideScope(rel, gov, root, ic, places.planRoot)
   // A credential or content ask must not hide a scope or governance ask; the user confirms them all at once.
   const reasons = [
     shortName && `"${rel}" has a Windows short name (8.3) segment, which may stand for a governance, plan or protected file. Confirm the edit.`,
@@ -954,14 +1149,15 @@ const dependencyFindings = async (rel, tool, ti, gov, root, p, ic, net) => {
   return { findings: applyAllowlist([...offline, ...findings], gov.allowlist || [], ic), failures }
 }
 
-// Plan, governance-file and plan-scope checks for a project-relative path.
-const decideScope = (rel, gov, root, ic) => {
+// Plan, governance-file and plan-scope checks for a project-relative path. In a linked worktree with no plan of its
+// own, the main checkout's plan (planRoot) sets the scope (ESP-82 R13).
+const decideScope = (rel, gov, root, ic, planRoot) => {
   // Otherwise a plan could widen its own Files list (e.g. to `**`) and unlock every later edit.
   if (matchAny(rel, [PLAN_PATH], ic)) return decision('ask', `The approved plan sets the edit scope. Changing ${PLAN_PATH} needs explicit confirmation.`, rel)
   if (matchAny(rel, GUARD_EXEMPT_PATHS, ic)) return null
   const hit = matchAny(rel, gov.askPaths || DEFAULT_ASK_PATHS, ic)
   if (hit) return decision('ask', `"${rel}" is a governance, CI or dependency file (${hit}). Changes need explicit confirmation.`, rel)
-  const plan = planFiles(root)
+  const plan = planFiles(root) ?? (planRoot ? planFiles(planRoot) : null)
   if (plan && plan.length && !matchAny(rel, plan, ic)) return decision('ask', `"${rel}" is not in the approved plan (.claude/plans/active.md → Files). Confirm the scope change or update the plan.`, rel)
   if (!plan && gov.requirePlan) return decision('ask', 'No approved plan is active (.claude/plans/active.md). Run the approve-plan skill first.', rel)
   return null
@@ -1038,7 +1234,7 @@ export const evaluate = async (input, { root, cfg = {}, configError = null, git 
  */
 export const logEntries = (result, tool) => {
   if (!result) return []
-  const at = { tool, target: result.target }
+  const at = { tool, target: result.target, ...(result.worktree && { worktree: result.worktree }) }
   const atConfig = { tool, target: CONFIG_FILE }
   return [
     ...(result.configWarning ? [{ ...atConfig, decision: 'warn', reason: result.configLogReason ?? result.configWarning }] : []),

@@ -6,7 +6,7 @@ description: Splits an approved spec into small tickets that each name the requi
 # Spec to tickets
 
 ## 1. Split
-1. Read the spec. It must say `Status: approved`. If it's a draft, stop and ask the user to approve it first.
+1. Read the spec. It must say `Status: approved`, or be the draft `to-spec` just handed over for the joint approval in step 1.5. For any other draft, stop and ask the user to approve it first.
 2. Split it into tickets small enough for one reviewable PR each. Each ticket has:
    - a title (imperative, 60 characters or fewer)
    - **Covers:** the R and AC IDs it delivers
@@ -19,6 +19,8 @@ description: Splits an approved spec into small tickets that each name the requi
    - **Jira tracker through the MCP:** when the Atlassian MCP's `createJiraIssue` and `createIssueLink` tools are available and the `check` output has `jira.cloudId`, step 2.2 files through them and needs no environment credentials.
    - **Jira tracker through the script** (otherwise): check that `JIRA_EMAIL` and `JIRA_API_TOKEN` are set, without printing their values (for example `test -n "$JIRA_API_TOKEN"`). If either is missing, stop and ask the user to set it. Never ask for the token in the conversation, and never write it to a file.
 5. Show the list as a table (`# | Title | Covers | Blocked by`). Say where the tickets will go: GitHub issues, Jira issues (with the project and the parent key from the config, if any) or the spec, and ask the user once to confirm before filing anything.
+   - For a draft spec, put its summary (path, goal, number of Rs and ACs, open questions) above the table. One approval then covers the spec and the ticket list together: set the spec's `Status: approved` and the date, then file.
+   - When `.claude/engineering.json` sets `decisions.batch` to `false`, the spec was approved on its own in `to-spec`, so ask about the ticket list on its own.
 
 ## 2. File
 1. **With GitHub:** create the issues in blocker order, so each `Blocked by #NN` names a real issue.

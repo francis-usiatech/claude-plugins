@@ -15,12 +15,15 @@ Before routing, if `.claude/plans/active.md` already exists and is unfinished, a
 Pick the route and tell the user which rule decided it.
 - **Small**, when all of these hold:
   - the work cites an existing requirement reference (intent §, capability ID, FR/AC, ADR, spec, `#issue`, or a Jira key such as `ESP-24`). A spec counts only if it says `Status: approved`.
-  - it touches 5 files or fewer
+  - it touches 5 production-code files or fewer. The count is production code only: tests, QA catalogue entries, docs and generated files don't count.
+    - A generated file is one a tool regenerates and nobody edits by hand.
+    - A doc is a Markdown or text file that only people read. Skills, agent files and rules files are followed by agents, so they are not docs.
+    - Everything else counts, including config, migrations, CI workflows, hook and gate scripts, `infra/`, `AGENTS.md`, `CLAUDE.md`, `REVIEW.md` and `.claude/**`.
   - it adds no new skill, module, service or public interface
 - **Large**, anything else. Run `clarify` → `to-spec` → `to-tickets` first. The spec path and ticket IDs become the requirement references. Add the spec path to **Files**, since the spec is committed with the work.
   - A large-route plan covers one ticket, or a set the user lists, so it matches one PR. Copy only the ACs those tickets cover, with their spec IDs.
   - Each remaining ticket gets its own plan after the previous one closes.
-- The user can say "treat as small" or "treat as large". Record the override in the Change log. An override changes the route, not the rule that every plan needs a requirement reference: "treat as small" with no reference still needs one before the plan is recorded.
+- The user can say "treat as small" or "treat as large". Record the override in the Change log. An override changes the route, not the rule that every plan needs a requirement reference: "treat as small" with no reference still needs one before the plan is recorded. The production-code count changes only the file condition; the other Small conditions and both overrides are unchanged.
 
 ## Record
 1. Draft the plan from `${CLAUDE_PLUGIN_ROOT}/templates/plan.md`:
@@ -41,14 +44,15 @@ Pick the route and tell the user which rule decided it.
    - **Out of scope:** what this plan explicitly doesn't do.
    - **Approved:** the user's name and today's date, and `Route: small` or `Route: large` with the rule that decided it.
 2. Run the `governance-reviewer` agent on the draft in pre-flight mode. On the large route it also checks the plan against the spec and tickets. Fix a `BLOCK` before going on; a `FLAG` needs the user's decision, recorded in the plan's change log.
-   - **Model:** run `governance-reviewer` on `sonnet` when the plan's **Files** section lists 5 paths or fewer, otherwise on its agent file's model. A `reviewerModels` entry for the agent in the base-branch `.claude/engineering.json` wins either way; pre-flight reviewers use the same `reviewerModels` rule (the `release` skill, **Models**).
+   - **Settled FLAGs:** a `FLAG` the reviewer reports as "FLAG, settled by SD-n" needs no decision. Record it in the plan's Change log with its SD number, and leave it out of the batched decision. A fix that a standing decision covers (such as SD-1, a wording-only fix) gets its dated Change log line and is shown with the plan, without a separate decision.
+   - **Model:** run `governance-reviewer` on `sonnet` when the plan's **Files** section lists 5 paths or fewer, counting every path (not only production code), otherwise on its agent file's model. A `reviewerModels` entry for the agent in the base-branch `.claude/engineering.json` wins either way; pre-flight reviewers use the same `reviewerModels` rule (the `release` skill, **Models**).
    - **Pre-flight reviewers:** run each agent listed in `.claude/engineering.json` → `planning.preflightReviewers` on the draft in design mode, in parallel with `governance-reviewer`. Give each one only the draft plan, nothing else from the session, and ask for `PASS`, `FLAG` or `BLOCK` with findings.
      - Each entry is `{ "agent": "<name>", "when": ["<prefix>", …] }`. An entry with `when` runs only when one of its path prefixes matches the start of a path in the plan's **Files** section; an entry without `when` always runs. A `"when": null` counts as no `when`, and other keys are ignored; the guard reports both.
-     - An invalid entry (no non-empty string `agent`, an `agent` with a control character or a space at either end, or a bad `when`) is skipped and named in the pre-flight report by its index, `planning.preflightReviewers[i]`, never by its `agent` value. The guard has already warned about it once.
+     - An invalid entry (no non-empty string `agent`, an `agent` that doesn't match `^[A-Za-z0-9._:-]+$`, or a bad `when`) is skipped and named in the pre-flight report by its index, `planning.preflightReviewers[i]`, never by its `agent` value. The guard has already warned about it once.
      - A reviewer that fails or isn't installed is reported by name and does not count as a pass.
      - A `BLOCK` from any pre-flight reviewer must be fixed before going on, as with `governance-reviewer`.
-   - Combine the `BLOCK`s and `FLAG`s from every pre-flight reviewer, each labelled with the reviewer that raised it. Fix the `BLOCK`s, then put every open pre-flight decision (each `FLAG` and any scope question) into one question, with a recommended default for each item. When `.claude/engineering.json` sets `decisions.batch` to `false`, ask about each one on its own instead.
-3. Show the draft and the pre-flight verdict. After the user confirms, write `.claude/plans/active.md` and show it in one short message. Don't write `.claude/plans/active.md` while a Pre-plan checklist item is empty, still the template placeholder or a bare `n/a`: fix the item first.
+   - Combine the `BLOCK`s and `FLAG`s from every pre-flight reviewer, each labelled with the reviewer that raised it. Fix the `BLOCK`s, then put every open pre-flight decision (each unsettled `FLAG` and any scope question) into one question, with a recommended default for each item. When `.claude/engineering.json` sets `decisions.batch` to `false`, ask about each one on its own instead.
+3. Show the draft with its pre-flight result and ask once: the plan's approval and every open pre-flight decision go into that same question. When `decisions.batch` is `false`, ask about the plan and each decision on its own. After the user confirms, write `.claude/plans/active.md` and show it in one short message. Don't write `.claude/plans/active.md` while a Pre-plan checklist item is empty, still the template placeholder or a bare `n/a`: fix the item first.
 4. **Jira tracker only:** mark the plan's tickets started.
    - When `.claude/engineering.json` exists, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root. Show any stderr warning it prints to the user, even when it exits 0 (for example, a site outside `.atlassian.net`).
    - Skip this step when there's no config file, when `check` prints `"tracker":"github"`, or when `jira.statuses` in its output has no `started`. Say why you skipped it.
