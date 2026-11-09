@@ -1,6 +1,6 @@
 import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, mkdirSync, rmSync, symlinkSync, linkSync, writeFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, rmSync, symlinkSync, linkSync, writeFileSync, statSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { evaluate, loadConfig, sanitizeConfig, planFiles, gitProbe, logEntries, pendingAdvice, recordAdvice, configMarkerPath } from '../hooks/scripts/governance-policy.mjs'
@@ -725,7 +725,9 @@ describe('evaluate: edits in a linked worktree (ESP-82; spec R12–R15, AC9–AC
   }
   const PLAN_PATH_FOR_TESTS = '.claude/plans/active.md'
   const run = (root, file, opts = {}) => evaluate({ tool_name: 'Edit', tool_input: { file_path: file, old_string: 'a', new_string: 'b' } }, { root, cfg: opts.cfg || {}, ...(opts.git && { git: opts.git }) })
-  const same = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase()
+  // Compare real paths: git prints long names, while a runner's TEMP can be an 8.3 short name (C:\Users\RUNNER~1).
+  const real = (p) => { try { return realpathSync.native(p) } catch { return path.resolve(p) } }
+  const same = (a, b) => real(a).toLowerCase() === real(b).toLowerCase()
 
   it('should allow an in-plan edit in a worktree under .claude/worktrees, using the main plan (AC9)', async () => {
     const { main, inner } = setup()
@@ -791,7 +793,7 @@ describe('evaluate: edits in a linked worktree (ESP-82; spec R12–R15, AC9–AC
     rmSync(ext, { recursive: true, force: true })
     mkdirSync(ext, { recursive: true })
     initRepo(ext)
-    assert.ok(git(main, 'worktree', 'list', '--porcelain').toLowerCase().includes(ext.split(path.sep).join('/').toLowerCase()), 'the removed worktree is still listed')
+    assert.ok(git(main, 'worktree', 'list', '--porcelain').toLowerCase().includes(real(ext).split(path.sep).join('/').toLowerCase()), 'the removed worktree is still listed')
     assert.match((await run(main, path.join(ext, 'src', 'a.ts')))?.reason ?? '', /outside the project folder/)
   })
 
