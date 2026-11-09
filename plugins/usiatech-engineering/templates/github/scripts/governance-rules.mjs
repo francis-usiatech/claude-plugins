@@ -25,7 +25,9 @@ export const isSecretEnvFile = (basename, allowEnvExample = true, ignoreCase = f
 // Config shape checks shared by the guard and CI.
 export const isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === 'string')
 // A control character in a name could forge a summary line: C0 controls, DEL, NEL and the two Unicode line breaks.
-export const hasControlChar = (text) => [...text].some((c) => c.codePointAt(0) < 32 || [127, 133, 8232, 8233].includes(c.codePointAt(0)))
+// JSON.stringify escapes C0 controls but leaves the others raw, so the guard's key quoting escapes this list too.
+export const CONTROL_CODE_POINTS = [127, 133, 8232, 8233]
+export const hasControlChar = (text) => [...text].some((c) => c.codePointAt(0) < 32 || CONTROL_CODE_POINTS.includes(c.codePointAt(0)))
 // A `when` path prefix (verifyConditional, planning.preflightReviewers). git lists paths relative to the repo root
 // with forward slashes, so any other spelling could never match.
 export const isPathPrefix = (v) => typeof v === 'string' && v.trim() !== '' && v === v.trim() && !hasControlChar(v) && !v.includes('\\') && !v.startsWith('/') && !v.startsWith('./') && !v.split('/').includes('..')
@@ -47,6 +49,9 @@ const ROOT_TARGET = String.raw`[\s:=]["']?(?:(?:(?:[a-z]:)?[\/\\]{1,2}|[a-z]:|\.
 const DELETE_ALIAS = String.raw`(?:remove-item|rm|rmdir|ri|rd|del|erase)\b`
 
 // Command rules: [reason, regex source], matched case-insensitively against the full Bash or PowerShell command.
+// ESP-70: named, because the guard skips this one rule for a command made only of read-only commands.
+export const DROP_DATABASE_RULE = ['dropping a database or schema', String.raw`\bdrop\s+(database|schema)\b`]
+
 export const DENY_COMMANDS = [
   ['destructive delete of root/home/workspace', String.raw`${RM}(?=${RM_RECURSIVE})(?=${RM_FORCE})[^;&|]*${ROOT_TARGET}`],
   // ESP-110 item 6: a listing of such a target piped into a delete, whatever its flags. ESP-113 item 8: also after
@@ -63,7 +68,7 @@ export const DENY_COMMANDS = [
   // whatever comes after it (-pn, -nam x, -nSkey, -n;), so a quoted word such as "-Note" in a message is denied too.
   ['bypassing git hooks', String.raw`${GIT_PREFIX}commit\b[^;&|]*\s-[aeiopqsvz]*n`],
   ['disk/filesystem destruction', String.raw`\b(mkfs(\.\w+)?|dd\s+[^|]*of=\/dev\/|:\(\)\s*\{\s*:\|:&\s*\};:)`],
-  ['dropping a database or schema', String.raw`\bdrop\s+(database|schema)\b`],
+  DROP_DATABASE_RULE,
   ['machine shutdown/reboot', String.raw`\b(shutdown|reboot|halt|poweroff)\b`],
   ['world-writable recursive permissions', String.raw`\bchmod\s+-R\s+0?777\b`],
 ]

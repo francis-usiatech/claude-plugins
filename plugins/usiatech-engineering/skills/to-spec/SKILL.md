@@ -21,9 +21,9 @@ description: Writes a confirmed understanding into a numbered spec at docs/specs
 
 ## 3. Review
 1. Self-check: no placeholders, every R has an AC, every AC names an R, goals and non-goals don't contradict.
-2. Show the user the path and a short summary: goal, number of Rs and ACs, open questions.
-3. When the user approves, set `Status: approved` and the date. Don't approve while an open question is neither answered nor marked `deferred: <why>`.
-4. Hand off to `to-tickets`.
+2. Hand the draft to `to-tickets` for the split. Don't ask for approval yet: `to-tickets` shows the spec summary (path, goal, number of Rs and ACs, open questions) with the ticket table, and asks for one approval of both.
+3. That joint approval sets `Status: approved` and the date. Don't approve while an open question is neither answered nor marked `deferred: <why>`.
+4. When `.claude/engineering.json` sets `decisions.batch` to `false`, show the summary and ask for the spec's approval on its own first. Then hand off to `to-tickets`.
 
 ## Rules
 - The spec is committed with the work it describes (through `release`), not on its own.
