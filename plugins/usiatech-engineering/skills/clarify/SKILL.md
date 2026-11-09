@@ -30,7 +30,7 @@ Write back, in under 200 words:
 - **Not doing:** the scope edges.
 - **Open:** questions still unanswered.
 
-Ask the user to correct it. Repeat until they confirm, then hand off to `to-spec`.
+Ask the user once to confirm the note, giving all corrections in one answer. Show the note again only when a correction changes it. Once they confirm, hand off to `to-spec`. When `.claude/engineering.json` sets `decisions.batch` to `false`, ask about each item on its own instead.
 
 ## Rules
 - Write no files and change no code.

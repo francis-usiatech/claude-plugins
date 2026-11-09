@@ -1,6 +1,6 @@
 import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, mkdirSync, symlinkSync, linkSync, writeFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, rmSync, symlinkSync, linkSync, writeFileSync, statSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { evaluate, loadConfig, sanitizeConfig, planFiles, gitProbe, logEntries, pendingAdvice, recordAdvice, configMarkerPath } from '../hooks/scripts/governance-policy.mjs'
@@ -49,6 +49,106 @@ describe('evaluate: Bash deny rules', () => {
   for (const cmd of ['git commit -m x', 'git commit --no-edit', 'git commit -am x', 'git push -n', 'git commit -m new', 'git --no-pager log -S commit -n 3', 'git -p log -S commit -n 3']) {
     it(`should not deny: ${cmd}`, async () => assert.notEqual((await bash(cmd))?.decision, 'deny'))
   }
+})
+
+describe('evaluate: database-drop deny scoped to SQL (ESP-70; spec R9–R10, AC5–AC6)', () => {
+  const powershell = (command) => evaluate({ tool_name: 'PowerShell', tool_input: { command } }, { root: tempDir(), git: fakeGit() })
+  // R9: every simple command only reads, so the phrase is data.
+  for (const cmd of [
+    'git log --grep="drop database"',
+    'git log --oneline --all --grep="DROP SCHEMA"',
+    'git log --grep "drop database" | head -5',
+    'git log -S "drop database" -p -- hooks/',
+    'git grep "drop database"',
+    'git grep -n -i -e "drop schema" -- hooks/',
+    'git grep "drop database" 2>/dev/null',
+    'git show HEAD --stat && git grep -l "drop database"',
+    'git diff develop -- notes.md | grep "drop schema"',
+    'grep -rn "drop database" hooks/',
+    'rg -i "drop schema" .',
+    'cat notes.md | grep "drop schema"',
+    'echo "drop database"',
+    'rg -g \'*.sql\' "drop database"',
+    'git log --pretty=oneline --author "x" --grep="drop database"',
+    'git log -S"drop database" -G"drop schema"',
+  ]) {
+    it(`should not deny: ${cmd}`, async () => assert.equal(await bash(cmd), null))
+  }
+  it('should not deny a PowerShell Select-String search', async () => {
+    assert.equal(await powershell('Select-String -Pattern "drop database" -Path notes.md'), null)
+  })
+  it('should not deny a PowerShell git log search', async () => {
+    assert.equal(await powershell('git log -n 5 --grep \'drop database\''), null)
+  })
+
+  // R10: anything that may run SQL, an unknown program, a write or text the check can't read stays denied.
+  for (const cmd of [
+    'psql -c "drop database app"',
+    'mysql -e "drop database app"',
+    'sqlite3 app.db "drop schema main"',
+    'sqlcmd -Q "drop database app"',
+    'docker exec db psql -c "drop schema x"',
+    'kubectl exec db -- psql -c "drop database app"',
+    'echo "drop database app" | psql',
+    'psql < drop.sql && echo "drop database app"',
+    'node -e "db.query(\'drop database app\')"',
+    'python -c "run(\'drop database app\')"',
+    './run-sql.sh "drop database app"',
+    'pnpm db:exec "drop database app"',
+    'git -c core.pager=sh log --grep="drop database"',
+    'git -C . log --grep="drop database"',
+    'git --no-pager log --grep="drop database"',
+    'git log --grep="drop database" | sh',
+    'git grep -O\'psql -c "drop database prod"\' x',
+    'git grep -iO\'psql -c "drop database prod"\' x',
+    'git grep --open-files-in-pager=\'psql -c "drop database prod"\' x',
+    'git grep --o=\'psql -c "drop database prod"\' x',
+    'git log --output=x.sh --grep="drop database"',
+    'git log --ext-diff --grep="drop database"',
+    'GIT_PAGER=\'psql -c "drop database prod"\' git log',
+    'echo "psql -c \'drop database prod\'" >> ~/.bashrc',
+    'echo "drop database prod" > run.sql',
+    'echo "drop database prod" | tee hook.sh',
+    'grep "drop database" `which x`',
+    'grep "$(psql -c \'drop database app\')" notes.md',
+    'grep "`psql -c \'drop database app\'`" notes.md',
+    'X=cat cat "drop database"',
+    'grep "drop database" $(ls)',
+    'grep "$X" && psql -c "drop database app"',
+    'grep "drop database" x\npsql -c "drop database app"',
+    'grep "drop database" x # comment',
+    'git log --grep="drop database" -- \\x',
+    // An unquoted wildcard can expand to a file named like an option (-O<pager>).
+    'git grep -n "drop database" -- *',
+    'git log --grep="drop database" ?',
+    'git show --stat [a-z]* --grep="drop schema"',
+    // An option that may take no value must not skip the next word (git grep -G is --basic-regexp; bare --pretty).
+    'git grep -G "-Opsql -c \'drop database prod\'" -e a',
+    'git grep -GO\'psql -c "drop database prod"\' x',
+    'git log --pretty --output=x.sh --grep="drop database"',
+    'git show --pretty --ext-diff -p --grep="drop schema"',
+    'git log --format --output=x.sh --grep="drop database"',
+    'git log -1 --grep="drop database" HEAD\u000b--output=x.sql',
+    // In log, -n takes the next word as its count (older git, via atoi, even when it looks like an option).
+    'git log -n -S --output=x.sql --grep="drop database"',
+  ]) {
+    it(`should deny: ${cmd}`, async () => assert.equal((await bash(cmd))?.decision, 'deny'))
+  }
+  for (const cmd of [
+    'Invoke-Sqlcmd -Query "drop database app"',
+    'Select-String -Pattern "drop database" -Path x | ForEach-Object { psql }',
+    '& psql -c "drop database app"',
+    // PowerShell splits words on other whitespace too, so a hidden option must not pass as part of a word.
+    ...['\u00a0', '\u000b', '\u000c', '\u2002'].map((ws) => `git log -1 --format='drop database' HEAD${ws}--output=x.sql`),
+    // Windows PowerShell 5.1 passes `\"` inside single quotes to git as more than one argument.
+    'git log -1 --grep \'drop database\\" --output=x.sql \\"y\'',
+  ]) {
+    it(`should deny in PowerShell: ${cmd}`, async () => assert.equal((await powershell(cmd))?.decision, 'deny'))
+  }
+  // R11: only the database-drop rule is skipped; the other deny rules keep their scope over read-only commands.
+  it('should still apply other deny rules to a read-only command', async () => {
+    assert.match((await bash('grep -rn core.hooksPath .'))?.reason ?? '', /bypassing git hooks/)
+  })
 })
 
 describe('evaluate: Bash ask rules', () => {
@@ -600,6 +700,163 @@ describe('evaluate: repo command rules', () => {
   it('should still deny default-dangerous commands when a repo pattern is invalid', async () => {
     const cfg = { governance: { denyCommands: [{ pattern: '[' }] } }
     assert.equal((await bash('rm -rf /', { cfg })).decision, 'deny')
+  })
+})
+
+describe('evaluate: edits in a linked worktree (ESP-82; spec R12–R15, AC9–AC12)', () => {
+  const PLAN = (glob) => `# Plan\n\n## Files\n- \`${glob}\`\n`
+  const initRepo = (dir) => {
+    git(dir, 'init', '-q')
+    git(dir, 'config', 'user.email', 'test@example.com')
+    git(dir, 'config', 'user.name', 'Test')
+    writeFiles(dir, { 'README.md': 'x\n' })
+    git(dir, 'add', 'README.md')
+    git(dir, 'commit', '-q', '-m', 'init')
+  }
+  // A main checkout with an approved plan, a worktree under .claude/worktrees and one outside the project folder.
+  const setup = () => {
+    const main = tempDir('usiatech-wt-main-')
+    initRepo(main)
+    writeFiles(main, { [PLAN_PATH_FOR_TESTS]: PLAN('src/**') })
+    git(main, 'worktree', 'add', '-q', '.claude/worktrees/w1', '-b', 'w1')
+    const ext = path.join(tempDir('usiatech-wt-ext-'), 'ext')
+    git(main, 'worktree', 'add', '-q', ext, '-b', 'ext')
+    return { main, inner: path.join(main, '.claude', 'worktrees', 'w1'), ext }
+  }
+  const PLAN_PATH_FOR_TESTS = '.claude/plans/active.md'
+  const run = (root, file, opts = {}) => evaluate({ tool_name: 'Edit', tool_input: { file_path: file, old_string: 'a', new_string: 'b' } }, { root, cfg: opts.cfg || {}, ...(opts.git && { git: opts.git }) })
+  // Compare real paths: git prints long names, while a runner's TEMP can be an 8.3 short name (C:\Users\RUNNER~1).
+  const real = (p) => { try { return realpathSync.native(p) } catch { return path.resolve(p) } }
+  const same = (a, b) => real(a).toLowerCase() === real(b).toLowerCase()
+
+  it('should allow an in-plan edit in a worktree under .claude/worktrees, using the main plan (AC9)', async () => {
+    const { main, inner } = setup()
+    assert.equal(await run(main, path.join(inner, 'src', 'a.ts')), null)
+  })
+
+  it('should allow an in-plan edit in a worktree outside the project folder (AC9)', async () => {
+    const { main, ext } = setup()
+    assert.equal(await run(main, path.join(ext, 'src', 'a.ts')), null)
+  })
+
+  it('should ask for ask paths inside a worktree (AC9)', async () => {
+    const { main, inner, ext } = setup()
+    for (const file of [path.join(inner, '.claude', 'settings.json'), path.join(inner, 'AGENTS.md'), path.join(ext, '.github', 'CODEOWNERS'), path.join(ext, 'AGENTS.md')]) {
+      const result = await run(main, file)
+      assert.equal(result?.decision, 'ask', file)
+      assert.match(result.reason, /governance, CI or dependency file/)
+    }
+  })
+
+  it('should ask for a worktree path outside the plan (AC9)', async () => {
+    const { main, inner } = setup()
+    assert.match((await run(main, path.join(inner, 'docs', 'x.md')))?.reason ?? '', /not in the approved plan/)
+  })
+
+  it('should use the worktree\'s own plan when it has one (AC9)', async () => {
+    const { main, ext } = setup()
+    writeFiles(ext, { [PLAN_PATH_FOR_TESTS]: PLAN('docs/**') })
+    assert.equal(await run(main, path.join(ext, 'docs', 'x.md')), null)
+    assert.match((await run(main, path.join(ext, 'src', 'a.ts')))?.reason ?? '', /not in the approved plan/)
+  })
+
+  it('should ignore a looser engineering.json in the worktree (AC9; R13)', async () => {
+    const { main, inner } = setup()
+    writeFiles(inner, { '.claude/engineering.json': JSON.stringify({ governance: { askPaths: ['nothing/**'] } }) })
+    const result = await run(main, path.join(inner, 'src', 'AGENTS.md'))
+    assert.match(result?.reason ?? '', /governance, CI or dependency file \(\*\*\/AGENTS\.md\)/)
+  })
+
+  it('should keep asking for a plain folder under .claude/worktrees (AC10)', async () => {
+    const { main } = setup()
+    assert.equal((await run(main, path.join(main, '.claude', 'worktrees', 'fake', 'src', 'a.ts')))?.decision, 'ask')
+  })
+
+  it('should keep asking for a worktree of another repository (AC10)', async () => {
+    const { main } = setup()
+    const other = tempDir('usiatech-wt-other-')
+    initRepo(other)
+    const otherWt = path.join(tempDir('usiatech-wt-otherwt-'), 'wt')
+    git(other, 'worktree', 'add', '-q', otherWt, '-b', 'o')
+    assert.match((await run(main, path.join(otherWt, 'src', 'a.ts')))?.reason ?? '', /outside the project folder/)
+  })
+
+  it('should keep asking for a folder with a hand-made .git file that git worktree list doesn\'t list (AC10)', async () => {
+    const { main, ext } = setup()
+    const forged = path.join(main, '.claude', 'worktrees', 'forged')
+    writeFiles(forged, { '.git': readFileSync(path.join(ext, '.git'), 'utf8') })
+    assert.equal((await run(main, path.join(forged, 'src', 'a.ts')))?.decision, 'ask')
+  })
+
+  it('should keep asking for another repository at the path of a removed but still listed worktree (AC10)', async () => {
+    const { main, ext } = setup()
+    rmSync(ext, { recursive: true, force: true })
+    mkdirSync(ext, { recursive: true })
+    initRepo(ext)
+    assert.ok(git(main, 'worktree', 'list', '--porcelain').toLowerCase().includes(real(ext).split(path.sep).join('/').toLowerCase()), 'the removed worktree is still listed')
+    assert.match((await run(main, path.join(ext, 'src', 'a.ts')))?.reason ?? '', /outside the project folder/)
+  })
+
+  it('should keep asking when the worktree lookup throws (AC10)', async () => {
+    const { main, inner } = setup()
+    const throwing = { ...gitProbe, linkedWorktree: () => { throw new Error('git broke') } }
+    const result = await run(main, path.join(inner, 'src', 'a.ts'), { git: throwing })
+    assert.equal(result?.decision, 'ask')
+    assert.match(result.reason, /could not check whether it is in a linked worktree: git broke/)
+  })
+
+  it('should keep the outside-folder ask and add why when the lookup throws for an outside edit (AC10)', async () => {
+    const { main, ext } = setup()
+    const throwing = { ...gitProbe, linkedWorktree: () => { throw new Error('git broke') } }
+    const result = await run(main, path.join(ext, 'src', 'a.ts'), { git: throwing })
+    assert.equal(result?.decision, 'ask')
+    assert.match(result.reason, /outside the project folder.*could not check whether it is in a linked worktree: git broke/)
+  })
+
+  // git gives the real path; the hook may get a link or an 8.3 spelling of the same folder (windows-latest CI).
+  it('should allow an in-plan edit in a worktree reached through a link to its folder (AC9)', async () => {
+    const { main, ext } = setup()
+    const link = path.join(tempDir('usiatech-wt-link-'), 'l')
+    symlinkSync(path.dirname(ext), link, 'junction')
+    assert.equal(await run(main, path.join(link, 'ext', 'src', 'a.ts')), null)
+  })
+
+  it('should log a worktree decision with a worktree field (AC12; R15)', async () => {
+    const { main, inner } = setup()
+    const result = await run(main, path.join(inner, 'AGENTS.md'))
+    const [entry] = logEntries(result, 'Edit')
+    assert.equal(entry.decision, 'ask')
+    assert.ok(same(entry.worktree, inner), entry.worktree)
+    assert.ok(same(entry.target, path.join(inner, 'AGENTS.md')), entry.target)
+  })
+
+  it('should keep asking for a main-checkout file outside a project folder that is a repo subfolder (AC10)', async () => {
+    const { main, inner } = setup()
+    const app = path.join(main, 'app')
+    mkdirSync(app, { recursive: true })
+    assert.equal(gitProbe.linkedWorktree(app, path.join(main, 'lib', 'x.ts')), null)
+    assert.match((await run(app, path.join(main, 'lib', 'x.ts')))?.reason ?? '', /outside the project folder/)
+    // A real linked worktree still counts from a subfolder project.
+    assert.ok(same(gitProbe.linkedWorktree(app, path.join(inner, 'src', 'a.ts')), inner))
+  })
+
+  it('should keep asking for a file in the same linked worktree as a subfolder project (AC10)', async () => {
+    const { main, inner, ext } = setup()
+    const sub = path.join(ext, 'sub')
+    mkdirSync(sub, { recursive: true })
+    // Positive control: a sibling linked worktree still counts from a subfolder project.
+    assert.ok(same(gitProbe.linkedWorktree(sub, path.join(inner, 'src', 'a.ts')), inner))
+    assert.equal(gitProbe.linkedWorktree(sub, path.join(ext, 'other', 'x.ts')), null)
+    assert.match((await run(sub, path.join(ext, 'other', 'x.ts')))?.reason ?? '', /outside the project folder/)
+    // The main checkout is not a linked worktree for a project inside one.
+    assert.equal(gitProbe.linkedWorktree(sub, path.join(main, 'src', 'a.ts')), null)
+  })
+
+  it('should find the worktree root with gitProbe.linkedWorktree, and nothing for the main checkout (R12)', () => {
+    const { main, inner, ext } = setup()
+    assert.ok(same(gitProbe.linkedWorktree(main, path.join(inner, 'src', 'a.ts')), inner))
+    assert.ok(same(gitProbe.linkedWorktree(main, path.join(ext, 'a.ts')), ext))
+    assert.equal(gitProbe.linkedWorktree(main, path.join(main, 'src', 'a.ts')), null)
   })
 })
 
@@ -2025,9 +2282,10 @@ describe('evaluate: decisions keys (ESP-32; spec AC6)', () => {
 describe('evaluate: planning.preflightReviewers (ESP-67; spec R9, R12, AC8)', () => {
   const run = (cfg, markerFile) => evaluate({ tool_name: 'Write', tool_input: { file_path: 'src/a.ts', content: 'x' } }, { root: tempDir(), git: fakeGit(), cfg, markerFile })
   const reviewers = (list) => ({ planning: { preflightReviewers: list } })
+  const AGENT_NAME = /^"planning\.preflightReviewers\[0\]\.agent" may hold only letters, digits, "\.", "_", ":" and "-"$/
 
   it('should report no config problem for a missing planning, an empty list or valid entries', async () => {
-    for (const cfg of [{}, { planning: {} }, reviewers([]), reviewers([{ agent: 'docs-sync' }, { agent: 'security-tenancy-auditor', when: ['src/auth/', 'prisma/'] }])]) {
+    for (const cfg of [{}, { planning: {} }, reviewers([]), reviewers([{ agent: 'docs-sync' }, { agent: 'security-tenancy-auditor', when: ['src/auth/', 'prisma/'] }, { agent: 'usiatech-engineering:convention-reviewer' }, { agent: 'A_b.9' }])]) {
       assert.equal(await run(cfg), null)
       assert.deepEqual(sanitizeConfig(cfg).problems, [])
     }
@@ -2048,10 +2306,16 @@ describe('evaluate: planning.preflightReviewers (ESP-67; spec R9, R12, AC8)', ()
     ['a when prefix with a control character', reviewers([{ agent: 'a', when: ['src/\u0007x/'] }]), /\.when"/],
     ['a when prefix with a space at an end', reviewers([{ agent: 'a', when: [' src/'] }]), /\.when"/],
     // ESP-72: approve-plan names the agent in its pre-flight report, so a line break could forge a report line.
-    ['an agent with a line break', reviewers([{ agent: 'a\nb' }]), /^"planning\.preflightReviewers\[0\]\.agent" must have no control characters/],
-    ['an agent with a line separator', reviewers([{ agent: 'a\u2028b' }]), /^"planning\.preflightReviewers\[0\]\.agent" must have no control characters/],
-    ['an agent with a leading space', reviewers([{ agent: ' docs-sync' }]), /\.agent" must have no control characters and no spaces at either end$/],
-    ['an agent with a trailing space', reviewers([{ agent: 'docs-sync ' }]), /\.agent" must have no control characters and no spaces at either end$/],
+    ['an agent with a line break', reviewers([{ agent: 'a\nb' }]), AGENT_NAME],
+    ['an agent with a line separator', reviewers([{ agent: 'a\u2028b' }]), AGENT_NAME],
+    ['an agent with a leading space', reviewers([{ agent: ' docs-sync' }]), AGENT_NAME],
+    ['an agent with a trailing space', reviewers([{ agent: 'docs-sync ' }]), AGENT_NAME],
+    // ESP-73 item 1: bidi and format characters can make a reviewer name in the pre-flight report look misleading.
+    ['an agent with a right-to-left override', reviewers([{ agent: 'docs\u202esync' }]), AGENT_NAME],
+    ['an agent with a zero-width space', reviewers([{ agent: 'docs\u200bsync' }]), AGENT_NAME],
+    ['an agent with a byte-order mark', reviewers([{ agent: '\ufeffdocs-sync' }]), AGENT_NAME],
+    ['an agent with an inner space', reviewers([{ agent: 'docs sync' }]), AGENT_NAME],
+    ['an agent with a slash', reviewers([{ agent: 'docs/sync' }]), AGENT_NAME],
     ['a null when', reviewers([{ agent: 'a', when: null }]), /^"planning\.preflightReviewers\[0\]\.when" is null/],
     ['a misspelled When key', reviewers([{ agent: 'a', When: ['src/'] }]), /^"planning\.preflightReviewers\[0\]" has an unknown key "When"/],
     ['an unknown paths key', reviewers([{ agent: 'a', paths: ['src/'] }]), /^"planning\.preflightReviewers\[0\]" has an unknown key "paths"/],
@@ -2104,6 +2368,10 @@ describe('evaluate: planning.preflightReviewers (ESP-67; spec R9, R12, AC8)', ()
     assert.deepEqual(sanitizeConfig(cfg).advisory, ['"planning.preflightReviewers[0]" has an unknown key "x\\u2028y\\u0085z\\u2029" (allowed: "agent", "when", "$comment")'])
     const result = await run(cfg, path.join(tempDir(), 'state', 'config-warned'))
     assert.doesNotMatch(result.configWarning, /[\u0085\u2028\u2029]/)
+  })
+
+  it('should escape DEL in an unknown key (ESP-73 item 2)', () => {
+    assert.deepEqual(sanitizeConfig(reviewers([{ agent: 'a', 'x\u007Fy': 1 }])).advisory, ['"planning.preflightReviewers[0]" has an unknown key "x\\u007fy" (allowed: "agent", "when", "$comment")'])
   })
 
   it('should warn once for a bad entry and stay quiet on an unchanged repeat', async () => {

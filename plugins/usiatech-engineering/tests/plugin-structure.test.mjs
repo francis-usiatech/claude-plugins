@@ -88,7 +88,7 @@ describe('plugin structure: references', () => {
     assert.match(release, /\*\*Models:\*\*/)
     assert.match(release, /`reviewerModels\[<agent>\]` from the base-branch `\.claude\/engineering\.json`/)
     assert.match(release, /agent file's `model`/)
-    assert.match(release, /5 files or fewer runs `governance-reviewer` on `sonnet`/)
+    assert.match(release, /5 files or fewer, counting every file, runs `governance-reviewer` on `sonnet`/)
     const plan = body(read('skills', 'approve-plan', 'SKILL.md'))
     assert.match(plan, /`governance-reviewer` on `sonnet` when the plan's \*\*Files\*\* section lists 5 paths or fewer/)
     assert.match(plan, /`reviewerModels`/)
@@ -243,7 +243,7 @@ describe('plugin structure: step-3 approve-plan', () => {
   it('should route work by size and record acceptance criteria, tasks and the route', () => {
     const text = body(read('skills', 'approve-plan', 'SKILL.md'))
     for (const s of ['clarify', 'to-spec', 'to-tickets', 'governance-reviewer']) assert.ok(text.includes(`\`${s}\``), s)
-    assert.match(text, /5 files or fewer/)
+    assert.match(text, /5 production-code files or fewer/)
     assert.match(text, /treat as small/)
     assert.match(text, /Route: small/)
     assert.match(text, /\*\*Acceptance criteria:\*\*/)
@@ -638,8 +638,8 @@ describe('plugin structure: pre-flight reviewers (ESP-67; spec R10, R11, AC9)', 
     assert.match(approve(), /invalid entry[^\n]*skip[^\n]*pre-flight report/i)
   })
 
-  it('should treat a padded or control-character agent as invalid and name a skipped entry by its index, not its name (ESP-72)', () => {
-    assert.match(approve(), /invalid entry[^\n]*`agent` with a control character or a space at either end/)
+  it('should treat an agent outside the name pattern as invalid and name a skipped entry by its index, not its name (ESP-72, ESP-73)', () => {
+    assert.match(approve(), /invalid entry[^\n]*an `agent` that doesn't match `\^\[A-Za-z0-9\._:-\]\+\$`/)
     assert.match(approve(), /by its index, `planning\.preflightReviewers\[i\]`, never by its `agent` value/)
   })
 
@@ -958,5 +958,86 @@ describe('plugin structure: review and release efficiency (ESP-11, 39, 42, 43, 4
     assert.match(dup, /`usiatech-engineering@synced`/)
     assert.match(dup, /`claude plugin uninstall usiatech-engineering@usiatech --scope project`/)
     assert.match(dup, /check first that each of them has a user-scope install/)
+  })
+})
+
+describe('plugin structure: fewer approval rounds (spec 2026-11-07-permission-prompts)', () => {
+  const skill = (s) => body(read('skills', s, 'SKILL.md'))
+  const BATCH_OFF = /`decisions\.batch`[^\n]*`false`[^\n]*on its own/
+
+  it('should confirm the understanding note once, with all corrections in one answer (AC1, R1, R4)', () => {
+    const text = skill('clarify')
+    assert.match(text, /once to confirm the note, giving all corrections in one answer/)
+    assert.match(text, /again only when a correction changes it/)
+    assert.match(text, BATCH_OFF)
+  })
+
+  it('should approve the spec and the ticket list together before filing (AC1, R2, R4)', () => {
+    const spec = skill('to-spec')
+    assert.match(spec, /Hand the draft to `to-tickets`/)
+    assert.match(spec, /one approval of both/)
+    assert.match(spec, /joint approval sets `Status: approved`/)
+    assert.match(spec, BATCH_OFF)
+    const tickets = skill('to-tickets')
+    assert.match(tickets, /draft `to-spec` just handed over for the joint approval/)
+    assert.match(tickets, /One approval then covers the spec and the ticket list together/)
+    assert.match(tickets, BATCH_OFF)
+  })
+
+  it('should show the plan with its pre-flight result and ask once (AC1, R3, R4)', () => {
+    const text = skill('approve-plan')
+    assert.match(text, /Show the draft with its pre-flight result and ask once[^\n]*every open pre-flight decision go into that same question/)
+    assert.match(text, /`decisions\.batch` is `false`, ask about the plan and each decision on its own/)
+  })
+
+  it('should describe standing decisions, the cap of 10 and the fixed never-settles list in governance-reviewer (AC2)', () => {
+    const text = body(read('agents', 'governance-reviewer.md'))
+    assert.match(text, /## Standing decisions/)
+    assert.match(text, /`governance\.rulesFile`[^\n]*default `\.claude\/governance\.md`/)
+    assert.match(text, /SD-1, SD-2[^\n]*owner and a date/)
+    assert.match(text, /at most 10 entries[^\n]*say in the output how many were ignored/)
+    assert.match(text, /"FLAG, settled by SD-n"[^\n]*needs no user decision/)
+    assert.match(text, /never settles a `BLOCK`, an Important finding, a must-never or needs-approval rule, a guard error or missing AC evidence/)
+    assert.match(text, /fixed here; repo config and the rules file can't change it/)
+  })
+
+  it('should log settled FLAGs with their SD number and leave them out of the decision (AC2)', () => {
+    assert.match(skill('approve-plan'), /settled by SD-n"[^\n]*Change log with its SD number[^\n]*leave it out of the batched decision/)
+    assert.match(skill('release'), /settled by SD-n"[^\n]*Change log with its SD number[^\n]*leave it out of the question/)
+  })
+
+  it('should ship SD-1, the wording-only rule, in the template and in this repo (AC2)', () => {
+    const SD1 = /- SD-1: A pre-flight fix that only makes wording more precise \(no new file, AC, task, command or action\) is applied with one dated Change log line and shown with the plan, without a separate decision\./
+    const template = read('templates', 'governance.md')
+    assert.match(template, /## Standing decisions/)
+    assert.match(template, SD1)
+    const repo = readFileSync(path.join(PLUGIN_ROOT, '..', '..', '.claude', 'governance.md'), 'utf8')
+    assert.match(repo, /## Standing decisions/)
+    assert.match(repo, SD1)
+    assert.match(repo, /SD-1:[^\n]*Owner: Francis · Date: 2026-11-07/)
+  })
+
+  it('should count production code only on the small route (AC3, R6, R7)', () => {
+    const text = skill('approve-plan')
+    assert.match(text, /5 production-code files or fewer\. The count is production code only: tests, QA catalogue entries, docs and generated files don't count/)
+    assert.match(text, /generated file is one a tool regenerates and nobody edits by hand/)
+    assert.match(text, /doc is a Markdown or text file that only people read\. Skills, agent files and rules files[^\n]*not docs/)
+    assert.match(text, /Everything else counts, including config, migrations, CI workflows, hook and gate scripts, `infra\/`, `AGENTS\.md`, `CLAUDE\.md`, `REVIEW\.md` and `\.claude\/\*\*`/)
+    assert.match(text, /other Small conditions and both overrides are unchanged/)
+  })
+
+  it('should say what every 5-files or 5-paths rule counts (AC4, R8)', () => {
+    for (const s of ['release', 'approve-plan']) {
+      const lines = skill(s).split('\n').filter((l) => /\b5 (production-code )?(files|paths)\b/.test(l))
+      assert.ok(lines.length > 0, s)
+      for (const l of lines) assert.match(l, /count/i, `${s}: ${l.slice(0, 60)}`)
+    }
+    assert.match(skill('release'), /\*\*In parallel:\*\*[^\n]*counting every file/)
+    assert.match(skill('release'), /\*\*Models:\*\*[^\n]*counting every file/)
+    assert.match(skill('approve-plan'), /\*\*Model:\*\*[^\n]*counting every path/)
+  })
+
+  it('should state the pre-flight reviewer agent name rule (R16, AC13)', () => {
+    assert.match(skill('approve-plan'), /an `agent` that doesn't match `\^\[A-Za-z0-9\._:-\]\+\$`[^\n]*is skipped/)
   })
 })
