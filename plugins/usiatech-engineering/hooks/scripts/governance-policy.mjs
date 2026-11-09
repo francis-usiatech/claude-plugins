@@ -186,8 +186,14 @@ export const gitProbe = {
       // Cheapest check first: a folder outside any repo fails here, after one git call.
       const top = read(dir, ['rev-parse', '--show-toplevel']).trim()
       if (samePath(top, root)) return null
+      // The project folder can be a subfolder of its checkout (a monorepo), so a file in that same checkout is not
+      // in another worktree even when `top` differs from root.
+      if (samePath(top, read(root, ['rev-parse', '--show-toplevel']).trim())) return null
       const commonDir = (cwd) => read(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']).trim()
-      if (!samePath(commonDir(dir), commonDir(root))) return null
+      const fileCommon = commonDir(dir)
+      if (!samePath(fileCommon, commonDir(root))) return null
+      // The main checkout's git dir is the common dir: it is never a linked worktree, even from a project in one.
+      if (samePath(read(dir, ['rev-parse', '--path-format=absolute', '--git-dir']).trim(), fileCommon)) return null
       // AGENTS.md F6: paths read raw, split on \0.
       const listed = read(root, ['-c', 'core.quotePath=false', 'worktree', 'list', '--porcelain', '-z']).split('\0')
         .filter((line) => line.startsWith('worktree ')).map((line) => line.slice('worktree '.length))

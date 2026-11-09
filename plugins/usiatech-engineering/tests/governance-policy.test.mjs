@@ -828,6 +828,28 @@ describe('evaluate: edits in a linked worktree (ESP-82; spec R12–R15, AC9–AC
     assert.ok(same(entry.target, path.join(inner, 'AGENTS.md')), entry.target)
   })
 
+  it('should keep asking for a main-checkout file outside a project folder that is a repo subfolder (AC10)', async () => {
+    const { main, inner } = setup()
+    const app = path.join(main, 'app')
+    mkdirSync(app, { recursive: true })
+    assert.equal(gitProbe.linkedWorktree(app, path.join(main, 'lib', 'x.ts')), null)
+    assert.match((await run(app, path.join(main, 'lib', 'x.ts')))?.reason ?? '', /outside the project folder/)
+    // A real linked worktree still counts from a subfolder project.
+    assert.ok(same(gitProbe.linkedWorktree(app, path.join(inner, 'src', 'a.ts')), inner))
+  })
+
+  it('should keep asking for a file in the same linked worktree as a subfolder project (AC10)', async () => {
+    const { main, inner, ext } = setup()
+    const sub = path.join(ext, 'sub')
+    mkdirSync(sub, { recursive: true })
+    // Positive control: a sibling linked worktree still counts from a subfolder project.
+    assert.ok(same(gitProbe.linkedWorktree(sub, path.join(inner, 'src', 'a.ts')), inner))
+    assert.equal(gitProbe.linkedWorktree(sub, path.join(ext, 'other', 'x.ts')), null)
+    assert.match((await run(sub, path.join(ext, 'other', 'x.ts')))?.reason ?? '', /outside the project folder/)
+    // The main checkout is not a linked worktree for a project inside one.
+    assert.equal(gitProbe.linkedWorktree(sub, path.join(main, 'src', 'a.ts')), null)
+  })
+
   it('should find the worktree root with gitProbe.linkedWorktree, and nothing for the main checkout (R12)', () => {
     const { main, inner, ext } = setup()
     assert.ok(same(gitProbe.linkedWorktree(main, path.join(inner, 'src', 'a.ts')), inner))
