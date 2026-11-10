@@ -52,6 +52,50 @@ describe('governance-checks', () => {
       assert.equal((await runChecks({ repo, config, body: '## Requirement references\n- JIRA-42\n' })).code, 0)
       assert.equal((await runChecks({ repo, config })).code, 1, 'FR-01 no longer matches')
     })
+
+    // ESP-61 (spec 2026-11-09-speed-batch R7, AC7): a Jira key of the configured project is a reference.
+    describe('Jira keys', () => {
+      const jira = { tickets: { tracker: 'jira', jira: { project: 'ESP' } } }
+
+      it('should accept a key of the configured project in a Jira-tracker repo', async () => {
+        const repo = makeRepo({ headFiles: { 'src/a.ts': 'x' } })
+        const r = await runChecks({ repo, config: jira, body: '## Requirement references\n- ESP-24\n' })
+        assert.equal(r.code, 0, r.stdout)
+      })
+
+      it('should reject a key inside a longer word or with no number and name Jira keys in the error', async () => {
+        const repo = makeRepo({ headFiles: { 'src/a.ts': 'x' } })
+        for (const ref of ['XESP-24', 'ESP-24a', 'foo_ESP-24', 'bar-ESP-24', 'ESP-']) {
+          const r = await runChecks({ repo, config: jira, body: `## Requirement references\n- ${ref}\n` })
+          assert.equal(r.code, 1, ref)
+          assert.match(r.stdout, /no requirement reference[^\n]*Jira key such as ESP-24/, ref)
+        }
+      })
+
+      it('should not accept a key of another project or in a GitHub-tracker repo', async () => {
+        const repo = makeRepo({ headFiles: { 'src/a.ts': 'x' } })
+        assert.equal((await runChecks({ repo, config: jira, body: '## Requirement references\n- ABC-24\n' })).code, 1)
+        const github = { tickets: { tracker: 'github' } }
+        const r = await runChecks({ repo, config: github, body: '## Requirement references\n- ESP-24\n' })
+        assert.equal(r.code, 1)
+        assert.doesNotMatch(r.stdout, /Jira key/)
+      })
+
+      it('should still accept the default references in a Jira-tracker repo', async () => {
+        const repo = makeRepo({ headFiles: { 'src/a.ts': 'x' } })
+        assert.equal((await runChecks({ repo, config: jira, body: '## Requirement references\n- #12\n' })).code, 0)
+      })
+
+      it('should fail on a Jira tracker with no usable project key', async () => {
+        const repo = makeRepo({ headFiles: { 'src/a.ts': 'x' } })
+        for (const project of [undefined, 'esp', 'ESP-1', 'E', 7]) {
+          const config = { tickets: { tracker: 'jira', jira: { project } } }
+          const r = await runChecks({ repo, config, body: '## Requirement references\n- #12\n' })
+          assert.equal(r.code, 1, String(project))
+          assert.match(r.stdout, /"tickets\.jira\.project" must be an upper-case project key/, String(project))
+        }
+      })
+    })
   })
 
   describe('branch flow', () => {

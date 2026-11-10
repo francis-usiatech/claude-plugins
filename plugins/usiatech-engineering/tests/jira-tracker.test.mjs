@@ -15,6 +15,8 @@ const jira = (over = {}) => ({
     issueType: 'Subtask',
     parent: 'ESP-27',
     statuses: { started: 'In Progress', merged: 'Ready for Release', released: 'Released' },
+    // The script's network commands run only on the API transport (ESP-104); the default is the connector.
+    transport: 'api',
     ...over,
   },
 })
@@ -77,7 +79,8 @@ describe('validateTicketsConfig (R1; AC1)', () => {
     const { tickets, problems } = validateTicketsConfig(jira({ cloudId, transitions }))
     assert.deepEqual(problems, [])
     assert.equal(tickets.jira.cloudId, cloudId)
-    assert.deepEqual(tickets.jira.transitions, { started: '21', verified: '31', merged: '41', released: '51' })
+    // ESP-116: verified is loaded as its new name, testingComplete.
+    assert.deepEqual(tickets.jira.transitions, { started: '21', testingComplete: '31', merged: '41', released: '51' })
   })
 
   it('should load no cloud ID and no transitions when neither is set (ESP-123)', () => {
@@ -86,10 +89,11 @@ describe('validateTicketsConfig (R1; AC1)', () => {
     assert.deepEqual(tickets.jira.transitions, {})
   })
 
-  it('should accept a verified status and keep it in the loaded statuses (ESP-64)', () => {
+  it('should accept a verified status and load it as testingComplete (ESP-64, ESP-116)', () => {
     const { tickets, problems } = validateTicketsConfig(jira({ statuses: { started: 'In Progress', verified: 'In Testing', merged: 'Ready for Release' } }))
     assert.deepEqual(problems, [])
-    assert.equal(tickets.jira.statuses.verified, 'In Testing')
+    assert.equal(tickets.jira.statuses.testingComplete, 'In Testing')
+    assert.equal(tickets.jira.statuses.verified, undefined)
   })
 
   it('should list verified among the events when an event name is unknown (ESP-64)', () => {
@@ -580,20 +584,21 @@ describe('runCli commands (R3)', () => {
 
   it('should move an issue to the verified status through the matching transition (ESP-64)', async (t) => {
     const transitions = { transitions: [{ id: '51', name: 'Test it', to: { name: 'In Testing' } }] }
-    const { fetch, calls } = stubFetch({ body: transitions }, { status: 204 })
+    // ESP-116: an --event move reads the current status first, then walks forward.
+    const { fetch, calls } = stubFetch({ body: { fields: { status: { name: 'In Progress' } } } }, { body: transitions }, { status: 204 })
     const config = jira({ statuses: { started: 'In Progress', verified: 'In Testing' } })
     const result = await runCli(['transition', '--issue', 'ESP-64', '--event', 'verified'], { env: CLI_ENV, fetch, cwd: cliRepo(t, config) })
     assert.equal(result.code, 0, result.stderr)
-    assert.deepEqual(printed(result), { issue: 'ESP-64', status: 'In Testing', transitioned: true })
-    assert.deepEqual(calls.map((c) => c.method), ['GET', 'POST'])
-    assert.deepEqual(calls[1].body, { transition: { id: '51' } })
+    assert.deepEqual(printed(result), { issue: 'ESP-64', event: 'testingComplete', status: 'In Testing', from: 'In Progress', transitioned: true, steps: ['In Testing'] })
+    assert.deepEqual(calls.map((c) => c.method), ['GET', 'GET', 'POST'])
+    assert.deepEqual(calls[2].body, { transition: { id: '51' } })
   })
 
   it('should skip a transition to verified when no verified status is configured, sending nothing (ESP-64)', async (t) => {
     const { fetch, calls } = stubFetch()
     const result = await runCli(['transition', '--issue', 'ESP-64', '--event', 'verified'], { env: CLI_ENV, fetch, cwd: cliRepo(t, jira({ statuses: { started: 'In Progress' } })) })
     assert.equal(result.code, 0, result.stderr)
-    assert.deepEqual(printed(result), { issue: 'ESP-64', event: 'verified', transitioned: false, reason: 'no status is configured for "verified"' })
+    assert.deepEqual(printed(result), { issue: 'ESP-64', event: 'testingComplete', transitioned: false, reason: 'no status is configured for "testingComplete"' })
     assert.equal(calls.length, 0)
   })
 })

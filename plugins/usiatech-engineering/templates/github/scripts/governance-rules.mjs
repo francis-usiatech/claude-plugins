@@ -24,6 +24,19 @@ export const isSecretEnvFile = (basename, allowEnvExample = true, ignoreCase = f
 
 // Config shape checks shared by the guard and CI.
 export const isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === 'string')
+
+// An upper-case Jira project key such as "ESP" (tickets.jira.project).
+export const PROJECT_KEY = /^[A-Z][A-Z0-9_]+$/
+/**
+ * Matches a key of one Jira project. A key inside a longer word (XESP-1, ESP-1a, foo_ESP-1, bar-ESP-1) is not a key.
+ * @param {string} project a key that passes PROJECT_KEY, so it needs no escaping
+ * @param {string} [flags] RegExp flags, e.g. 'g'
+ * @returns {RegExp}
+ */
+export const jiraKeyPattern = (project, flags = '') => {
+  if (typeof project !== 'string' || !PROJECT_KEY.test(project)) throw new TypeError(`"${project}" is not a project key such as "ESP"`)
+  return new RegExp(`(?<![A-Za-z0-9_-])${project}-\\d+(?![A-Za-z0-9_])`, flags)
+}
 // A control character in a name could forge a summary line: C0 controls, DEL, NEL and the two Unicode line breaks.
 // JSON.stringify escapes C0 controls but leaves the others raw, so the guard's key quoting escapes this list too.
 export const CONTROL_CODE_POINTS = [127, 133, 8232, 8233]

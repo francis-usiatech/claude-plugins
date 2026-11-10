@@ -74,11 +74,14 @@ export const validateList = (list, root) => {
   })
 }
 
+// taskkill by its absolute path (ESP-58), so a taskkill earlier on PATH, such as one in the repo, is never the one run.
+export const TASKKILL = path.win32.join(process.env.SystemRoot || process.env.windir || 'C:\\Windows', 'System32', 'taskkill.exe')
+
 // Kills the shell and everything it started; killing only the shell would leave the test process running.
 // Returns null once the tree is gone, or the reason it could not be killed.
 const killTree = (child) => {
   try {
-    if (process.platform === 'win32') execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'pipe' })
+    if (process.platform === 'win32') execFileSync(TASKKILL, ['/pid', String(child.pid), '/T', '/F'], { stdio: 'pipe' })
     else process.kill(-child.pid, 'SIGKILL')
   } catch (e) {
     // Already gone: ESRCH on POSIX, taskkill exit 128 on Windows. Anything else is a failure.
@@ -101,7 +104,8 @@ export const outcomeOf = ({ code, signal, ended, aborted }) => {
 
 /**
  * Runs a shell command in root. Resolves { outcome: 'pass' | 'fail' | 'timeout' | 'aborted' | 'error', code, stderr },
- * plus `signal` when a signal ended the command and `startError` when it could not be started.
+ * plus `signal` when a signal ended the command, `startError` when it could not be started, and `leftRunning`
+ * ("process <pid>: <reason>") when stopping it reported a failure but the command still closed.
  * `kill` stops the process tree on a timeout or abort (tests inject a failing one).
  * The gate runner passes two more options (ESP-52): `args` runs `command` as a program with those arguments and no
  * shell, and `output` is a file descriptor that takes stdout and stderr, so `stderr` in the result stays empty.
@@ -111,6 +115,9 @@ export const runCommand = (command, { root, timeoutMs, signal, kill = killTree, 
   let stderr = ''
   let ended = null
   let grace = null
+  // A kill that reported a failure, kept when the command still closes (ESP-58): taskkill can stop the root but miss
+  // a descendant, so part of the tree may still be running.
+  let killFailure = null
   const options = { cwd: root, detached: process.platform !== 'win32', stdio: output === null ? ['ignore', 'ignore', 'pipe'] : ['ignore', output, output], windowsHide: true }
   const child = args ? spawn(command, args, options) : spawn(command, { ...options, shell: true })
   child.stderr?.on('data', (d) => { stderr = (stderr + d).slice(-STDERR_TAIL) })
@@ -119,6 +126,7 @@ export const runCommand = (command, { root, timeoutMs, signal, kill = killTree, 
     ended = why
     const failure = kill(child)
     if (!failure) return
+    killFailure = `process ${child.pid}: ${failure}`
     // taskkill also fails when part of the tree has already exited, so give the command a moment to close.
     // If it doesn't, stop waiting and let go of it so it can't hold this process open.
     grace = setTimeout(() => {
@@ -142,6 +150,7 @@ export const runCommand = (command, { root, timeoutMs, signal, kill = killTree, 
     outcome: outcomeOf({ code, signal: sig, ended, aborted: signal?.aborted }),
     code,
     ...(sig ? { signal: sig } : {}),
+    ...(killFailure ? { leftRunning: killFailure } : {}),
     stderr: code === null && sig ? `killed by ${sig}` : stderr.trim(),
   }))
 })
