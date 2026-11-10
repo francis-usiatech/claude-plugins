@@ -29,7 +29,8 @@ const parseLevelArg = (args) => {
   return args[1]
 }
 
-const isRepoPath = (p) => typeof p === 'string' && p !== ''
+/** A relative path that stays inside the repo (also used by doc-versions.mjs). */
+export const isRepoPath = (p) => typeof p === 'string' && p !== ''
   && !path.win32.isAbsolute(p) && !path.posix.isAbsolute(p) && !p.split(/[\\/]/).includes('..')
 
 // The git section of the base-branch config, or null when the repo hasn't opted in. A config it can't parse is an

@@ -294,7 +294,11 @@ export const checkAfterBash = async (input, root) => {
   const { snapshot: before, problem, cleanupProblems } = loadSnapshot(root, input.tool_use_id)
   cleanupProblems.forEach(logError)
   // A background command is still running when this hook fires, so its workflow changes can't be seen yet.
+  // ESP-151: one made only of read-only commands (a wait loop) can't change a workflow, so it is no fail-open window.
+  // The policy module is loaded only here, so the no-change path keeps to Node built-ins (AGENTS.md F15).
   if (input.tool_input?.run_in_background === true) {
+    const { readOnlyCommand } = await import('./governance-policy.mjs')
+    if (readOnlyCommand(target, tool)) return null
     logError('background command, so its workflow changes were not checked')
     return null
   }

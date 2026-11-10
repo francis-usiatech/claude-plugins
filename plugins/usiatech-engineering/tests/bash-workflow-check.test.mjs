@@ -391,11 +391,33 @@ describe('after-Bash workflow check (R6; AC6)', () => {
     const { snapshotWorkflows, checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
     assert.equal(snapshotWorkflows(root, 'toolu_bg'), true)
     writeFiles(root, { '.github/workflows/evil.yml': INJECTION })
-    const out = await checkAfterBash({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'sleep 9 &', run_in_background: true }, tool_use_id: 'toolu_bg' }, root)
+    const out = await checkAfterBash({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'npm run dev', run_in_background: true }, tool_use_id: 'toolu_bg' }, root)
     assert.equal(out, null)
     assert.deepEqual(readLog(root).map((e) => [e.decision, /background/.test(e.reason)]), [['error', true]])
     assert.deepEqual(await snapshots(root), [])
   })
+
+  // ESP-151: a read-only background command (a wait loop) can't change a workflow, so it is no fail-open window.
+  const WAIT_LOOP = 'until test -f "/c/Users/me/AppData/Local/Temp/claude/c--repo/abc/scratchpad/linux-gate.exit"; do sleep 20; done; cat "/c/Users/me/AppData/Local/Temp/claude/c--repo/abc/scratchpad/linux-gate.exit"'
+  for (const [command, tool] of [[WAIT_LOOP, 'Bash'], ['while ! test -f done.txt; do sleep 5; done', 'Bash'], ['sleep 30; git log --oneline -3', 'PowerShell']]) {
+    it(`should log nothing for a read-only background command (ESP-151; AC4): ${command.slice(0, 40)}`, async () => {
+      const root = tempDir()
+      const { snapshotWorkflows, checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
+      assert.equal(snapshotWorkflows(root, 'toolu_wait'), true)
+      const out = await checkAfterBash({ hook_event_name: 'PostToolUse', tool_name: tool, tool_input: { command, run_in_background: true }, tool_use_id: 'toolu_wait' }, root)
+      assert.equal(out, null)
+      assert.deepEqual(readLog(root), [])
+      assert.deepEqual(await snapshots(root), [])
+    })
+  }
+  for (const command of ['until test -f x; do sleep 1; done; npm run build', 'until test -f "$F"; do sleep 1; done', 'while true; do rm -rf dist; done']) {
+    it(`should still log a background command that isn't read-only (ESP-151; AC4): ${command}`, async () => {
+      const root = tempDir()
+      const { checkAfterBash } = await import('../hooks/scripts/bash-workflow-check.mjs')
+      await checkAfterBash({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command, run_in_background: true }, tool_use_id: 'toolu_bg2' }, root)
+      assert.deepEqual(readLog(root).map((e) => [e.decision, /background/.test(e.reason)]), [['error', true]])
+    })
+  }
 
   it('should include git-ignored workflow files in the HEAD fallback', async () => {
     const root = tempDir()
