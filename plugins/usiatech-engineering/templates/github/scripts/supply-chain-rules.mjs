@@ -476,7 +476,8 @@ const POPULAR_PACKAGES = new Set([
 ])
 
 // Optimal string alignment distance, stopping early once it passes `max` (only "one edit away" matters here).
-const editDistance = (a, b, max = 1) => {
+// The local gate runner imports it too, to catch a misspelt step-list key (ESP-53).
+export const editDistance = (a, b, max = 1) => {
   if (Math.abs(a.length - b.length) > max) return max + 1
   const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)])
   for (let j = 1; j <= b.length; j++) d[0][j] = j

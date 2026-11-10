@@ -7,10 +7,22 @@ import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { isMainModule } from '../templates/github/scripts/main-module.mjs'
 import { isPlainObject, isNonEmptyString } from '../templates/github/scripts/workflow-rules.mjs'
+import { PROJECT_KEY, jiraKeyPattern } from '../templates/github/scripts/governance-rules.mjs'
 
 const TRACKERS = ['github', 'jira']
-const EVENTS = ['started', 'verified', 'merged', 'released']
-const PROJECT_KEY = /^[A-Z][A-Z0-9_]+$/
+// The stage events in workflow order (ESP-116): a move never goes back down this list, and a move more than one step
+// ahead walks the configured statuses in between. `merged` is optional, between testing and release.
+const STAGES = ['started', 'devComplete', 'testingStarted', 'testingComplete', 'merged', 'released']
+// `verified` (ESP-64) is the old name of testingComplete and is read as it.
+const ALIASES = { verified: 'testingComplete' }
+const EVENTS = [...STAGES, ...Object.keys(ALIASES)]
+const canonicalEvent = (event) => ALIASES[event] ?? event
+// The path the skills use to change Jira (ESP-104): the Atlassian connector (the default) or this script's REST API.
+const TRANSPORTS = ['connector', 'api']
+const NETWORK_COMMANDS = ['create', 'link', 'comment', 'find-transition', 'transition']
+// Jira's status category keys. A status in "done" that the config doesn't list is left alone, never reopened.
+const STATUS_CATEGORIES = ['new', 'indeterminate', 'done']
+const ISSUE_TYPE = /^[A-Za-z][A-Za-z0-9 _-]{0,59}$/
 const ISSUE_KEY = /^[A-Z][A-Z0-9_]+-\d+$/
 const CLOUD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const TRANSITION_ID = /^\d+$/
@@ -34,7 +46,7 @@ const siteShapeProblem = (site) => {
 // "$comment" is the config's note key, allowed at every level and never treated as a setting.
 const COMMENT_KEY = '$comment'
 const TICKETS_KEYS = ['tracker', 'jira']
-const JIRA_KEYS = ['site', 'project', 'issueType', 'parent', 'statuses', 'cloudId', 'transitions']
+const JIRA_KEYS = ['site', 'project', 'issueType', 'parent', 'statuses', 'cloudId', 'transitions', 'transport']
 const quoted = (keys) => keys.map((k) => `"${k}"`).join(', ')
 const settingEntries = (obj) => Object.entries(obj).filter(([key]) => key !== COMMENT_KEY)
 
@@ -42,23 +54,31 @@ const settingEntries = (obj) => Object.entries(obj).filter(([key]) => key !== CO
 const unknownKeyProblems = (obj, where, known) =>
   settingEntries(obj).filter(([key]) => !known.includes(key)).map(([key]) => `"${where}.${key}" is not a known key; use ${quoted(known)}`)
 
+// An event and its alias set together would leave it unclear which one wins.
+const aliasProblems = (obj, where) => Object.entries(ALIASES)
+  .filter(([alias, event]) => Object.hasOwn(obj, alias) && Object.hasOwn(obj, event))
+  .map(([alias, event]) => `"${where}" sets both "${alias}" and "${event}"; "${alias}" is the old name of "${event}", so keep one`)
+
+// The entries with each alias renamed to its event, so the rest of the script and the skills see one name.
+const canonicalSettings = (obj) => Object.fromEntries(settingEntries(obj ?? {}).map(([event, value]) => [canonicalEvent(event), value]))
+
 const statusProblems = (statuses) => {
   if (statuses == null) return []
   if (!isPlainObject(statuses)) return ['"tickets.jira.statuses" must be an object mapping events to status names']
-  return settingEntries(statuses).flatMap(([event, name]) =>
+  return [...settingEntries(statuses).flatMap(([event, name]) =>
     !EVENTS.includes(event) ? [`"tickets.jira.statuses.${event}" is not an event; use ${quoted(EVENTS)}`]
       : !isNonEmptyString(name) ? [`"tickets.jira.statuses.${event}" must be a non-empty status name`]
-      : [])
+      : []), ...aliasProblems(statuses, 'tickets.jira.statuses')]
 }
 
 // Transition IDs let the skills move an issue through the Atlassian MCP without a lookup call (ESP-123).
 const transitionProblems = (transitions) => {
   if (transitions == null) return []
   if (!isPlainObject(transitions)) return ['"tickets.jira.transitions" must be an object mapping events to transition IDs']
-  return settingEntries(transitions).flatMap(([event, id]) =>
+  return [...settingEntries(transitions).flatMap(([event, id]) =>
     !EVENTS.includes(event) ? [`"tickets.jira.transitions.${event}" is not an event; use ${quoted(EVENTS)}`]
       : !(typeof id === 'string' && TRANSITION_ID.test(id)) ? [`"tickets.jira.transitions.${event}" must be a transition ID in digits, such as "21"`]
-      : [])
+      : []), ...aliasProblems(transitions, 'tickets.jira.transitions')]
 }
 
 const jiraProblems = (j) => {
@@ -74,6 +94,7 @@ const jiraProblems = (j) => {
     ...statusProblems(j.statuses),
     j.cloudId != null && !(typeof j.cloudId === 'string' && CLOUD_ID.test(j.cloudId)) && '"tickets.jira.cloudId" must be the Atlassian cloud ID, a UUID',
     ...transitionProblems(j.transitions),
+    j.transport != null && !TRANSPORTS.includes(j.transport) && `"tickets.jira.transport" must be ${TRANSPORTS.map((t) => `"${t}"`).join(' or ')}`,
   ].filter(Boolean)
 }
 
@@ -94,12 +115,14 @@ export const validateTicketsConfig = (raw) => {
   ]
   if (problems.length) return { tickets: null, problems }
   if (tracker === 'github') return { tickets: { tracker }, problems: [] }
-  const { site, project, issueType, parent, statuses, cloudId, transitions } = raw.jira
-  const settings = (obj) => Object.fromEntries(settingEntries(obj ?? {}))
+  const { site, project, issueType, parent, statuses, cloudId, transitions, transport } = raw.jira
   return {
     tickets: {
       tracker,
-      jira: { site: site.replace(/\/+$/, ''), project, issueType, parent: parent ?? null, statuses: settings(statuses), cloudId: cloudId ?? null, transitions: settings(transitions) },
+      jira: {
+        site: site.replace(/\/+$/, ''), project, issueType, parent: parent ?? null, statuses: canonicalSettings(statuses), cloudId: cloudId ?? null,
+        transitions: canonicalSettings(transitions), transport: transport ?? 'connector',
+      },
     },
     problems: [],
   }
@@ -113,9 +136,8 @@ export const validateTicketsConfig = (raw) => {
  * @returns {string[]} the unique keys, in the order first seen
  */
 export const findJiraKeys = (text, project) => {
-  if (typeof project !== 'string' || !PROJECT_KEY.test(project)) throw new TypeError(`"${project}" is not a project key such as "ESP"`)
+  const pattern = jiraKeyPattern(project, 'g')
   if (typeof text !== 'string') throw new TypeError('text must be a string')
-  const pattern = new RegExp(`(?<![A-Za-z0-9_-])${project}-\\d+(?![A-Za-z0-9_])`, 'g')
   return [...new Set(text.match(pattern) ?? [])]
 }
 
@@ -235,6 +257,14 @@ export const createJiraClient = ({ site, email, token, trustedSite, fetch: doFet
   }
 
   return {
+    /** The issue's current status name and its category key ("new", "indeterminate" or "done"; null if missing). Read-only. */
+    getStatus: (key) => action(`status lookup for ${key}`, async () => {
+      const issue = await request('GET', `${issuePath(key)}?fields=status`)
+      const name = issue?.fields?.status?.name
+      if (!isNonEmptyString(name)) throw new Error('the response has no status name')
+      const category = issue.fields.status.statusCategory?.key
+      return { name, category: STATUS_CATEGORIES.includes(category) ? category : null }
+    }),
     /** Creates an issue and returns its key. */
     createIssue: ({ project, issueType, parent, summary, description }) => action(`create "${summary}"`, async () => {
       const fields = { project: { key: project }, issuetype: { name: issueType }, summary, description }
@@ -265,17 +295,19 @@ export const createJiraClient = ({ site, email, token, trustedSite, fetch: doFet
 const DEFAULT_CONFIG = '.claude/engineering.json'
 const USAGE = `Usage: node jira-tracker.mjs <command> [options]
   check
-  create --summary <text> --body-file <path> [--parent <KEY>]
+  create --summary <text> --body-file <path> [--type <issue type>] [--parent <KEY>]
   link --blocker <KEY> --blocked <KEY>
   comment --issue <KEY> --body-file <path>
   find-transition --issue <KEY> (--status <name> | --event <event>)
-  transition --issue <KEY> (--status <name> | --event <event>)
+  transition --issue <KEY> (--status <name> | --event <event>)   (--event walks forward only, one status at a time)
   keys --messages-file <path>   (the project's keys in commit messages; sends nothing)
+  steps --event <event> --from <current status> [--from-category new|indeterminate|done]   (the statuses a move walks through, in order; sends nothing)
 Every command takes --config <path> (default ${DEFAULT_CONFIG}) and prints one line of JSON.
-Credentials come from JIRA_EMAIL and JIRA_API_TOKEN only; events are ${EVENTS.join(', ')}.`
+create, link, comment, find-transition and transition run only with "tickets.jira.transport": "api".
+Credentials come from JIRA_EMAIL and JIRA_API_TOKEN only; events are ${EVENTS.join(', ')} (verified is testingComplete).`
 
 const CLI_OPTIONS = Object.fromEntries(
-  ['config', 'summary', 'body-file', 'messages-file', 'parent', 'blocker', 'blocked', 'issue', 'status', 'event'].map((name) => [name, { type: 'string' }]))
+  ['config', 'summary', 'body-file', 'messages-file', 'type', 'parent', 'blocker', 'blocked', 'issue', 'status', 'event', 'from', 'from-category'].map((name) => [name, { type: 'string' }]))
 
 // A problem with the arguments or the config (exit 2), as opposed to a Jira failure (exit 1).
 class UsageError extends Error {}
@@ -364,19 +396,53 @@ const loadTickets = (cwd, file) => {
 const targetStatus = (values, statuses) => {
   if ((values.status == null) === (values.event == null)) throw new UsageError('exactly one of --status or --event is required')
   if (values.status != null) return { status: requireOption(values, 'status') }
-  if (!EVENTS.includes(values.event)) throw new UsageError(`--event "${values.event}" is not an event; use ${EVENTS.join(', ')}`)
-  return { event: values.event, status: statuses[values.event] ?? null }
+  return eventStatus(values, statuses)
+}
+
+// The canonical event --event names and its configured status (null when none is configured).
+const eventStatus = (values, statuses) => {
+  const given = requireOption(values, 'event')
+  if (!EVENTS.includes(given)) throw new UsageError(`--event "${given}" is not an event; use ${EVENTS.join(', ')}`)
+  const event = canonicalEvent(given)
+  return { event, status: statuses[event] ?? null }
 }
 
 const noStatusFor = (event) => `no status is configured for "${event}"`
+
+/**
+ * The statuses a move to `event` walks through from the status `from` (ESP-116, ESP-112): every configured stage
+ * status after the current one, up to the target, in workflow order. A ticket already at the target, or at a later
+ * configured stage, gets no steps, so a move never goes back. A status that isn't configured counts as before
+ * `started` (To Do, say), unless its category is "done": a closed ticket the config doesn't know is left there, since
+ * moving it would reopen it. Names match in any case, as Jira's do.
+ * @returns {{ event: string, status: string|null, from: string, steps: string[], reason?: string }}
+ */
+const planSteps = (statuses, event, from, fromCategory = null) => {
+  const status = statuses[event] ?? null
+  if (status == null) return { event, status, from, steps: [], reason: noStatusFor(event) }
+  const same = (a, b) => a.toLowerCase() === b.toLowerCase()
+  const target = STAGES.indexOf(event)
+  const current = STAGES.reduce((at, stage, i) => (statuses[stage] != null && same(statuses[stage], from) ? i : at), -1)
+  if (current === -1 && fromCategory === 'done') return { event, status, from, steps: [], reason: `"${from}" is a done status the config doesn't list, so the ticket is left there` }
+  if (current >= target) return { event, status, from, steps: [], reason: `already at "${from}", which is at or past "${status}"` }
+  const steps = []
+  for (const stage of STAGES.slice(current + 1, target + 1)) {
+    const name = statuses[stage]
+    if (name != null && !same(name, from) && !steps.some((s) => same(s, name))) steps.push(name)
+  }
+  return { event, status, from, steps }
+}
 
 // Each command checks its own options before the first request and returns the object to print.
 const JIRA_COMMANDS = {
   create: async ({ client, jira, values, cwd }) => {
     const summary = requireOption(values, 'summary')
     const description = readBodyFile(cwd, values)
+    // ESP-65: a ticket can name its own type and parent; the config's are the defaults. Both are checked before any call.
+    const issueType = values.type == null ? jira.issueType : requireOption(values, 'type')
+    if (!ISSUE_TYPE.test(issueType)) throw new UsageError('--type must be an issue type name such as "Bug" or "Story": letters, digits, spaces, "_" or "-", up to 60 characters')
     const parent = values.parent == null ? jira.parent : requireIssueKey(values, 'parent')
-    return { key: await client().createIssue({ project: jira.project, issueType: jira.issueType, parent, summary, description }) }
+    return { key: await client().createIssue({ project: jira.project, issueType, parent, summary, description }) }
   },
   link: async ({ client, values }) => {
     const blocker = requireIssueKey(values, 'blocker')
@@ -400,14 +466,40 @@ const JIRA_COMMANDS = {
   transition: async ({ client, jira, values }) => {
     const issue = requireIssueKey(values, 'issue')
     const { event, status } = targetStatus(values, jira.statuses)
+    if (event == null) {
+      // --status names one status: a direct move, as before.
+      await client().transitionTo(issue, status)
+      return { issue, status, transitioned: true }
+    }
     if (status == null) return { issue, event, transitioned: false, reason: noStatusFor(event) }
-    await client().transitionTo(issue, status)
-    return { issue, status, transitioned: true }
+    // --event walks forward from the issue's current status, one configured status at a time (ESP-116).
+    const jiraClient = client()
+    const current = await jiraClient.getStatus(issue)
+    const plan = planSteps(jira.statuses, event, current.name, current.category)
+    const done = []
+    for (const step of plan.steps) {
+      try {
+        await jiraClient.transitionTo(issue, step)
+      } catch (err) {
+        const after = done.length ? ` after moving it to ${done.map((s) => `"${s}"`).join(', ')}` : ''
+        throw new Error(`${err.message}${after}`, { cause: err })
+      }
+      done.push(step)
+    }
+    return { issue, event, status, from: plan.from, transitioned: done.length > 0, steps: done, ...(plan.reason ? { reason: plan.reason } : {}) }
   },
   // Reads commit messages from a file (an empty one is fine: no commits since the last tag) and sends nothing.
   keys: async ({ jira, values, cwd }) => {
     const { text } = readOptionFile(cwd, values, 'messages-file')
     return { project: jira.project, keys: findJiraKeys(text, jira.project) }
+  },
+  // The connector path asks this for the order of a move, so both transports walk the same way (ESP-116). Sends nothing.
+  steps: async ({ jira, values }) => {
+    const from = requireOption(values, 'from')
+    const category = values['from-category'] ?? null
+    if (category != null && !STATUS_CATEGORIES.includes(category)) throw new UsageError(`--from-category must be ${STATUS_CATEGORIES.map((c) => `"${c}"`).join(', ')}: the key of the status's category in Jira`)
+    const { event } = eventStatus(values, jira.statuses)
+    return planSteps(jira.statuses, event, from, category)
   },
 }
 
@@ -423,6 +515,10 @@ const runCommand = async (argv, { email, token, trustedSite, doFetch, cwd, warn 
     return tickets
   }
   if (tickets.tracker !== 'jira') throw new UsageError(`"tickets.tracker" is "${tickets.tracker}" in ${file}, so there is nothing for the Jira script to do`)
+  // ESP-104: on the connector transport the skills change Jira through the Atlassian connector, never this script.
+  if (NETWORK_COMMANDS.includes(command) && tickets.jira.transport !== 'api') {
+    throw new UsageError(`"tickets.jira.transport" is "${tickets.jira.transport}" in ${file}: make Jira changes through the Atlassian connector, or set "transport": "api" to use this script`)
+  }
   const client = () => createJiraClient({ site: tickets.jira.site, email, token, trustedSite, fetch: doFetch })
   return JIRA_COMMANDS[command]({ client, jira: tickets.jira, values, cwd })
 }

@@ -2,7 +2,7 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, rmSync, symlinkSync } from 'node:fs'
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { pathToFileURL } from 'node:url'
 import { makeRepo, runNode, writeFiles, tempDir, cleanupTempDirs, git, PLUGIN_ROOT } from './helpers.mjs'
@@ -47,7 +47,7 @@ describe('gate runner: steps and verdict (ESP-44)', () => {
     const at = (re) => out.findIndex((l) => re.test(l))
     assert.match(r.stdout, /^PASS {2}typecheck \(exit 0, \d+ s\)$/m)
     assert.match(r.stdout, /^PASS {2}tests \(exit 0, \d+ s\)$/m)
-    assert.match(r.stdout, /^PASS {2}fake-pass check \(exit 0, \d+ s\)$/m)
+    assert.match(r.stdout, /^PASS {2}fake-pass check \(exit 0, scanned \d+ files?, \d+ s\)$/m)
     assert.ok(at(/^PASS {2}typecheck /) < at(/^PASS {2}tests /), r.stdout)
     assert.ok(at(/^PASS {2}tests /) < at(/^PASS {2}fake-pass check /), r.stdout)
     assert.match(r.stdout, /^Gate run: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/m)
@@ -124,7 +124,8 @@ describe('gate runner: conditional steps (ESP-44 AC3)', () => {
   it('should run a conditional step when a file was moved out of its prefix', async () => {
     const repo = repoWith(config, { committed: { 'src/a.ts': 'x' }, uncommitted: { 'lib/keep.txt': 'k' } })
     git(repo, 'mv', 'src/a.ts', 'lib/a.ts')
-    const r = await runGate(repo)
+    // Against HEAD: src/a.ts was committed on this branch, so against the merge-base it never existed.
+    const r = await runGate(repo, undefined, ['--base', 'HEAD'])
     assert.equal(r.code, 0, r.stdout + r.stderr)
     assert.match(r.stdout, /^PASS {2}cond \(exit 0, \d+ s\)$/m)
   })
@@ -144,6 +145,206 @@ describe('gate runner: conditional steps (ESP-44 AC3)', () => {
     const r = await runGate(repoWith(config, { uncommitted: { 'Src/new.ts': 'x' } }))
     assert.equal(r.code, 0, r.stdout + r.stderr)
     assert.match(r.stdout, /^SKIPPED {2}cond /m)
+  })
+})
+
+describe('gate runner: commands and keys it accepts (ESP-53 AC10)', () => {
+  const accepted = [
+    ['&& between two commands', 'node -v && node -e "process.exit(0)"'],
+    ['; inside double quotes', 'node -e "const a=1;process.exit(0)"'],
+    ['; inside single quotes', "node -e 'process.exit(0)' --title='a;b'"],
+    ['a 2>&1 redirection', 'node -e "process.exit(0)" 2>&1'],
+  ]
+  for (const [what, run] of accepted) {
+    it(`should run a step with ${what}`, async () => {
+      const r = await runGate(repoWith({ verify: [{ name: 'step', run }] }))
+      assert.equal(r.code, 0, r.stdout + r.stderr)
+      assert.match(r.stdout, /^PASS {2}step /m)
+    })
+  }
+
+  it('should leave other unknown top-level keys alone', async () => {
+    const r = await runGate(repoWith({ verify: [ok('a')], tickets: { tracker: 'github' }, somethingElse: true }))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+  })
+
+  it('should stop an --iterate run on a misspelt verifyIterate key', async () => {
+    const r = await runGate(repoWith({ verify: [ok('a')], verifyIterte: [] }), undefined, ['--iterate'])
+    assert.equal(r.code, 2, r.stdout + r.stderr)
+    assert.match(r.stdout, /"verifyIterte".*"verifyIterate"/)
+  })
+})
+
+describe('gate runner: expectNoDiff (ESP-54 AC11)', () => {
+  const writeGen = { name: 'generate', run: 'node -e "require(\'fs\').writeFileSync(\'gen.txt\', \'new\')"' }
+  const committed = { 'gen.txt': 'old', 'other.txt': 'same' }
+
+  it('should fail a step that changes a listed path, naming the file, and run nothing after it', async () => {
+    const r = await runGate(repoWith({ verify: [{ ...writeGen, expectNoDiff: ['gen.txt', 'other.txt'] }, ok('after')] }, { committed }))
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    assert.match(r.stdout, /^FAIL {2}generate \(exit 0, but it changed gen\.txt, listed in expectNoDiff, \d+ s\)$/m)
+    assert.match(r.stdout, /^NOT RUN {2}after$/m)
+    assert.equal(lines(r).at(-1), 'Gate: FAIL')
+  })
+
+  it('should pass the same step without expectNoDiff', async () => {
+    const r = await runGate(repoWith({ verify: [writeGen] }, { committed }))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+  })
+
+  it('should not blame the step for a listed file that was already changed before the gate ran', async () => {
+    const step = { ...ok('generate'), expectNoDiff: ['gen.txt'] }
+    const r = await runGate(repoWith({ verify: [step] }, { committed, uncommitted: { 'gen.txt': 'edited by hand' } }))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+  })
+
+  it('should still fail a step that changes a listed file that was already changed', async () => {
+    const r = await runGate(repoWith({ verify: [{ ...writeGen, expectNoDiff: ['gen.txt'] }] }, { committed, uncommitted: { 'gen.txt': 'edited by hand' } }))
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    assert.match(r.stdout, /changed gen\.txt, listed in expectNoDiff/)
+  })
+
+  it('should treat an empty list as no check, as CI does', async () => {
+    const r = await runGate(repoWith({ verify: [{ ...writeGen, expectNoDiff: [] }] }, { committed }))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+  })
+
+  it('should pass when the changed file is not in the list', async () => {
+    const r = await runGate(repoWith({ verify: [{ ...writeGen, expectNoDiff: ['other.txt'] }] }, { committed }))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+  })
+
+  it('should check a folder prefix as CI does', async () => {
+    const files = { 'dist/gen.txt': 'old' }
+    const step = { name: 'build', run: 'node -e "require(\'fs\').writeFileSync(\'dist/gen.txt\', \'new\')"', expectNoDiff: ['dist/'] }
+    const r = await runGate(repoWith({ verify: [step] }, { committed: files }))
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    assert.match(r.stdout, /changed dist\/gen\.txt, listed in expectNoDiff/)
+  })
+})
+
+describe('gate runner: diff base and scan count (ESP-55 AC12)', () => {
+  const cond = { ...ok('cond'), when: ['src/'] }
+  const committedBranch = (config) => repoWith({ verify: [ok('a')], verifyConditional: [cond], ...config }, { committed: { 'src/a.mjs': 'export const a = 1\n' } })
+
+  it('should run a conditional step for a file committed on the branch, comparing with the merge-base', async () => {
+    const r = await runGate(committedBranch())
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /^Base: merge-base with develop \([0-9a-f]{7,}\)$/m)
+    assert.match(r.stdout, /^PASS {2}cond /m)
+  })
+
+  it('should fail on a focused test committed on the branch', async () => {
+    const repo = repoWith({ verify: [ok('tests')] }, { committed: { 'tests/math.test.mjs': FOCUSED } })
+    const r = await runGate(repo)
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    assert.match(r.stdout, /\[fp-only, high\] tests\/math\.test\.mjs:4 /)
+  })
+
+  it('should compare with HEAD when given --base HEAD', async () => {
+    const r = await runGate(committedBranch(), undefined, ['--base', 'HEAD'])
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /^Base: merge-base with HEAD /m)
+    assert.match(r.stdout, /^SKIPPED {2}cond /m)
+  })
+
+  it('should use git.baseBranch from the config', async () => {
+    const repo = committedBranch({ git: { baseBranch: 'feature/x' } })
+    const r = await runGate(repo)
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /^Base: merge-base with feature\/x /m)
+    assert.match(r.stdout, /^SKIPPED {2}cond /m)
+  })
+
+  it('should say so and compare with HEAD when the base cannot be found', async () => {
+    const r = await runGate(committedBranch({ git: { baseBranch: 'no-such-branch' } }))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /^Base: could not find "no-such-branch" or "origin\/no-such-branch" .*so changed files are compared with HEAD\.$/m)
+    assert.match(r.stdout, /^SKIPPED {2}cond /m)
+  })
+
+  it('should exit 2 when an explicit --base cannot be found', async () => {
+    const r = await runGate(committedBranch(), undefined, ['--base', 'no-such-branch'])
+    assert.equal(r.code, 2, r.stdout + r.stderr)
+    assert.match(r.stdout, /"no-such-branch"/)
+    assert.doesNotMatch(r.stdout, /^(PASS|FAIL|NOT RUN|SKIPPED) /m)
+  })
+
+  it('should use origin/<base> when the local branch is behind it', async () => {
+    // The branch was cut from origin/develop, and the local develop is one commit older: only the newer merge-base is right.
+    const repo = repoWith({ verify: [ok('a')], verifyConditional: [cond] })
+    git(repo, 'checkout', '-q', 'develop')
+    writeFiles(repo, { 'src/other.mjs': 'export const b = 2\n' })
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-q', '-m', 'other work')
+    git(repo, 'push', '-q', 'origin', 'develop')
+    git(repo, 'reset', '-q', '--hard', 'HEAD~1')
+    git(repo, 'checkout', '-q', 'feature/x')
+    git(repo, 'rebase', '-q', 'origin/develop')
+    const r = await runGate(repo)
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /^Base: merge-base with origin\/develop /m)
+    assert.match(r.stdout, /^SKIPPED {2}cond /m)
+  })
+
+  it('should use origin/<base> when there is no local branch of that name', async () => {
+    const repo = committedBranch()
+    git(repo, 'branch', '-D', 'develop')
+    const r = await runGate(repo)
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /^Base: merge-base with origin\/develop /m)
+    assert.match(r.stdout, /^PASS {2}cond /m)
+  })
+
+  const badArgs = [
+    ['--base with no ref', ['--base']],
+    ['a --base ref that reads as an option', ['--base', '-x']],
+    ['--base with --iterate', ['--iterate', '--base', 'HEAD']],
+  ]
+  for (const [what, args] of badArgs) {
+    it(`should run nothing and exit 2 with ${what}`, async () => {
+      const r = await runGate(repoWith({ verify: [fail('tests')] }), {}, args)
+      assert.equal(r.code, 2, r.stdout + r.stderr)
+      assert.doesNotMatch(r.stdout, /^(PASS|FAIL|NOT RUN|SKIPPED) /m)
+    })
+  }
+
+  // Code review 2026-11-09: verify asks this before it moves any Jira ticket into testing.
+  it('should run nothing and exit 0 with --check when the gate can start', async () => {
+    const r = await runGate(committedBranch(), undefined, ['--check'])
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /^Base: merge-base with develop /m)
+    assert.equal(lines(r).at(-1), 'Gate check: the gate can start. Nothing ran.')
+    assert.doesNotMatch(r.stdout, /^(PASS|FAIL|NOT RUN|SKIPPED|Log:) /m)
+  })
+
+  it('should exit 2 with --check when the gate cannot start', async () => {
+    const r = await runGate(repoWith({ verify: [{ name: 'chained', run: 'node -v; node -v' }] }), undefined, ['--check'])
+    assert.equal(r.code, 2, r.stdout + r.stderr)
+    assert.equal(lines(r).at(-1), 'Gate: FAIL')
+  })
+
+  it('should exit 2 with --check --base for a base that cannot be found', async () => {
+    const r = await runGate(committedBranch(), undefined, ['--check', '--base', 'no-such-branch'])
+    assert.equal(r.code, 2, r.stdout + r.stderr)
+  })
+
+  it('should run nothing and exit 2 when git.baseBranch is not a string', async () => {
+    const r = await runGate(repoWith({ verify: [fail('tests')], git: { baseBranch: 7 } }))
+    assert.equal(r.code, 2, r.stdout + r.stderr)
+    assert.match(r.stdout, /"git\.baseBranch"/)
+  })
+
+  it('should fail the gate when the fake-pass check prints no scan count', async () => {
+    // A copy of the runner whose fake-pass check exits 0 without a word: it can't be told from one that checked nothing.
+    const copy = path.join(tempDir('usiatech-plugin-copy-'), 'plugin')
+    for (const dir of ['skills', 'templates']) cpSync(path.join(PLUGIN_ROOT, dir), path.join(copy, dir), { recursive: true })
+    writeFileSync(path.join(copy, 'templates', 'github', 'scripts', 'fake-pass-check.mjs'), 'process.exitCode = 0\n')
+    const r = await runNode(path.join(copy, 'skills', 'verify', 'gate.mjs'), { cwd: repoWith({ verify: [ok('tests')] }) })
+    if (logPath(r)) logs.push(logPath(r))
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    assert.match(r.stdout, /^FAIL {2}fake-pass check \(exit 0, but it printed no scan count, so it may have checked nothing, \d+ s\)$/m)
+    assert.equal(lines(r).at(-1), 'Gate: FAIL')
   })
 })
 
@@ -177,6 +378,20 @@ describe('gate runner: a gate that cannot start (ESP-44 AC4)', () => {
     ['a timeoutMs that is null', { verify: [{ ...ok('a'), timeoutMs: null }] }, /"timeoutMs" of step "a"/],
     ['a timeoutMs above 2147483647', { verify: [{ ...ok('a'), timeoutMs: 2147483648 }] }, /"timeoutMs" of step "a"/],
     ['a conditional step with a timeoutMs of 0', { verify: [ok('a')], verifyConditional: [{ ...ok('cond'), when: ['src/'], timeoutMs: 0 }] }, /"timeoutMs" of step "cond"/],
+    // ESP-53 (spec R10, AC10): a misspelt step-list key would run nothing, and a chained run hides an earlier failure.
+    ['a misspelt verifyConditional key', { verify: [ok('a')], verifyConditionl: [{ ...fail('cond'), when: ['src/'] }] }, /"verifyConditionl".*"verifyConditional"/],
+    ['a step-list key in the wrong case', { verify: [ok('a')], VerifyIterate: [] }, /"VerifyIterate".*"verifyIterate"/],
+    ['a misspelt verify key next to a valid one', { verify: [ok('a')], verfy: [fail('b')] }, /"verfy".*"verify"/],
+    ['a run that chains commands with ;', { verify: [{ name: 'chained', run: 'node -e "process.exit(1)"; node -e "process.exit(0)"' }] }, /"run" of step "chained".*one command per step/],
+    ['a run that chains commands with a single &', { verify: [{ name: 'chained', run: 'node -e "process.exit(1)" & node -e "process.exit(0)"' }] }, /"run" of step "chained".*one command per step/],
+    ['a run with & inside single quotes, which cmd.exe still treats as a separator', { verify: [{ name: 'quoted', run: "node -e 'x' & node -v" }] }, /"run" of step "quoted"/],
+    // ESP-54 (spec R11): the same shape as the CI gate, a list of paths.
+    ['an expectNoDiff that is not a list', { verify: [{ ...ok('gen'), expectNoDiff: true }] }, /"expectNoDiff" of step "gen"/],
+    ['an expectNoDiff path that leaves the repo', { verify: [{ ...ok('gen'), expectNoDiff: ['../x'] }] }, /"expectNoDiff" of step "gen"/],
+    ['a conditional step that chains commands', { verify: [ok('a')], verifyConditional: [{ name: 'cond', run: 'node -v; node -v', when: ['src/'] }] }, /"run" of step "cond"/],
+    // Code review 2026-11-09: || and a pipe also report a status other than the first command's.
+    ['a run that chains commands with ||', { verify: [{ name: 'chained', run: 'node -e "process.exit(1)" || node -v' }] }, /"run" of step "chained" chains commands with "\|\|"/],
+    ['a run that pipes into another command', { verify: [{ name: 'piped', run: 'node -e "process.exit(1)" | node -v' }] }, /"run" of step "piped" chains commands with "\|"/],
   ]
   for (const [what, config, reason] of cases) {
     it(`should run nothing and exit 2 with ${what}`, async () => {
@@ -486,7 +701,8 @@ setTimeout(() => {}, 60000)
       const end = await closed
       const log = stdout.match(/^Log: (.+)$/m)?.[1].trim()
       if (log) logs.push(log)
-      assert.equal(end.code, 1, `${JSON.stringify(end)}\n${stdout}`)
+      // ESP-58: an interrupted gate exits 130, as the mutation runner does, not 1 like a failed step.
+      assert.equal(end.code, 130, `${JSON.stringify(end)}\n${stdout}`)
       assert.match(stdout, /^FAIL {2}tree \(interrupted, \d+ s\)$/m)
       assert.equal(stdout.split(/\r?\n/).filter(Boolean).at(-1), 'Gate: FAIL')
       await assertTreeStopped(repo)
@@ -509,7 +725,7 @@ describe('gate runner: fake-pass check (ESP-44 AC5)', () => {
     const r = await runGate(repoWith({ verify: [ok('tests')] }, { uncommitted: { 'tests/math.test.mjs': FOCUSED } }))
     assert.equal(r.code, 1, r.stdout + r.stderr)
     assert.match(r.stdout, /^PASS {2}tests /m)
-    assert.match(r.stdout, /^FAIL {2}fake-pass check \(exit 1, \d+ s\)$/m)
+    assert.match(r.stdout, /^FAIL {2}fake-pass check \(exit 1, scanned \d+ files?, \d+ s\)$/m)
     assert.match(r.stdout, /\[fp-only, high\] tests\/math\.test\.mjs:4 /)
     assert.equal(lines(r).at(-1), 'Gate: FAIL')
   })
@@ -540,16 +756,28 @@ describe('gate runner: log file (ESP-44 AC6)', () => {
     assert.ok(lines(r).length <= 12, `${lines(r).length} lines:\n${r.stdout}`)
     const log = logPath(r)
     assert.ok(log && existsSync(log), `no log at ${log}`)
-    assert.equal(readFileSync(log, 'utf8').match(/^line \d+$/gm).length, 500)
+    assert.match(readFileSync(log, 'utf8'), /^=== chatty: .* \(output in step-01\.log\)$/m)
+    assert.equal(readFileSync(path.join(path.dirname(log), 'step-01.log'), 'utf8').match(/^line \d+$/gm).length, 500)
     assert.ok(path.relative(repo, log).startsWith('..') || path.isAbsolute(path.relative(repo, log)), `${log} is inside ${repo}`)
   })
 
-  it('should write the log alone in a folder made for this run', async () => {
-    const r = await runGate(repoWith({ verify: [ok('a')] }))
+  it('should write the index and one log per step, fake-pass check included, in a folder made for this run (ESP-56 AC13)', async () => {
+    const r = await runGate(repoWith({ verify: [ok('a'), ok('b')] }))
     assert.equal(r.code, 0, r.stdout + r.stderr)
     const dir = path.dirname(logPath(r))
     assert.match(path.basename(dir), /^usiatech-gate-.{6}$/)
-    assert.deepEqual(readdirSync(dir), ['gate.log'])
+    assert.deepEqual(readdirSync(dir).sort(), ['gate.log', 'step-01.log', 'step-02.log', 'step-03.log'])
+  })
+
+  it('should keep a background process left by one step out of the next step\'s output (ESP-56 AC13)', async () => {
+    // The first step leaves a detached child that keeps writing after the step ends.
+    const bg = "import { spawn } from 'node:child_process'\nspawn(process.execPath, ['-e', 'let i=0;const t=setInterval(()=>{console.log(\"background\");if(++i>40)clearInterval(t)},25)'], { stdio: 'inherit', detached: true }).unref()\n"
+    const second = { name: 'second', run: 'node -e "setTimeout(()=>{console.log(\'mine\');process.exit(3)},500)"' }
+    const r = await runGate(repoWith({ verify: [{ name: 'first', run: 'node bg.mjs' }, second] }, { committed: { 'bg.mjs': bg } }))
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    const tail = r.stdout.slice(r.stdout.indexOf('--- last'))
+    assert.match(tail, /^mine$/m)
+    assert.doesNotMatch(tail, /background/)
   })
 
   it('should show a failing step\'s own lines that look like the log markers', async () => {
@@ -562,6 +790,45 @@ describe('gate runner: log file (ESP-44 AC6)', () => {
   it('should put what a step writes to stderr in the log too', async () => {
     const r = await runGate(repoWith({ verify: [{ name: 'warns', run: 'node -e "console.error(\'to stderr\')"' }] }))
     assert.equal(r.code, 0, r.stdout + r.stderr)
-    assert.match(readFileSync(logPath(r), 'utf8'), /^to stderr$/m)
+    assert.match(readFileSync(path.join(path.dirname(logPath(r)), 'step-01.log'), 'utf8'), /^to stderr$/m)
+  })
+})
+
+describe('gate runner: old log folders (ESP-56 AC13)', () => {
+  const DAY = 24 * 60 * 60 * 1000
+  // The runner's temp folder is pointed at a folder of the test's own, so the user's real temp folder is never touched.
+  const tempEnv = (dir) => ({ TMP: dir, TEMP: dir, TMPDIR: dir })
+  const folder = (tmp, name, ageDays) => {
+    const dir = path.join(tmp, name)
+    mkdirSync(dir)
+    writeFileSync(path.join(dir, 'gate.log'), 'old\n')
+    const when = new Date(Date.now() - ageDays * DAY)
+    utimesSync(dir, when, when)
+    return dir
+  }
+
+  it('should remove its own folders older than 7 days and keep newer and other folders', async () => {
+    const tmp = tempDir('usiatech-tmp-')
+    const old = folder(tmp, 'usiatech-gate-Old123', 8)
+    const recent = folder(tmp, 'usiatech-gate-New123', 6)
+    const other = folder(tmp, 'usiatech-gate-toolong1', 30)
+    const foreign = folder(tmp, 'someone-else-Abc123', 30)
+    const r = await runGate(repoWith({ verify: [ok('a')] }), tempEnv(tmp))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.equal(existsSync(old), false, 'the old folder is removed')
+    for (const kept of [recent, other, foreign]) assert.ok(existsSync(kept), `${kept} is kept`)
+  })
+
+  it('should not follow or remove a link that matches the name', async () => {
+    const tmp = tempDir('usiatech-tmp-')
+    const target = folder(tempDir('usiatech-target-'), 'precious', 30)
+    const link = path.join(tmp, 'usiatech-gate-Link12')
+    symlinkSync(target, link, 'junction')
+    const when = new Date(Date.now() - 30 * DAY)
+    utimesSync(target, when, when)
+    const r = await runGate(repoWith({ verify: [ok('a')] }), tempEnv(tmp))
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.ok(existsSync(path.join(target, 'gate.log')), 'the link target is untouched')
+    assert.ok(lstatSync(link).isSymbolicLink(), 'the link is left alone')
   })
 })

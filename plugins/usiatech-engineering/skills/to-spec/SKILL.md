@@ -8,11 +8,13 @@ description: Writes a confirmed understanding into a numbered spec at docs/specs
 ## 1. Inputs
 - The understanding note the user confirmed in `clarify`. If there isn't one, run `clarify` first.
 - The template `${CLAUDE_PLUGIN_ROOT}/templates/spec.md`.
+- **Jira tracker only:** when the note names existing Jira tickets this spec covers, fire `started` for them, following `${CLAUDE_PLUGIN_ROOT}/scripts/jira-moves.md`. A key already moved is left alone. A failure is reported and doesn't stop the spec.
 
 ## 2. Write
 1. Path: `docs/specs/YYYY-MM-DD-<slug>.md`, with today's date and a 2–5 word kebab-case slug. Create `docs/specs/` if needed. If the file exists, ask whether to update it or pick a new slug.
 2. Fill every section:
    - **Requirements:** R1, R2… Each says *what*, not *how*, and can be tested.
+   - **Code names:** read the code a requirement touches before naming a function, file or option in a requirement or criterion, so every name exists as written. If you haven't read it, keep the requirement at behaviour level.
    - **Acceptance criteria:** AC1, AC2… Each names the R it proves (`AC1 (R1)`) and is measurable: an observable behaviour, a command and its expected result, or a metric. Someone other than the author must be able to check it without a judgement call. Rewrite vague ones ("fast", "works well") with the user.
    - **Constraints & decisions:** the ADRs that apply. A new decision that would be hard to reverse gets a note suggesting an ADR.
    - **Open questions:** each one answered, or marked `deferred: <why>`.

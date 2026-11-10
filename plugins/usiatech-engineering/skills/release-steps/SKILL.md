@@ -33,9 +33,9 @@ Repo `AGENTS.md` rules win on conflict.
 - Merge the PR only when the arguments say the user approved it or a standing merge rule applies.
 - **On merge, Jira tracker only** (see "Jira tracker" below): this step runs once the PR has merged into the base branch, meaning this run merged it or `gh pr view <n> --json state` shows `MERGED`.
   - The keys are the Jira tickets named by the tasks in the archived plan for this branch, the one whose final status names the branch. If there's no such plan, or its tasks name no keys, say so; don't skip without a word.
-  - For each key, move it with the `merged` event (see "Jira writes" below).
-  - Then add a comment holding the PR link: through the MCP, `addCommentToJiraIssue` with `cloudId`, the key as `issueIdOrKey` and the text as `commentBody`; otherwise `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" comment --issue <KEY> --body-file "<file>"`, with the body file in the session scratchpad.
-  - Add the comment even when the transition failed, or printed `"transitioned":false` because no `merged` status is configured. Report both.
+  - For each key, fire `merged`. Skip a docs-only ticket without its approval line in the plan's Change log, and say it waits at `devComplete` for the user's review.
+  - Then add a comment holding the PR link to each key (`jira-moves.md`, section 4).
+  - Add the comment even when the move failed, or moved nothing because no `merged` status is configured. Report both.
 
 ## Release (phase `release`, only when the user asked)
 1. Confirm CI is green on the base branch. Merge base → release branch.
@@ -52,16 +52,11 @@ Repo `AGENTS.md` rules win on conflict.
 
 ## Released tickets (phase `release-jira`, Jira tracker only)
 The `release` phase has already merged, tagged and pushed. Never merge, tag or push in this phase.
-1. For each key the arguments confirm, move it with the `released` event (see "Jira writes" below). With no confirmed list, move nothing and say so.
+1. For each key the arguments confirm, fire `released`. With no confirmed list, move nothing and say so. Skip a docs-only ticket without its approval line in its archived plan's Change log, and say it waits at `devComplete` for the user's review.
 2. Then do the `release` phase's step 5 clean-up.
 
 ## Jira tracker
-- **Which tracker:** when `.claude/engineering.json` exists, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root and read `tracker` from its output. Return any stderr warning it prints, even when it exits 0 (for example, a site outside `.atlassian.net`).
-  - With no config file, or `"tracker":"github"`, the Jira steps don't apply.
-  - Any non-zero exit (2 is a config problem) is a failure to report, not a reason to skip.
-- **Jira writes:** use the Atlassian MCP when its tools are available and the `check` output has `jira.cloudId`; otherwise use the script.
-  - Move a key: with `jira.transitions.<event>` set, call `transitionJiraIssue` with that `cloudId`, the key as `issueIdOrKey` and `transition: { id: <jira.transitions.<event>> }`. Never call `getTransitionsForJiraIssue`.
-  - Without the MCP, the `cloudId` or that transition ID: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" transition --issue <KEY> --event <event>`.
+- **Jira writes:** every check, move and comment follows `${CLAUDE_PLUGIN_ROOT}/scripts/jira-moves.md`: the `check` run, the configured transport (`connector` or `api`, never both), forward-only moves and the docs-only stop. "Fire `<event>`" above means a move with that event. Return any stderr warning `check` prints.
 - **Failures:** a failed `check`, `git describe`, `git log`, `keys`, transition or comment (MCP call or script) never undoes a git step: the merge, the tag and the push stand.
   - Go on with the other keys. Then report each failure with its message as one the user must fix in Jira.
   - Don't retry silently, and don't report the release as fully done while a Jira step has failed.

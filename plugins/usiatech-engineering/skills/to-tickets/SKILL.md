@@ -12,13 +12,16 @@ description: Splits an approved spec into small tickets that each name the requi
    - **Covers:** the R and AC IDs it delivers
    - **Blocked by:** the tickets that must land first, or none
    - **Done when:** its ACs, restated as checks
+   - **Type** and **Parent** (Jira only, optional): the ticket's own issue type and parent. The config's `issueType` and `parent` are the default.
 3. Every R must be covered by at least one ticket. Order the tickets so blockers come first.
 4. Find the tracker. GitHub is the default; Jira is used only when `.claude/engineering.json` sets `tickets.tracker` to `"jira"`.
    - When `.claude/engineering.json` exists, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root. Take the tracker from the `tracker` field it prints, not from reading the file yourself. A missing `tickets` section prints `"github"`. Any non-zero exit (2 is a config problem) means stop: show the message, and don't fall back to GitHub. Show any stderr warning it prints to the user, even when it exits 0 (for example, a site outside `.atlassian.net`).
    - **GitHub tracker:** check access with `gh auth status` and `gh repo view --json nameWithOwner`. Both must succeed.
-   - **Jira tracker through the MCP:** when the Atlassian MCP's `createJiraIssue` and `createIssueLink` tools are available and the `check` output has `jira.cloudId`, step 2.2 files through them and needs no environment credentials.
-   - **Jira tracker through the script** (otherwise): check that `JIRA_EMAIL` and `JIRA_API_TOKEN` are set, without printing their values (for example `test -n "$JIRA_API_TOKEN"`). If either is missing, stop and ask the user to set it. Never ask for the token in the conversation, and never write it to a file.
-5. Show the list as a table (`# | Title | Covers | Blocked by`). Say where the tickets will go: GitHub issues, Jira issues (with the project and the parent key from the config, if any) or the spec, and ask the user once to confirm before filing anything.
+   - **Jira tracker:** read `jira.transport` from the `check` output. The transport rules are in `${CLAUDE_PLUGIN_ROOT}/scripts/jira-moves.md`, section 2.
+     - **`connector`:** step 2.2 files through the connector's `createJiraIssue` and `createIssueLink` tools with `jira.cloudId`, and needs no environment credentials. When those tools aren't available, stop and tell the user; don't switch to the script.
+     - **`api`:** check that `JIRA_EMAIL` and `JIRA_API_TOKEN` are set, without printing their values (for example `test -n "$JIRA_API_TOKEN"`). If either is missing, stop and ask the user to set it. Never ask for the token in the conversation, and never write it to a file.
+   - **Existing tickets:** when the spec's tickets already exist in Jira (the spec names their keys), file nothing: fire `started` for them, following `jira-moves.md`, and go to step 2.4.
+5. Show the list as a table (`# | Title | Covers | Blocked by`, plus `Type | Parent` for Jira). Say where the tickets will go: GitHub issues, Jira issues (with the project and the parent key from the config, if any) or the spec, and ask the user once to confirm before filing anything.
    - For a draft spec, put its summary (path, goal, number of Rs and ACs, open questions) above the table. One approval then covers the spec and the ticket list together: set the spec's `Status: approved` and the date, then file.
    - When `.claude/engineering.json` sets `decisions.batch` to `false`, the spec was approved on its own in `to-spec`, so ask about the ticket list on its own.
 
@@ -29,13 +32,15 @@ description: Splits an approved spec into small tickets that each name the requi
    - Write each body to a temp file in the session scratchpad, not the repo.
    - Apply the `spec:<slug>` label only if it already exists: `gh label list --search "spec:<slug>" --json name` returns an exact name match (plain `gh label list` stops at 30 labels). Never create labels.
    - Also list each issue in the spec's `## Tickets` section (`#NN · <title> · Covers: … · Blocked by: …`), so later plans and reviews can see which requirements are covered.
-2. **With the Jira tracker:** file each ticket in blocker order, so every blocker already has a key. Use the MCP or the script as step 1.4 decided.
-   - Create through the MCP: `createJiraIssue` with `cloudId`, `projectKey` and `issueTypeName` from the `check` output, `summary: '<spec-slug>: <title>'`, the body as `description`, and `parent` set to the configured parent (or the one the user named at confirmation) when there is one.
-   - Create through the script: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" create --summary '<spec-slug>: <title>' --body-file <file>`. The issue goes into the configured project, with the configured issue type and parent. Add `--parent <KEY>` only when the user named a different parent at confirmation.
+2. **With the Jira tracker:** file each ticket in blocker order, so every blocker already has a key. Use the transport step 1.4 read.
+   - Check every ticket's type and parent before the first ticket is created. A type is a letter followed by up to 59 letters, digits, spaces, `_` or `-`. A parent is a key of the configured project, such as `ESP-12`. Stop on a bad one, name it, and file nothing.
+   - Each ticket takes its own type and parent; without one, the `check` output's `jira.issueType` and `jira.parent` apply (or the parent the user named at confirmation).
+   - **`connector`:** create with `createJiraIssue`: `cloudId`, `projectKey` from the `check` output, the ticket's type as `issueTypeName`, `summary: '<spec-slug>: <title>'`, the body as `description`, and the ticket's parent as `parent` when there is one. Link each blocker with `createIssueLink`: `cloudId`, `type: 'Blocks'`, `inwardIssue: <blocker key>` and `outwardIssue: <new key>`.
+   - **`api`:** create with `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" create --summary '<spec-slug>: <title>' --type '<type>' --parent <KEY> --body-file <file>`. Leave out `--type` or `--parent` when the config default applies. Link each blocker with `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" link --blocker <blocker key> --blocked <new key>`.
    - Body: the spec path, `Covers: R1, AC2`, `Blocked by: <KEY>` (or "none") and the done-when checks. For the script, write each body to a temp file in the session scratchpad, not the repo.
    - Either way you get the new key (the script prints `{"key":"<KEY>"}`). Before the next call, add the issue to the spec's `## Tickets` section (`<KEY> · <title> · Covers: … · Blocked by: …`), so a key is never lost if the run stops. The section starts with a line saying the tickets were filed in Jira and under which parent.
-   - Link each blocker right after the ticket it blocks is created. Through the MCP: `createIssueLink` with `cloudId`, `type: 'Blocks'`, `inwardIssue: <blocker key>` and `outwardIssue: <new key>`. Through the script: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" link --blocker <blocker key> --blocked <new key>`.
-   - A failed MCP call or any non-zero exit is a failure (for the script, 1 is a Jira failure, 2 is a bad argument or config). Stop at the first one, and see Rules.
+   - Link each blocker right after the ticket it blocks is created.
+   - A failed connector call or any non-zero exit is a failure (for the script, 1 is a Jira failure, 2 is a bad argument or config). Stop at the first one, and see Rules.
 3. **Without a tracker** (the access checks in step 1.4 failed and the user chose not to fix them): write the tickets into the spec's `## Tickets` section as T1, T2… with the same fields, and tell the user why they weren't filed.
 4. Report the issue numbers, Jira keys or T-IDs. They and the spec path become the plan's requirement references.
 

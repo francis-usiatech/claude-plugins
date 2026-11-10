@@ -47,3 +47,23 @@ The "Atlassian MCP server" alternative above is now taken up as the first choice
 - **Fallback unchanged.** Without the MCP (CI, non-interactive runs), the `cloudId` or an event's transition ID, the skills run `jira-tracker.mjs` exactly as decided above, with the same credential and trusted-host rules.
 - **Consequence.** A transition ID is tied to the project's workflow. If the workflow changes, a stale ID makes the MCP call fail loudly; `check` validates only the shape, not that the ID exists. Fix the config, as with a renamed status.
 - **Still true.** Git first, Jira second: a failed MCP call never undoes a git step, and nothing is retried.
+
+## Addendum 2026-11-09: a transport setting, stage events and forward-only moves (ESP-104, ESP-112, ESP-116)
+
+References: spec `docs/specs/2026-11-09-speed-batch.md` (R1–R5, R16).
+
+The 2026-10-25 addendum chose the connector or the script per call, by whether the MCP tools, the `cloudId` and a transition ID happened to be present. A session without `JIRA_*` variables then hit `JIRA_EMAIL is not set` whenever one of them was missing, and the same repo wrote through different paths from one session to the next.
+
+### Transport
+- **Decision.** `tickets.jira.transport` is `"connector"` or `"api"`. A missing value means `"connector"`; any other value is a config error, and `check` prints the resolved value.
+  - `connector`: every move, comment, ticket and link goes through the Atlassian connector with `cloudId`. The script's network commands (`create`, `link`, `comment`, `find-transition`, `transition`) refuse to run with exit 2, and the skills never fall back to them.
+  - `api`: the skills use the script only, even when the connector is available. The credential and trusted-host rules above are unchanged.
+- **Why connector by default.** Interactive sessions have the connector's OAuth connection and usually lack the token variables; the connector needs no secret in the shell.
+- **Trade-off.** The connector isn't available in CI or non-interactive runs, so a repo that moves tickets there must set `"api"`. A repo that relied on the old automatic fallback to the script must now set `"api"` (migration note in the 0.24.0 changelog row). In return, a run never switches paths silently: a key that can't be moved on the chosen path is reported by key.
+
+### Stage events and forward-only moves
+- **Events.** `started`, `devComplete`, `testingStarted`, `testingComplete`, `merged` and `released`, in that order. `verified` stays valid as another name for `testingComplete`; setting both is a config error.
+- **Forward only.** A move never takes a ticket backwards. A ticket at the event's status, or at a later one in the configured order, is left alone. A move more than one status ahead walks each configured status in between and reports each step, so linear workflows work. The script does the walk for `api`; its `steps` command, which sends nothing, gives the connector path the same order.
+- **Docs-only tickets** stop at `devComplete` until the user approves them, recorded as a dated line in the plan's Change log.
+- **Shared procedure.** The skills follow one file, `plugins/usiatech-engineering/scripts/jira-moves.md`, for every Jira write.
+- **Still true.** Git first, Jira second; nothing is retried.
