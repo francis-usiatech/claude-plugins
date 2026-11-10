@@ -11,6 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   matchAny, isSecretEnvFile, escapeRegExp, isPlainObject, isStringArray, findSecret, DENY_COMMANDS, DROP_DATABASE_RULE, ASK_COMMANDS,
+  BRANCH_DELETE_RULE, RECURSIVE_DELETE_RULE, hasControlChar,
   DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH, parseAllowlist, allowlistWarnings,
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, applyAllowlist, blockingFindings, formatFinding, oneLine, TIER,
   isPathPrefix, CONTROL_CODE_POINTS, GIT_PREFIX,
@@ -79,6 +80,20 @@ const trustedEntryProblem = (e) => {
   const literal = segs.findIndex((s) => GLOB_CHARS.test(s.replace(PLACEHOLDERS, '')))
   if ((literal === -1 ? segs.length : literal) < root.minLiteral) return `must name a folder below ${root.prefix} (${quoted(e)})`
   if (root.place === 'tmpDir' && segs[0].toLowerCase() === STATE_FOLDER) return `must not name the after-Bash snapshot folder $TMP/${STATE_FOLDER} (${quoted(e)})`
+  return null
+}
+
+// ESP-150: a governance.trustedDeletePaths entry is a project-relative glob below the project folder. It may never
+// name the project itself, a parent, or anything in .git or .claude, and it needs one plain folder name.
+const NEVER_TRUSTED_DELETE_SEGMENTS = ['.git', '.claude']
+const deleteEntryProblem = (e) => {
+  if (typeof e !== 'string' || !e) return 'must be a non-empty string'
+  if (hasControlChar(e) || /[\\:]/.test(e) || /^[/~]/.test(e)) return `must be a path relative to the project, with "/" only (${quoted(e)})`
+  const segs = e.split('/')
+  // A name ending in "." or a space loses it on Windows, so "..." or "a." could name a parent or another folder.
+  if (segs.some((s) => !s || /[. ]$/.test(s))) return `must not have an empty folder name, ".", ".." or one ending in "." or a space (${quoted(e)})`
+  if (segs.every((s) => /^[*?]+$/.test(s))) return `must name a folder, not only wildcards (${quoted(e)})`
+  if (segs.some((s) => NEVER_TRUSTED_DELETE_SEGMENTS.includes(s.toLowerCase()))) return `must not name anything in .git or .claude (${quoted(e)})`
   return null
 }
 
@@ -259,6 +274,21 @@ const quoteKey = (key) => [...JSON.stringify(key)]
 const checkPlanning = (cfg, advise) => {
   if (cfg.planning == null) return
   if (!isPlainObject(cfg.planning)) { advise('"planning" must be an object'); delete cfg.planning; return }
+  // ESP-152: read by approve-plan to pick the pre-flight model. A bad entry is dropped on its own; a bad list is
+  // dropped, so the skill falls back to the plain file-count rule.
+  const sensitive = cfg.planning.sensitivePaths
+  if (sensitive != null) {
+    cfg.planning = { ...cfg.planning }
+    if (!Array.isArray(sensitive)) {
+      advise('"planning.sensitivePaths" must be a list of path prefixes, relative to the repo root with forward slashes (for example "packages/db/")')
+      delete cfg.planning.sensitivePaths
+    } else {
+      cfg.planning.sensitivePaths = sensitive.filter((e, i) => {
+        if (!isPathPrefix(e)) advise(`"planning.sensitivePaths[${i}]" must be a path prefix, relative to the repo root with forward slashes`)
+        return isPathPrefix(e)
+      })
+    }
+  }
   const list = cfg.planning.preflightReviewers
   if (list == null) return
   cfg.planning = { ...cfg.planning }
@@ -365,15 +395,16 @@ export const sanitizeConfig = (raw) => {
     advise('"governance.planEdits" must be "allow", "ask" or "all"')
     gov.planEdits = 'ask'
   }
-  if (gov.trustedWritePaths != null) {
-    if (!Array.isArray(gov.trustedWritePaths)) {
+  for (const [key, problemOf] of [['trustedWritePaths', trustedEntryProblem], ['trustedDeletePaths', deleteEntryProblem]]) {
+    if (gov[key] == null) continue
+    if (!Array.isArray(gov[key])) {
       // No path is trusted, the strictest value: the defaults would trust more than a valid empty list.
-      advise('"governance.trustedWritePaths" must be an array of strings')
-      gov.trustedWritePaths = []
+      advise(`"governance.${key}" must be an array of strings`)
+      gov[key] = []
     } else {
-      gov.trustedWritePaths = gov.trustedWritePaths.filter((e, i) => {
-        const why = trustedEntryProblem(e)
-        if (why) advise(`"governance.trustedWritePaths[${i}]" ${why}`)
+      gov[key] = gov[key].filter((e, i) => {
+        const why = problemOf(e)
+        if (why) advise(`"governance.${key}[${i}]" ${why}`)
         return !why
       })
     }
@@ -843,7 +874,11 @@ const withoutDataText = (cmd, tool, shellMoved = false) => {
 // line break, a comment, a heredoc or input redirect, a write, a variable assignment, an unquoted wildcard, or a
 // PowerShell block, group or call keeps the deny too.
 // The quiet commands, less those that write a file or change the folder.
-const READ_ONLY_WORDS = [...SEARCH_WORDS, ...QUIET_COMMANDS.filter((w) => !['tee', 'cd', 'mkdir', 'touch'].includes(w))]
+// ESP-151: sleep too, so a wait loop reads as read-only.
+const READ_ONLY_WORDS = [...SEARCH_WORDS, ...QUIET_COMMANDS.filter((w) => !['tee', 'cd', 'mkdir', 'touch'].includes(w)), 'sleep']
+// ESP-151: bash loop and if keywords start a simple command without running anything; the split already ends a
+// command at each ";", so `until test -f x; do sleep 1; done` is read as `test -f x`, `sleep 1` and nothing.
+const BASH_KEYWORDS = ['until', 'while', 'do', 'done', 'if', 'then', 'elif', 'else', 'fi', '!']
 // Full names only, since git takes any unique prefix of a long option. -O (open files in a pager), --output and
 // --ext-diff are not listed, nor is any global option before the subcommand.
 const GIT_FLAGS = ['-i', '-E', '-F', '-P', '-n', '-l', '-w', '-v', '-h', '-H', '-p', '--all', '--oneline', '--stat',
@@ -879,7 +914,9 @@ const readOnlyGit = (args) => {
   return true
 }
 
-const readOnlySimple = (words) => {
+const readOnlySimple = (allWords, bash) => {
+  const start = bash ? allWords.findIndex((w) => !BASH_KEYWORDS.includes(w)) : 0
+  const words = start === -1 ? [] : allWords.slice(start)
   if (!words.length) return true
   // A variable assignment before a command (GIT_PAGER=… git log) is a first word with "=", which no listed name has.
   const name = words[0].toLowerCase().replace(/\.exe$/, '')
@@ -934,13 +971,101 @@ const simpleCommands = (cmd, bash) => {
   return commands
 }
 
-const readOnlyCommand = (cmd, tool) => {
+/**
+ * Whether every simple command in a Bash or PowerShell command only reads (ESP-70, ADR-0004). It fails closed: any
+ * part the split can't read makes it false. The after-Bash check uses it for background commands (ESP-151).
+ * @param {string} cmd
+ * @param {string} tool 'Bash' or 'PowerShell'
+ * @returns {boolean}
+ */
+export const readOnlyCommand = (cmd, tool) => {
   if (cmd.length > MAX_COMMAND_CHARS || [cmd, cmd.replace(/['"\\]/g, '')].some((c) => REDEFINES.test(c)) || TYPOGRAPHIC_QUOTES.test(cmd)) return false
-  const commands = simpleCommands(cmd, tool === 'Bash')
-  return commands !== null && commands.every(readOnlySimple)
+  const bash = tool === 'Bash'
+  const commands = simpleCommands(cmd, bash)
+  return commands !== null && commands.every((words) => readOnlySimple(words, bash))
 }
 
-const decideBash = (cmd, { cfg, gov, repoRules }, git, root, tool, cwd, p = path) => {
+// ESP-150: a plain `git branch -d <names>`. git refuses to delete an unmerged branch with a lower-case -d, so it can
+// lose no work. Any other option (-D, -f, -r, --force, a cluster such as -df) or a global option before `branch` doesn't count.
+const branchDeleteReason = (words) => {
+  if (words[0]?.toLowerCase().replace(/\.exe$/, '') !== 'git' || words[1] !== 'branch') return null
+  const rest = words.slice(2)
+  const flags = rest.filter((w) => w.startsWith('-'))
+  const names = rest.filter((w) => !w.startsWith('-'))
+  const plain = flags.length > 0 && names.length > 0 && flags.every((f) => f === '-d' || f === '--delete')
+  return plain ? 'Merged-branch delete (git branch -d): git refuses to delete a branch that is not merged.' : null
+}
+
+// The governance.trustedDeletePaths entry a delete target falls under, or null. The target must be a plain relative
+// path with no "." or ".." folder, inside the project once read from the shell folder, and reached through no link or
+// junction; a folder below a trusted one is trusted too. Nothing in .git or .claude is.
+// A ":" (a drive or a PowerShell provider path such as FileSystem::, Temp: or env:) and a wildcard (PowerShell expands
+// one even in quotes, so the checks below would see only the literal text) are never trusted. Nor is a folder name
+// ending in "." or a space, which Windows reads without it (".git." is .git).
+const trustedDeleteEntry = (target, { root, cwd, p, ic, entries }) => {
+  if (!target || p.isAbsolute(target) || /^~|[:\\*?[\]]/.test(target)) return null
+  if (target.replace(/^\.\//, '').replace(/\/$/, '').split('/').some((s) => s === '.' || s === '..' || /[. ]$/.test(s))) return null
+  const full = p.resolve(cwd, target)
+  const rel = p.relative(root, full)
+  if (!rel || rel.startsWith('..') || p.isAbsolute(rel)) return null
+  try {
+    const realRel = p.relative(realOf(root, p), realOf(full, p))
+    if (ic ? realRel.toLowerCase() !== rel.toLowerCase() : realRel !== rel) return null
+  } catch {
+    // realOf throws on a link to a missing target: it can't be shown to stay inside, so it asks.
+    return null
+  }
+  const parts = rel.split(p.sep)
+  if (parts.some((s) => NEVER_TRUSTED_DELETE_SEGMENTS.includes(s.toLowerCase()))) return null
+  for (let n = parts.length; n > 0; n--) {
+    const hit = matchAny(parts.slice(0, n).join('/'), entries, ic)
+    if (hit) return hit
+  }
+  return null
+}
+
+// rm (Bash) or a PowerShell delete with only recursive, force or verbose flags, where every target is trusted.
+const PS_DELETES = ['remove-item', 'rm', 'ri', 'rmdir', 'rd', 'del', 'erase']
+const BASH_DELETE_FLAG = /^-[rRfv]+$|^--(?:recursive|force|verbose)$/
+const PS_DELETE_FLAG = /^-(?:recurse|force)$/i
+const recursiveDeleteReason = (words, bash, ctx) => {
+  const name = words[0]?.toLowerCase().replace(/\.exe$/, '')
+  if (!(bash ? name === 'rm' : PS_DELETES.includes(name))) return null
+  const targets = []
+  let options = true
+  for (const w of words.slice(1)) {
+    if (options && bash && w === '--') { options = false; continue }
+    if (options && w.startsWith('-')) {
+      if (!(bash ? BASH_DELETE_FLAG : PS_DELETE_FLAG).test(w)) return null
+      continue
+    }
+    // PowerShell reads a comma as an array, so `src,x/dist` names two folders; it is never trusted.
+    if (!bash && w.includes(',')) return null
+    targets.push(w)
+  }
+  const hits = targets.map((t) => trustedDeleteEntry(t, ctx))
+  if (!hits.length || hits.includes(null)) return null
+  return `Trusted delete path ${[...new Set(hits)].map((h) => JSON.stringify(h)).join(', ')} (governance.trustedDeletePaths).`
+}
+
+// ESP-150: the log reason when every simple command is read-only, a plain `git branch -d` or a recursive delete of
+// trusted paths, and at least one is a delete; null otherwise. It fails closed like readOnlyCommand.
+const trustedDeleteReason = (cmd, tool, ctx) => {
+  if (cmd.length > MAX_COMMAND_CHARS || [cmd, cmd.replace(/['"\\]/g, '')].some((c) => REDEFINES.test(c)) || TYPOGRAPHIC_QUOTES.test(cmd)) return null
+  const bash = tool === 'Bash'
+  const commands = simpleCommands(cmd, bash)
+  if (!commands) return null
+  const reasons = []
+  for (const words of commands) {
+    if (readOnlySimple(words, bash)) continue
+    const why = branchDeleteReason(words) ?? recursiveDeleteReason(words, bash, ctx)
+    if (!why) return null
+    reasons.push(why)
+  }
+  return reasons.length ? [...new Set(reasons)].join(' ') : null
+}
+
+const decideBash = (cmd, { cfg, gov, repoRules }, git, root, tool, cwd, p = path, ic = CASE_INSENSITIVE_FS) => {
   if (squeezeSpaces(cmd).length > MAX_TOTAL_CHARS) return decision('deny', `Blocked: the command is over ${MAX_TOTAL_CHARS / 1024 / 1024} MB, too long for the guard to check. Write it to a script file and run that instead.`, cmd)
   const text = withoutDataText(cmd, tool, shellOutsideQuietFolder(cwd, root, p))
   // The unescaped form too, so a quoted or split flag or name (`'-enc'`, `-e''nc`, `p''owershell`) is still read.
@@ -966,12 +1091,23 @@ const decideBash = (cmd, { cfg, gov, repoRules }, git, root, tool, cwd, p = path
       if (forms.some((c) => pushTargets(c, b))) return decision('ask', `Push to protected branch "${b}".`, cmd)
     }
   }
-  for (const [why, re] of [...ASK_COMMANDS, ...repoRules.ask]) {
-    if (matches(re)) return decision('ask', `Risky action: ${why}. Confirm it is part of the approved plan.`, cmd)
+  // ESP-150: a plain `git branch -d` or a recursive delete of trusted paths skips its own rule only, and only when every
+  // part of the command is trusted or read-only (so a wrapper such as pwsh -EncodedCommand never is); any other rule
+  // that matches still asks.
+  let trusted = null
+  for (const rule of [...ASK_COMMANDS, ...repoRules.ask]) {
+    const [why, re] = rule
+    if (!matches(re)) continue
+    if (rule === BRANCH_DELETE_RULE || rule === RECURSIVE_DELETE_RULE) {
+      const ctx = { root, cwd: cwd ? p.resolve(root, cwd) : root, p, ic, entries: gov.trustedDeletePaths ?? [] }
+      trusted ??= trustedDeleteReason(cmd, tool, ctx) ?? false
+      if (trusted) continue
+    }
+    return decision('ask', `Risky action: ${why}. Confirm it is part of the approved plan.`, cmd)
   }
   // R6: the after-Bash check trusts its snapshot, so a command that could rewrite one needs confirmation.
   if (forms.some((c) => SNAPSHOT_COMMAND.test(c))) return decision('ask', 'The command names the after-Bash workflow snapshots (usiatech-governance, bash-wf-*), which could hide a workflow change. Confirm it is part of the approved plan.', cmd)
-  return null
+  return trusted ? { ...decision(null, trusted, cmd), trusted: true } : null
 }
 
 // ESP-9: an edit outside the project asks, unless it falls under a trusted write path. A trusted write still gets
@@ -1200,7 +1336,7 @@ export const evaluate = async (input, { root, cfg = {}, configError = null, git 
   let target = ''
   if (SHELL_TOOLS.includes(tool)) {
     target = String(ti.command || '')
-    result = decideBash(target, safe, git, root, tool, input.cwd, pathApi)
+    result = decideBash(target, safe, git, root, tool, input.cwd, pathApi, caseInsensitive)
   } else if (EDIT_TOOLS.includes(tool)) {
     target = ti.file_path || ti.notebook_path || ''
     if (!target) return null

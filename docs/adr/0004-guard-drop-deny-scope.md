@@ -34,3 +34,9 @@ Anything not on the list counts as a command that may run SQL, so the deny stays
 - Every program the list doesn't name keeps the deny. Among them are git options that run a program (`-O`/`--open-files-in-pager`, `-c`, `--config-env`), `GIT_PAGER=…` and git's abbreviated long options. That costs a deny on some harmless commands, such as `sed` over a notes file, but it can't let an SQL run through.
 - New read-only commands or git options are added to the list one at a time, each with a deny test for its program-running neighbours. A mutation test of the list's checks is part of each change.
 - The CI rules and other repos' `denyCommands` are unaffected. Only the built-in rule is skipped.
+
+## Addendum (2026-11-10, ESP-150, ESP-151)
+
+- `sleep` joins the read-only list, and in Bash the keywords `until`, `while`, `do`, `done`, `if`, `then`, `elif`, `else`, `fi` and `!` are skipped at the start of a simple command, so a wait loop such as `until test -f x; do sleep 1; done` reads as read-only. Deny tests cover a loop or `sleep` beside a program and a `$(…)` in the loop condition, and a mutation test covers both changes.
+- The after-Bash workflow check reuses the same split: a background command made only of read-only commands is not logged as an unchecked `error` (ESP-151).
+- The guard's trusted `git branch -d` and `governance.trustedDeletePaths` deletes (ESP-150) reuse the split too: every other simple command in such a command must be on this list, or it asks.

@@ -64,6 +64,10 @@ const DELETE_ALIAS = String.raw`(?:remove-item|rm|rmdir|ri|rd|del|erase)\b`
 // Command rules: [reason, regex source], matched case-insensitively against the full Bash or PowerShell command.
 // ESP-70: named, because the guard skips this one rule for a command made only of read-only commands.
 export const DROP_DATABASE_RULE = ['dropping a database or schema', String.raw`\bdrop\s+(database|schema)\b`]
+// ESP-150: named, because the guard trusts a plain `git branch -d` (git refuses an unmerged branch) and a recursive
+// delete of a governance.trustedDeletePaths folder. A remote branch delete is its own rule and always asks.
+export const BRANCH_DELETE_RULE = ['deleting a branch', String.raw`${GIT_PREFIX}branch\b[^;&|]*\s(-[a-z]*d|--d[a-z]*\b)`]
+export const RECURSIVE_DELETE_RULE = ['recursive delete', `${RM}${RM_RECURSIVE}`]
 
 export const DENY_COMMANDS = [
   ['destructive delete of root/home/workspace', String.raw`${RM}(?=${RM_RECURSIVE})(?=${RM_FORCE})[^;&|]*${ROOT_TARGET}`],
@@ -89,9 +93,10 @@ export const ASK_COMMANDS = [
   ['force push', String.raw`${GIT_PREFIX}push\b.*(\s--force(-with-lease)?\b|\s-f\b|\s["']?\+\S)`],
   // R5: separate or abbreviated flags too. A short cluster can't start with "--", so --merged or --exclude isn't one.
   ['discarding work (reset/clean/restore/checkout)', String.raw`${GIT_PREFIX}(reset\b[^;&|]*\s--h(a(rd?)?)?\b|clean\b[^;&|]*\s(-[a-z]*f|--f[a-z]*\b)|restore\s+\.|checkout\s+--\s+\.|(checkout|switch)\b[^;&|]*\s(-f\b|--fo[a-z]*\b|--discard-changes\b)|stash\s+(drop|clear))`],
-  ['deleting a branch', String.raw`${GIT_PREFIX}(branch\b[^;&|]*\s(-[a-z]*d|--d[a-z]*\b)|push\b[^;&|]*\s(-d\b|--de[a-z]*\b|--mi[a-z]*\b)|push\s+\S+\s+:\S)`],
+  BRANCH_DELETE_RULE,
+  ['deleting a remote branch', String.raw`${GIT_PREFIX}(push\b[^;&|]*\s(-d\b|--de[a-z]*\b|--mi[a-z]*\b)|push\s+\S+\s+:\S)`],
   ['rewriting history', String.raw`${GIT_PREFIX}(rebase|filter-branch|filter-repo|commit\s+--amend)\b`],
-  ['recursive delete', `${RM}${RM_RECURSIVE}`],
+  RECURSIVE_DELETE_RULE,
   // ESP-113 items 1–5: wrapper spellings are too many to list, so any command that names a cmd, PowerShell or
   // Invoke-Expression wrapper and a delete is asked. Anchored lookaheads keep it linear.
   ['delete inside a command wrapper', String.raw`^(?=[\s\S]*\b(?:cmd|comspec|powershell|pwsh|iex|invoke-expression|start-process|saps)\b)(?=[\s\S]*(?<![-\w])${DELETE_ALIAS})`],
