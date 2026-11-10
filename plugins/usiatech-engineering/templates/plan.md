@@ -31,6 +31,7 @@ Answer each item before drafting the rest of the plan, or write `n/a: <reason>`.
 ## Approved
 - By: <name> · Date: <YYYY-MM-DD>
 - Route: <small | large> (<the rule that decided it, or "override: …">)
+- Pre-flight: <model>, <light | full>
 
 ## Change log
 - <YYYY-MM-DD: scope change and who approved it>

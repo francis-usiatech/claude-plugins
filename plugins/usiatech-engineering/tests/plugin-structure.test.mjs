@@ -780,6 +780,26 @@ describe('plugin structure: release metadata', () => {
     assert.match(release, /each changed line in a version file differs by the version string alone and the changelog change is one added row/, 'the review skip is scoped by content, not only by file')
   })
 
+  it('should assign the docs-set version before promotion, with the verify-only bump path (ESP-153; AC7)', () => {
+    const release = body(read('skills', 'release', 'SKILL.md'))
+    const docs = release.slice(release.indexOf('**Docs-set version'), release.indexOf('Run `release-steps` with phase `release`'))
+    assert.match(docs, /scripts\/doc-versions\.mjs/)
+    assert.match(docs, /`after` command/)
+    assert.match(docs, /runs the `verify` gate with no reviewer round/)
+    assert.match(docs, /any other diff gets the full review/)
+    const reviewer = body(read('agents', 'governance-reviewer.md'))
+    assert.match(reviewer, /\*\*Docs-set version\*\*[^\n]*return `FLAG` when a PR that isn't a docs-set bump PR changes the version/)
+  })
+
+  it('should pick the pre-flight model from planning.sensitivePaths (ESP-152; AC5)', () => {
+    const plan = body(read('skills', 'approve-plan', 'SKILL.md'))
+    assert.match(plan, /With `planning\.sensitivePaths` set[^\n]*`sonnet`[^\n]*\*\*light pre-flight\*\*/)
+    assert.match(plan, /Without `planning\.sensitivePaths`:\*\* run `governance-reviewer` on `sonnet` when the plan's \*\*Files\*\* section lists 5 paths or fewer/)
+    assert.match(plan, /`Pre-flight: sonnet, light`/)
+    assert.match(body(read('agents', 'governance-reviewer.md')), /\*\*Light pre-flight:\*\*/)
+    assert.match(read('templates', 'plan.md'), /- Pre-flight: <model>, <light \| full>/)
+  })
+
   it('should tag vX.Y.Z from the version files in release-steps (ESP-23 AC6)', () => {
     assert.match(body(read('skills', 'release-steps', 'SKILL.md')), /For `vX\.Y\.Z`, use the version the merged bump PR wrote to the files in `git\.versionFiles`/)
   })
@@ -1034,7 +1054,8 @@ describe('plugin structure: fewer approval rounds (spec 2026-11-07-permission-pr
     }
     assert.match(skill('release'), /\*\*In parallel:\*\*[^\n]*counting every file/)
     assert.match(skill('release'), /\*\*Models:\*\*[^\n]*counting every file/)
-    assert.match(skill('approve-plan'), /\*\*Model:\*\*[^\n]*counting every path/)
+    // ESP-152: the file-count rule moved to the "Without planning.sensitivePaths" bullet under **Model:**.
+    assert.match(skill('approve-plan'), /\*\*Without `planning\.sensitivePaths`:\*\*[^\n]*counting every path/)
   })
 
   it('should state the pre-flight reviewer agent name rule (R16, AC13)', () => {

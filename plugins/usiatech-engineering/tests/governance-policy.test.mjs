@@ -195,6 +195,133 @@ describe('evaluate: Bash ask rules', () => {
   }
 })
 
+describe('sanitizeConfig: planning.sensitivePaths (ESP-152; AC5)', () => {
+  it('should keep valid path prefixes with no problem', () => {
+    const { cfg, problems } = sanitizeConfig({ planning: { sensitivePaths: ['packages/db/', 'apps/api/src/auth'] } })
+    assert.deepEqual(cfg.planning.sensitivePaths, ['packages/db/', 'apps/api/src/auth'])
+    assert.deepEqual(problems, [])
+  })
+  it('should drop bad entries as advisory problems, one each', () => {
+    const bad = ['', ' db/', '/abs', './db', 'a\\b', '../x', 5, null]
+    const { cfg, advisory, escalating } = sanitizeConfig({ planning: { sensitivePaths: [...bad, 'db/'] } })
+    assert.deepEqual(cfg.planning.sensitivePaths, ['db/'])
+    assert.equal(advisory.length, bad.length, advisory.join('\n'))
+    assert.deepEqual(escalating, [])
+  })
+  it('should drop a value that is not a list, as an advisory problem', () => {
+    const { cfg, advisory } = sanitizeConfig({ planning: { sensitivePaths: 'db/' } })
+    assert.equal(cfg.planning.sensitivePaths, undefined)
+    assert.equal(advisory.length, 1)
+  })
+})
+
+describe('evaluate: read-only wait loops (ESP-151; AC4)', () => {
+  const WAIT_LOOP = 'until test -f "/c/Users/me/AppData/Local/Temp/claude/c--repo/abc/scratchpad/linux-gate.exit"; do sleep 20; done; cat "/c/Users/me/AppData/Local/Temp/claude/c--repo/abc/scratchpad/linux-gate.exit"'
+  it('should give the exact wait loop no prompt', async () => assert.equal(await bash(WAIT_LOOP), null))
+  for (const cmd of ['until test -f x; do rm -rf dist; done', 'while true; do git push --force origin x; sleep 1; done', 'until test -f x; do sleep 1; done; rm -r out']) {
+    it(`should still ask for a risky command in a loop: ${cmd}`, async () => assert.equal((await bash(cmd))?.decision, 'ask'))
+  }
+  // ADR-0004: loop keywords and sleep read as read-only, so the drop deny is skipped only when every other part reads.
+  for (const cmd of [
+    'until test -f x; do sleep 1; done; git log --grep="drop database"',
+    'while ! test -f x; do sleep 1; done && grep -n "drop schema" notes.sql',
+    'if test -f x; then cat x; else echo "drop database"; fi',
+  ]) {
+    it(`should not deny a read-only loop that names the phrase: ${cmd}`, async () => assert.notEqual((await bash(cmd))?.decision, 'deny'))
+  }
+  for (const cmd of [
+    'until psql -c "drop database x"; do sleep 1; done',
+    'sleep 1 && psql -c "drop database x"',
+    'until test -f "$(psql -c \'drop database x\')"; do sleep 1; done',
+    'while sleep 1; do node -e "drop database"; done',
+    'done; psql -c "drop database x"',
+    'sleep $(psql -c "drop database x")',
+  ]) {
+    it(`should still deny a loop or sleep next to a program: ${cmd}`, async () => assert.equal((await bash(cmd))?.decision, 'deny'))
+  }
+})
+
+describe('evaluate: trusted branch and build-output deletes (ESP-150; AC1–AC3)', () => {
+  const POSIX = { root: '/home/me/app', pathApi: path.posix, caseInsensitive: false }
+  const run = (command, { cfg = {}, cwd, tool = 'Bash', env = POSIX } = {}) => evaluate({ tool_name: tool, tool_input: { command }, ...(cwd && { cwd }) }, { git: fakeGit(), cfg, ...env })
+  const trustedReason = async (command, opts) => {
+    const r = await run(command, opts)
+    assert.equal(r?.decision ?? null, null, r?.reason)
+    const entries = logEntries(r, opts?.tool ?? 'Bash')
+    assert.deepEqual(entries.map((e) => e.decision), ['trusted'], command)
+    return entries[0].reason
+  }
+  const asks = async (command, opts) => assert.equal((await run(command, opts))?.decision, 'ask', command)
+
+  // AC1: git refuses to delete an unmerged branch with a lower-case -d, so it needs no prompt.
+  for (const cmd of ['git branch -d feature/x', 'git branch --delete feature/x old', 'git branch -d a b', 'git branch -d feature/x | cat']) {
+    it(`should trust: ${cmd}`, async () => assert.match(await trustedReason(cmd), /git branch -d/))
+  }
+  for (const cmd of [
+    'git branch -D feature/x', 'git branch -d -f x', 'git branch -df x', 'git branch --delete --force x', 'git branch -dr origin/x',
+    'git branch -d -r origin/x', 'git branch -d --remotes origin/x', 'git push origin --delete x', 'git push origin :x', 'git -C . branch -d x',
+    'git branch -d x; git branch -D y', 'git branch -d x && git branch -D y', 'bash -c "git branch -D y"; git branch -d x',
+    'git branch -d $B', 'git branch -d "$(cat f)"', 'git branch -d x\ngit branch -D y', 'git branch -d', 'git branch -d x && npm publish',
+    'GIT_DIR=/x git branch -d y',
+  ]) {
+    it(`should ask: ${JSON.stringify(cmd)}`, async () => assert.equal((await run(cmd))?.decision, 'ask', cmd))
+  }
+
+  // AC2: a recursive delete of a configured build-output path needs no prompt.
+  const cfg = { governance: { trustedDeletePaths: ['apps/*/.next', '**/dist'] } }
+  for (const cmd of ['rm -rf apps/web/.next', 'rm -rf dist', 'rm -rf packages/a/dist', 'rm -r -f apps/web/.next/cache', 'rm -rf ./dist/',
+    'rm -rf apps/web/.next dist', 'rm -rf -- dist', 'rm -rf "apps/web/.next"']) {
+    it(`should trust with trustedDeletePaths: ${cmd}`, async () => assert.match(await trustedReason(cmd, { cfg }), /trustedDeletePaths/))
+  }
+  it('should trust Remove-Item -Recurse of a trusted path in PowerShell', async () => {
+    assert.match(await trustedReason('Remove-Item -Recurse -Force dist', { cfg, tool: 'PowerShell' }), /trustedDeletePaths/)
+  })
+  // PowerShell reads an unquoted comma as an array, so `src,x/dist` deletes src too.
+  // Stage-2 security review: provider paths (FileSystem::, Temp:, env:) are absolute; PowerShell expands wildcards even
+  // in quotes, so the link and .git checks only see the literal text; and Windows reads `.git.` as `.git`.
+  for (const cmd of ['Remove-Item -Recurse -Force src,x/dist', "Remove-Item -Recurse -Force 'src,x/dist'", 'rm -r -fo dist', 'Remove-Item -Recurse -Path dist',
+    'Remove-Item -Recurse -Force FileSystem::C:/Users/x/other/dist', 'Remove-Item -Recurse -Force Temp:/dist', 'Remove-Item -Recurse -Force env:/dist',
+    "Remove-Item -Recurse -Force 'x*/dist'", "Remove-Item -Recurse -Force 'x?/dist'", "Remove-Item -Recurse -Force '[.]git/dist'",
+    'Remove-Item -Recurse -Force .git./dist', 'Remove-Item -Recurse -Force ".git /dist"', 'Remove-Item -Recurse -Force a./dist']) {
+    it(`should ask in PowerShell: ${cmd}`, async () => assert.equal((await run(cmd, { cfg, tool: 'PowerShell' }))?.decision, 'ask', cmd))
+  }
+  it('should read a relative target from the shell folder', async () => {
+    assert.match(await trustedReason('rm -rf web/.next', { cfg, cwd: '/home/me/app/apps' }), /apps\/\*\/\.next/)
+    await asks('rm -rf dist', { cfg, cwd: '/home/me/other' })
+  })
+  for (const cmd of [
+    'rm -rf apps/web/.next ../other', 'rm -rf apps/web', 'rm -rf dist/*', 'rm -rf $D', 'cd apps && rm -rf web/.next', 'rm -rf /home/me/app/dist',
+    'rm -rf apps/web/.next/../../src', 'rm -rf .git/dist', 'rm -rf .claude/dist', 'rm -rf dist && npm publish',
+    'rm -rf dist; bash -c "rm -rf src"', 'rm -rf --no-preserve-root dist', 'rm -rf dist\nrm -rf src', 'rm -rf src/../dist',
+  ]) {
+    it(`should ask with trustedDeletePaths: ${JSON.stringify(cmd)}`, async () => assert.equal((await run(cmd, { cfg }))?.decision, 'ask', cmd))
+  }
+  it('should still ask for a trusted path when no trustedDeletePaths are set', async () => assert.equal((await run('rm -rf dist'))?.decision, 'ask'))
+  it('should still deny a root or home delete with trustedDeletePaths set', async () => {
+    for (const cmd of ['rm -rf .', 'rm -rf ~/dist']) assert.equal((await run(cmd, { cfg }))?.decision, 'deny', cmd)
+  })
+  it('should ask when a trusted path is a link or junction that leaves the project', async () => {
+    const root = tempDir()
+    const outside = tempDir()
+    symlinkSync(outside, path.join(root, 'dist'), 'junction')
+    await asks('rm -rf dist', { cfg, env: { root } })
+    mkdirSync(path.join(root, 'build', 'dist'), { recursive: true })
+    assert.match(await trustedReason('rm -rf build/dist', { cfg, env: { root } }), /trustedDeletePaths/)
+  })
+
+  // AC3: a bad entry is an advisory problem and is dropped; a value that isn't a list trusts nothing.
+  it('should drop bad trustedDeletePaths entries as advisory problems', () => {
+    const bad = ['/abs', '../x', '.', 'a/./b', '.git/x', 'a/.claude', '**', '*', '*/**', 'a\\b', 'C:/x', 5, '', 'a//b', '~/x']
+    const { gov, advisory, escalating } = sanitizeConfig({ governance: { trustedDeletePaths: [...bad, 'apps/*/.next'] } })
+    assert.deepEqual(gov.trustedDeletePaths, ['apps/*/.next'])
+    assert.equal(advisory.length, bad.length, advisory.join('\n'))
+    assert.deepEqual(escalating, [])
+    const notList = sanitizeConfig({ governance: { trustedDeletePaths: 'dist' } })
+    assert.deepEqual(notList.gov.trustedDeletePaths, [])
+    assert.equal(notList.advisory.length, 1)
+  })
+})
+
 describe('evaluate: re-audit guard bypasses (ESP-106; R1–R5)', () => {
   const ps = (command, opts = {}) => evaluate({ tool_name: 'PowerShell', tool_input: { command } }, { root: tempDir(), git: fakeGit(), ...opts })
 
