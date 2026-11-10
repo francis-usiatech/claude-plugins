@@ -306,9 +306,10 @@ describe('mutation-runner hardening (stage-2 fix set)', () => {
 
   it('should call taskkill by its absolute path under System32, not through PATH (ESP-58)', async () => {
     const { TASKKILL } = await importRunner()
-    assert.ok(path.isAbsolute(TASKKILL), TASKKILL)
-    assert.equal(path.basename(TASKKILL).toLowerCase(), 'taskkill.exe')
-    assert.equal(path.basename(path.dirname(TASKKILL)).toLowerCase(), 'system32')
+    // TASKKILL is a Windows path on every platform, so check it with path.win32 (path.posix calls C:\ relative).
+    assert.ok(path.win32.isAbsolute(TASKKILL), TASKKILL)
+    assert.equal(path.win32.basename(TASKKILL).toLowerCase(), 'taskkill.exe')
+    assert.equal(path.win32.basename(path.win32.dirname(TASKKILL)).toLowerCase(), 'system32')
   })
 
   it('should keep handling repeat interrupts, so a second Ctrl+C or a closed terminal cannot skip the restore', async () => {
