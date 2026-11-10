@@ -18,6 +18,11 @@ This skill runs in a forked subagent with no session history. Its input is the a
 - Report the step lines and every `NOT COVERED` file, and say the run is partial. The last line and the exit code are its result.
 - It writes no AC evidence, makes no Jira move and runs no fake-pass check. It never counts as the done gate, so never report work as done from it.
 
+0. **Jira tracker only: mark testing started**, before the gate runs. Every Jira write follows `${CLAUDE_PLUGIN_ROOT}/scripts/jira-moves.md` (check, transport, forward-only moves, failures).
+   - The keys are the Jira tickets the plan's tasks name. A parent or blocker key that appears only in the requirement references is not moved. If there's no `.claude/plans/active.md`, or its tasks name no Jira key, say so.
+   - First check that the gate can start. When `.claude/engineering.json` has a `verify` list, run `node "${CLAUDE_PLUGIN_ROOT}/skills/verify/gate.mjs" --check` from the repo root (it runs nothing). On exit 2, move no ticket and say why: the gate run in step 3 fails the same way.
+   - For each key, fire `devComplete`, then `testingStarted`: asking for the full gate means the implementation is done. A docs-only ticket without its approval line gets `devComplete` only (`jira-moves.md`, section 5); say so in the report.
+   - A failed move doesn't stop the gate and doesn't change its verdict.
 1. **Load the gate.**
    - Read `.claude/engineering.json` → `verify` (always run) and `verifyConditional` (run when changed files match any `when` prefix).
    - If the file is missing or has no `verify` list, read the "Definition of done" section of `AGENTS.md` and use the commands listed there.
@@ -46,13 +51,9 @@ This skill runs in a forked subagent with no session history. Its input is the a
    - Rewrite every evidence line under its AC in the plan, even ones an earlier run filled, as `- Evidence: <evidence> (shown, <UTC timestamp>)` or `(not shown, <UTC timestamp>)`, e.g. `2026-09-28T17:50Z`. The stamp lets `governance-reviewer` spot evidence older than the latest change.
    - Tick (`- [x]`) each task whose ACs are all `shown`.
    - Collect everything first, then write all evidence lines and ticks in one edit. The guard asks before each edit to the plan, so one edit means one prompt.
-8. **Jira tracker only:** move the plan's tickets to verified, only when step 3's result is **Gate: PASS** (commands and fake-pass check) and step 7 marked every AC `shown`.
-   - Skip this step, and say why, when there's no `.claude/engineering.json`, when `check` prints `"tracker":"github"`, when `jira.statuses` in its output has no `verified`, when there's no `.claude/plans/active.md`, when the plan has no `## Acceptance criteria` section, or when any AC is `not shown`.
-   - Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root. A non-zero exit (2 is a config problem) is a failure to report, not a reason to skip. Show any stderr warning it prints to the user, even when it exits 0 (for example, a site outside `.atlassian.net`).
-   - The keys are the Jira tickets the plan's tasks name. A parent or blocker key that appears only in the requirement references is not moved. If the tasks name no Jira key, say so.
-   - For each key, when the Atlassian MCP's `transitionJiraIssue` tool is available and the `check` output has `jira.cloudId` and `jira.transitions.verified`: call `transitionJiraIssue` with that `cloudId`, the key as `issueIdOrKey` and `transition: { id: <jira.transitions.verified> }`. Never call `getTransitionsForJiraIssue`.
-   - Otherwise: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" transition --issue <KEY> --event verified`.
-   - A failed call or a non-zero exit doesn't change the gate verdict and undoes nothing. Report each failed key with its message as one the user must fix, and go on with the other keys. Don't retry silently.
+8. **Jira tracker only:** make no `testingComplete` move here. `testingComplete` needs the review round too, so the `release` skill fires it after its reviews pass.
+   - Say in the report which of step 0's keys are ready for it: only when step 3's result is **Gate: PASS** (commands and fake-pass check) and step 7 marked every AC `shown`.
+   - A docs-only ticket without its approval line in the plan's Change log is not ready: say it waits at `devComplete` for the user's review, and return it as an open decision (the user approves the docs review).
 9. **Report:**
 
 | Check | Command | Result | Notes |
@@ -63,6 +64,6 @@ This skill runs in a forked subagent with no session history. Its input is the a
 | AC | Criterion | Evidence | Status |
 |---|---|---|---|
 
-   If step 8 ran or was skipped on a passing gate, add a line: the keys moved to `verified`, the failed keys with the script's message, or the reason it was skipped.
+   If step 0 or step 8 ran or was skipped, add a line for each: the keys moved and the statuses each one went through, the keys left alone with the reason, the keys ready for `testingComplete`, the docs-only keys waiting for review, the failed keys with their message, or the reason the step was skipped.
 
    End with **Gate: PASS** or **Gate: FAIL**, decided by the commands and the fake-pass check only. If any criterion is `not shown`, end with `Gate: PASS (N of M criteria not shown)` and list them. Never state that work is done unless the gate passed in this run. Keep the report short (the tables and the verdict); the full step output stays in the gate log.

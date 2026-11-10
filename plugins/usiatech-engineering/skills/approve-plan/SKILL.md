@@ -13,6 +13,7 @@ Before routing, if `.claude/plans/active.md` already exists and is unfinished, a
 
 ## Route (before drafting)
 Pick the route and tell the user which rule decided it.
+- **Jira tracker only, planning mode:** when the request names existing Jira tickets that this plan picks up, fire `started` for them now, before the draft, following `${CLAUDE_PLUGIN_ROOT}/scripts/jira-moves.md`. The board then shows the work while it is planned. A failure is reported and doesn't stop planning.
 - **Small**, when all of these hold:
   - the work cites an existing requirement reference (intent §, capability ID, FR/AC, ADR, spec, `#issue`, or a Jira key such as `ESP-24`). A spec counts only if it says `Status: approved`.
   - it touches 5 production-code files or fewer. The count is production code only: tests, QA catalogue entries, docs and generated files don't count.
@@ -38,7 +39,7 @@ Pick the route and tell the user which rule decided it.
        - Paths named in (c) don't widen scope: only the **Files** section does.
      - Any item can be `n/a: <reason>`; a bare `n/a` with no reason is not an answer, and the pre-flight flags it.
    - **Acceptance criteria:** AC1, AC2…, at least one. Each is measurable: an observable behaviour, a command and its expected result, or a metric. Rewrite vague ones ("works well", "is fast") with the user. Leave each `Evidence:` line empty; `verify` fills it.
-   - **Tasks:** a checklist. Each task names the AC it covers and its ticket (`#NN`, a Jira key, or spec `T1`). Paths mentioned in tasks don't widen scope: only the **Files** section does.
+   - **Tasks:** a checklist. Each task names the AC it covers and its ticket (`#NN`, a Jira key, or spec `T1`). Mark a task `(docs-only)` when everything it changes is docs under the `release` skill's **Docs-only diff** rule; a Jira ticket whose tasks are all marked stops at `devComplete` for the user's review (`jira-moves.md`, section 5). Paths mentioned in tasks don't widen scope: only the **Files** section does.
    - **Files:** every path or glob to create or change (backticked, one per bullet). Keep globs as narrow as practical.
    - **Commands and actions:** any risky action the plan needs (migrations, dependency adds, deploys). Only include those the user agreed to.
    - **Out of scope:** what this plan explicitly doesn't do.
@@ -53,14 +54,9 @@ Pick the route and tell the user which rule decided it.
      - A `BLOCK` from any pre-flight reviewer must be fixed before going on, as with `governance-reviewer`.
    - Combine the `BLOCK`s and `FLAG`s from every pre-flight reviewer, each labelled with the reviewer that raised it. Fix the `BLOCK`s, then put every open pre-flight decision (each unsettled `FLAG` and any scope question) into one question, with a recommended default for each item. When `.claude/engineering.json` sets `decisions.batch` to `false`, ask about each one on its own instead.
 3. Show the draft with its pre-flight result and ask once: the plan's approval and every open pre-flight decision go into that same question. When `decisions.batch` is `false`, ask about the plan and each decision on its own. After the user confirms, write `.claude/plans/active.md` and show it in one short message. Don't write `.claude/plans/active.md` while a Pre-plan checklist item is empty, still the template placeholder or a bare `n/a`: fix the item first.
-4. **Jira tracker only:** mark the plan's tickets started.
-   - When `.claude/engineering.json` exists, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" check` from the repo root. Show any stderr warning it prints to the user, even when it exits 0 (for example, a site outside `.atlassian.net`).
-   - Skip this step when there's no config file, when `check` prints `"tracker":"github"`, or when `jira.statuses` in its output has no `started`. Say why you skipped it.
-   - A non-zero exit from `check` (2 is a config problem) is a failure to report, not a reason to skip.
+4. **Jira tracker only:** at approval, fire `started` again for the plan's tickets, following `jira-moves.md`. A key already moved in planning mode is left alone.
    - The keys are the Jira tickets the plan's tasks name. A parent or blocker key that appears only in the requirement references is not moved. If the tasks name no Jira key, say so.
-   - For each key, when the Atlassian MCP's `transitionJiraIssue` tool is available and the `check` output has `jira.cloudId` and `jira.transitions.started`: call `transitionJiraIssue` with that `cloudId`, the key as `issueIdOrKey` and `transition: { id: <jira.transitions.started> }`. Never call `getTransitionsForJiraIssue`.
-   - Otherwise: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jira-tracker.mjs" transition --issue <KEY> --event started`.
-   - A failed call or a non-zero exit doesn't undo the plan. Report each failed key with its message as one the user must fix, and go on with the other keys.
+   - A failure doesn't undo the plan. Report each failed key with its message as one the user must fix.
 
 ## Update (scope change)
 When new work falls outside the plan:

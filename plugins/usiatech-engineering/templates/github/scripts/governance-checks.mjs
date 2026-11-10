@@ -11,7 +11,7 @@ import { isMainModule } from './main-module.mjs'
 import {
   matchAny, isSecretEnvFile, isPlainObject, isStringArray, DEFAULT_ASK_PATHS,
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, checkFakePasses, isJsTsFile,
-  parseAllowlist, applyAllowlist, allowlistWarnings, blockingFindings, formatFinding,
+  parseAllowlist, applyAllowlist, allowlistWarnings, blockingFindings, formatFinding, PROJECT_KEY, jiraKeyPattern,
 } from './governance-rules.mjs'
 import { createLookups, lookupTargets, runLookups, CI_TIMEOUT_MS, CI_DEADLINE_MS } from './supply-chain-lookups.mjs'
 
@@ -62,6 +62,18 @@ const baseConfig = (govRoot, configError) => {
 }
 
 const DEFAULT_APPROVAL_LABEL = 'governance-approved'
+
+// ESP-61: with the Jira tracker, a key of the configured project is a requirement reference. Null for any other tracker.
+const jiraReference = (cfg, objectKey, configError) => {
+  const tickets = objectKey(cfg, 'tickets')
+  if (tickets.tracker !== 'jira') return null
+  const { project } = objectKey(tickets, 'jira')
+  if (typeof project !== 'string' || !PROJECT_KEY.test(project)) {
+    configError('"tickets.jira.project" must be an upper-case project key such as "ESP".')
+    return null
+  }
+  return { project, pattern: jiraKeyPattern(project) }
+}
 
 /**
  * The approval label from the base-branch config, for the gate and post-verdict scripts.
@@ -181,9 +193,11 @@ export const runGovernanceChecks = async ({ env, lookups, govRoot = SCRIPT_GOV_R
   } catch (e) {
     configError(`"governance.requirementRefPattern" is not a valid regex: ${e.message}`)
   }
+  const jiraKey = jiraReference(cfg, objectKey, configError)
   const section = body.split(/^##\s+/m).find((s) => /^requirement references/i.test(s)) || ''
-  if (!refRe.test(section)) {
-    errors.push('PR description has no requirement reference under "## Requirement references" (intent §, C-number, FR-/AC-, ADR-NNNN, D-item or #issue).')
+  if (!refRe.test(section) && !jiraKey?.pattern.test(section)) {
+    const kinds = jiraKey ? `, #issue or a Jira key such as ${jiraKey.project}-24` : ' or #issue'
+    errors.push(`PR description has no requirement reference under "## Requirement references" (intent §, C-number, FR-/AC-, ADR-NNNN, D-item${kinds}).`)
   }
 
   // 2. Branch flow

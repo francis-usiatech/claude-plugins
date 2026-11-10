@@ -43,3 +43,7 @@ The local `verify` skill runs it after its commands pass. The CI gate runs the b
 - **Report no-assertion tests as warnings.** This has fewer false positives, but an assertion-free test is the most common way an agent fakes a pass. The allowlist handles real exceptions (spec D5).
 - **An AST parser (for example TypeScript or Babel).** More precise, but it adds a runtime dependency and breaks the plugin's zero-dependency rule.
 - **Guard hook enforcement at edit time.** Deferred. The user chose `verify` + CI, and the same module can be added to the guard later.
+
+## Note 2026-11-09: a check that scanned nothing (ESP-55)
+
+The local gate used to compare only uncommitted files with `HEAD`, so with everything committed the fake-pass check scanned nothing and still printed a pass. Now the gate passes `--base <commit>` (the merge-base with `git.baseBranch` by default), the check prints `fake-pass check: scanned N file(s)` as its last line, and the gate fails a passing check that prints no count. The decision above is unchanged; this closes the gap where "found nothing" and "checked nothing" looked the same. Spec `docs/specs/2026-11-09-speed-batch.md` R12.

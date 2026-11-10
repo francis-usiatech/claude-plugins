@@ -293,6 +293,22 @@ describe('mutation-runner hardening (stage-2 fix set)', () => {
     }
     const r = await runCommand(HANG, { root: tempDir('usiatech-kill-'), timeoutMs: 200, kill: partialKill })
     assert.equal(r.outcome, 'timeout')
+    // ESP-58 (spec AC14): the kill's failure is kept, so the caller can say part of the tree may still be running.
+    assert.match(r.leftRunning, /^process \d+: There is no running instance of the task\.$/)
+  })
+
+  it('should leave leftRunning unset when the kill succeeds (ESP-58)', { timeout: 15000 }, async () => {
+    const { runCommand } = await importRunner()
+    const r = await runCommand(HANG, { root: tempDir('usiatech-kill-'), timeoutMs: 200 })
+    assert.equal(r.outcome, 'timeout')
+    assert.equal(r.leftRunning, undefined)
+  })
+
+  it('should call taskkill by its absolute path under System32, not through PATH (ESP-58)', async () => {
+    const { TASKKILL } = await importRunner()
+    assert.ok(path.isAbsolute(TASKKILL), TASKKILL)
+    assert.equal(path.basename(TASKKILL).toLowerCase(), 'taskkill.exe')
+    assert.equal(path.basename(path.dirname(TASKKILL)).toLowerCase(), 'system32')
   })
 
   it('should keep handling repeat interrupts, so a second Ctrl+C or a closed terminal cannot skip the restore', async () => {

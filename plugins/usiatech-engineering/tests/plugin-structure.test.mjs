@@ -1041,3 +1041,121 @@ describe('plugin structure: fewer approval rounds (spec 2026-11-07-permission-pr
     assert.match(skill('approve-plan'), /an `agent` that doesn't match `\^\[A-Za-z0-9\._:-\]\+\$`[^\n]*is skipped/)
   })
 })
+
+describe('plugin structure: Jira events and transport (spec 2026-11-09-speed-batch AC2, AC4, AC5, AC6, AC17)', () => {
+  const skill = (s) => body(read('skills', s, 'SKILL.md'))
+  const moves = () => read('scripts', 'jira-moves.md').replace(/\r\n/g, '\n')
+  const SCRIPT_WRITE = /jira-tracker\.mjs" (transition|comment|create|link|find-transition)\b/
+  const MCP_CALL = /\b(transitionJiraIssue|getJiraIssue|addCommentToJiraIssue|createJiraIssue|createIssueLink|getTransitionsForJiraIssue)\b/
+  // Every bullet that starts with **`<transport>`:**, with the lines indented deeper than it.
+  const transportPart = (text, transport) => {
+    const start = String.raw`^([ \t]*)- \*\*` + '`' + transport + '`' + String.raw`:\*\*.*(?:\n\1[ \t]+.*)*`
+    const m = text.replace(/\r\n/g, '\n').match(new RegExp(start, 'gm'))
+    assert.ok(m && m.length, `no ${transport} part`)
+    return m.join('\n')
+  }
+
+  it('should keep the connector path free of script writes and the api path free of MCP calls (AC2)', () => {
+    for (const text of [moves(), skill('to-tickets')]) {
+      assert.doesNotMatch(transportPart(text, 'connector'), SCRIPT_WRITE)
+      assert.doesNotMatch(transportPart(text, 'api'), MCP_CALL)
+    }
+    assert.match(moves(), /never quietly|don't switch to the script/)
+    assert.match(moves(), /`api`:\*\*[^\n]*script only, even when the connector is available/)
+  })
+
+  it('should send every move and comment through the shared procedure (AC2)', () => {
+    for (const s of ['approve-plan', 'verify', 'release-steps', 'clarify', 'to-spec', 'to-tickets']) {
+      assert.match(skill(s), /scripts\/jira-moves\.md/, s)
+    }
+    for (const s of ['approve-plan', 'verify', 'release-steps']) {
+      assert.doesNotMatch(skill(s), SCRIPT_WRITE, s)
+      assert.doesNotMatch(skill(s), MCP_CALL, s)
+    }
+  })
+
+  it('should fire started from clarify, to-spec, to-tickets and approve-plan (AC4)', () => {
+    assert.match(skill('clarify'), /fire `started`[^\n]*jira-moves\.md/)
+    assert.match(skill('to-spec'), /fire `started`[^\n]*jira-moves\.md/)
+    assert.match(skill('to-tickets'), /already exist[^\n]*fire `started`/)
+    const plan = skill('approve-plan')
+    const route = plan.indexOf('## Route (before drafting)')
+    const draft = plan.indexOf('1. Draft the plan')
+    const planning = plan.search(/\*\*Jira tracker only, planning mode:\*\*[^\n]*fire `started`/)
+    assert.ok(planning > route && planning < draft, 'planning-mode started comes before the draft')
+    assert.match(plan, /4\. \*\*Jira tracker only:\*\*[^\n]*fire `started` again/)
+  })
+
+  it('should fire devComplete and testingStarted before the gate runs, testingComplete only on a pass (AC4)', () => {
+    const verify = skill('verify')
+    const start = verify.search(/^0\. \*\*Jira tracker only: mark testing started\*\*/m)
+    const gate = verify.indexOf('3. **Run the gate.**')
+    assert.ok(start > -1 && start < gate, 'step 0 comes before the gate run')
+    const step0 = verify.slice(start, gate)
+    assert.match(step0, /fire `devComplete`[^\n]*then `testingStarted`/)
+    // Code review 2026-11-09: no ticket moves into testing for a gate that can't start.
+    assert.ok(step0.search(/gate\.mjs" --check/) > -1 && step0.search(/gate\.mjs" --check/) < step0.search(/fire `devComplete`/), '--check comes before the moves')
+    assert.match(step0, /On exit 2, move no ticket/)
+    // R4: testingComplete waits for the reviews too, so verify only reports the ready keys and release fires it.
+    assert.match(verify, /8\. \*\*Jira tracker only:\*\* make no `testingComplete` move here/)
+    assert.match(verify, /ready for it: only when step 3's result is \*\*Gate: PASS\*\*[^\n]*every AC `shown`/)
+    const release = body(read('skills', 'release', 'SKILL.md'))
+    const round = release.indexOf('**Decisions:** after stage 2')
+    const fired = release.search(/\*\*Jira tracker only, after the review round:\*\* fire `testingComplete`[^\n]*no blocking finding is open/)
+    assert.ok(round > -1 && fired > round && fired < release.indexOf('5. Close and archive the plan'), 'release fires testingComplete after the review round, before the commit')
+    assert.doesNotMatch(verify, /`verified`|event verified/)
+  })
+
+  it('should fire merged after the merge and released only after the user confirms (AC4)', () => {
+    const steps = skill('release-steps')
+    assert.match(steps, /merged into the base branch[\s\S]*?fire `merged`/)
+    const released = steps.slice(steps.indexOf('## Released tickets (phase `release-jira`'))
+    assert.match(released, /each key the arguments confirm, fire `released`/)
+    assert.doesNotMatch(steps.slice(0, steps.indexOf('## Released tickets')), /fire `released`/)
+    assert.match(skill('release'), /Ask the user once to confirm the list, then run phase `release-jira`/)
+  })
+
+  it('should tell the connector path the walk order and the no-backwards rule (AC5)', () => {
+    const connector = transportPart(moves(), 'connector')
+    assert.match(moves(), /never takes a ticket backwards/)
+    assert.match(moves(), /at a later one in the configured order, is left alone/)
+    assert.match(connector, /jira-tracker\.mjs" steps --event <event> --from/)
+    assert.match(connector, /in order/)
+    assert.match(connector, /failed step stops the walk for that key/)
+    // Code review 2026-11-09: a closed ticket the config doesn't list is never reopened, and a shared status is looked up.
+    assert.match(moves(), /status the config doesn't list whose Jira category is Done[^\n]*left alone|left alone\. So is a ticket in a status the config doesn't list whose Jira category is Done/)
+    assert.match(connector, /--from-category <category key>/)
+    assert.match(connector, /more than one event, has that status[^\n]*getTransitionsForJiraIssue/)
+  })
+
+  it('should read each ticket type and parent with the config as default, checked before filing (AC6)', () => {
+    const tickets = skill('to-tickets')
+    assert.match(tickets, /own issue type and parent[^\n]*config[^\n]*default/i)
+    assert.match(tickets, /--type '<type>' --parent <KEY>/)
+    assert.match(tickets, /before the first ticket is created/)
+  })
+
+  it('should stop a docs-only ticket at devComplete until the user approves it (AC17)', () => {
+    const docs = moves().slice(moves().indexOf('## 5. Docs-only tickets'))
+    assert.match(docs, /stops at `devComplete`/)
+    assert.match(docs, /Don't fire `testingStarted`, `testingComplete`, `merged` or `released`[^\n]*say so/)
+    assert.match(docs, /ends only when the user approves/)
+    for (const s of ['verify', 'release-steps']) {
+      assert.match(skill(s), /docs-only ticket[^\n]*(approval line|approved)[^\n]*/, s)
+      assert.match(skill(s), /docs-only[^\n]*say /, s)
+    }
+    assert.match(skill('approve-plan'), /`\(docs-only\)`/)
+  })
+})
+
+describe('plugin structure: setup warning and spec code names (spec 2026-11-09-speed-batch AC8, AC9)', () => {
+  const skill = (s) => body(read('skills', s, 'SKILL.md'))
+
+  it('should warn in setup-engineering that no tickets section means no Jira steps (AC8)', () => {
+    assert.match(skill('setup-engineering'), /no `tickets` section[^\n]*Jira steps[^\n]*(won't|will not) run/)
+  })
+
+  it('should tell to-spec to read the code before naming functions or files (AC9)', () => {
+    assert.match(skill('to-spec'), /read the code[^\n]*before naming[^\n]*function[^\n]*file[^\n]*behaviour level/)
+  })
+})

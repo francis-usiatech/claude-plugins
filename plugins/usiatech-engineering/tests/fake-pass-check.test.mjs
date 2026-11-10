@@ -16,6 +16,41 @@ const repoWith = (files, config) => {
 
 const FOCUSED = "import { it } from 'node:test'\nimport assert from 'node:assert/strict'\n\nit.only('should add', () => {\n  assert.equal(1 + 1, 2)\n})\n"
 
+describe('fake-pass-check: scan count and base (ESP-55 AC12)', () => {
+  it('should end with how many files it scanned', async () => {
+    const r = await runNode(SCRIPT, { cwd: repoWith({ 'src/a.mjs': 'export const a = 1\n', 'src/b.mjs': 'export const b = 2\n' }) })
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /^fake-pass check: scanned 2 files$/m)
+  })
+
+  it('should say it scanned 0 files when nothing changed', async () => {
+    const r = await runNode(SCRIPT, { cwd: repoWith({}) })
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /^fake-pass check: scanned 0 files$/m)
+  })
+
+  it('should scan the files committed since --base', async () => {
+    const repo = makeRepo({ headFiles: { 'tests/math.test.mjs': FOCUSED } })
+    const r = await runNode(SCRIPT, { cwd: repo, args: ['--base', 'develop'] })
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    assert.match(r.stdout, /\[fp-only, high\] tests\/math\.test\.mjs:4 /)
+    assert.match(r.stdout, /^fake-pass check: scanned 1 file$/m)
+  })
+
+  it('should exit 2 on a base git cannot resolve', async () => {
+    const r = await runNode(SCRIPT, { cwd: repoWith({}), args: ['--base', 'no-such-branch'] })
+    assert.equal(r.code, 2, r.stdout + r.stderr)
+    assert.match(r.stderr, /fake-pass check could not run/)
+  })
+
+  it('should exit 2 on an unknown argument or a base that reads as an option', async () => {
+    for (const args of [['--bad'], ['--base', '--output=x']]) {
+      const r = await runNode(SCRIPT, { cwd: repoWith({}), args })
+      assert.equal(r.code, 2, `${args.join(' ')}: ${r.stdout}${r.stderr}`)
+    }
+  })
+})
+
 describe('fake-pass-check (local entry point, AC8)', () => {
   it('should fail on a focused test in a changed file and name the file, line and rule', async () => {
     const r = await runNode(SCRIPT, { cwd: repoWith({ 'tests/math.test.mjs': FOCUSED }) })
@@ -60,6 +95,7 @@ describe('fake-pass-check (local entry point, AC8)', () => {
     writeFiles(repo, { 'tests/math.test.mjs': null })
     const r = await runNode(SCRIPT, { cwd: repo })
     assert.equal(r.code, 0, r.stdout + r.stderr)
-    assert.equal(r.stdout, '')
+    // No finding, and the deleted file is not counted as scanned.
+    assert.equal(r.stdout.trim(), 'fake-pass check: scanned 0 files')
   })
 })
