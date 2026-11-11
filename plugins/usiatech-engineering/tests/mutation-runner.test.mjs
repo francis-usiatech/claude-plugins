@@ -304,6 +304,31 @@ describe('mutation-runner hardening (stage-2 fix set)', () => {
     assert.equal(r.leftRunning, undefined)
   })
 
+  // ESP-157: taskkill /T fails when part of the tree exited between the timeout and the kill; every member it
+  // names then has "no running instance", so the tree is gone and the kill counts as a success.
+  it('should treat a taskkill report of only already-gone processes as a successful kill (ESP-157)', async () => {
+    const { taskkillOnlyGone } = await importRunner()
+    const gone = (pid) => `ERROR: The process with PID ${pid} (child process of PID 15868) could not be terminated.\r\nReason: There is no running instance of the task.\r\n`
+    assert.equal(taskkillOnlyGone(gone(21932)), true)
+    assert.equal(taskkillOnlyGone(gone(1) + gone(2)), true)
+    assert.equal(taskkillOnlyGone(`${gone(1)}ERROR: The process with PID 2 could not be terminated.\r\nReason: Access is denied.\r\n`), false)
+    for (const other of ['', 'ERROR: Invalid argument/option.', 'Reason: There is no running instance of the task.', undefined]) {
+      assert.equal(taskkillOnlyGone(other), false, String(other))
+    }
+  })
+
+  it('should count a Windows kill as done when taskkill reports only already-gone members (ESP-157)', async () => {
+    const { killTree } = await importRunner()
+    const failing = (stderr, status = 1) => () => { throw Object.assign(new Error(`Command failed: taskkill\n${stderr}`), { status, stderr: Buffer.from(stderr) }) }
+    const gone = 'ERROR: The process with PID 21932 (child process of PID 15868) could not be terminated.\r\nReason: There is no running instance of the task.\r\n'
+    const denied = 'ERROR: The process with PID 2 could not be terminated.\r\nReason: Access is denied.\r\n'
+    const child = { pid: 15868 }
+    assert.equal(killTree(child, { platform: 'win32', execFile: failing(gone) }), null)
+    assert.equal(killTree(child, { platform: 'win32', execFile: failing('', 128) }), null)
+    assert.match(killTree(child, { platform: 'win32', execFile: failing(gone + denied) }), /Access is denied/)
+    assert.equal(killTree(child, { platform: 'win32', execFile: () => Buffer.from('') }), null)
+  })
+
   it('should call taskkill by its absolute path under System32, not through PATH (ESP-58)', async () => {
     const { TASKKILL } = await importRunner()
     // TASKKILL is a Windows path on every platform, so check it with path.win32 (path.posix calls C:\ relative).

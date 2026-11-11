@@ -98,8 +98,8 @@
       }
     ],
     "allowlist": [],
-    "trustedWritePaths": ["$TMP/claude/{project}/**", "$TMP/claude-{uid}/{project}/**", "~/.claude/projects/{project}/memory/**", "~/.claude/session-data/**", "~/.claude/plans/**"],
-    "planEdits": "allow",
+    "trustedWritePaths": ["$TMP/claude/{project}/**", "$TMP/claude-{uid}/{project}/**", "$TMP/claude/*/{session}/scratchpad/**", "~/.claude/projects/{project}/memory/**", "~/.claude/session-data/**", "~/.claude/plans/**"],
+    "planEdits": "all",
     "rulesFile": ".claude/governance.md",
     "approvalLabel": "governance-approved",
     "requirementRefPattern": null

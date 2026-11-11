@@ -23,6 +23,7 @@ description: Splits an approved spec into small tickets that each name the requi
    - **Existing tickets:** when the spec's tickets already exist in Jira (the spec names their keys), file nothing: fire `started` for them, following `jira-moves.md`, and go to step 2.4.
 5. Show the list as a table (`# | Title | Covers | Blocked by`, plus `Type | Parent` for Jira). Say where the tickets will go: GitHub issues, Jira issues (with the project and the parent key from the config, if any) or the spec, and ask the user once to confirm before filing anything.
    - For a draft spec, put its summary (path, goal, number of Rs and ACs, open questions) above the table. One approval then covers the spec and the ticket list together: set the spec's `Status: approved` and the date, then file.
+   - Build this one approval as a review page (`${CLAUDE_PLUGIN_ROOT}/templates/review-page.md`): the spec and its open questions, then one item per ticket with its id. `to-spec` asks nothing, so this is the only round.
    - When `.claude/engineering.json` sets `decisions.batch` to `false`, the spec was approved on its own in `to-spec`, so ask about the ticket list on its own.
 
 ## 2. File

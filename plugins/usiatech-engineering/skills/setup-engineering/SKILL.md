@@ -17,6 +17,7 @@ description: Sets up a repository for the usiatech-engineering plugin by creatin
 4. Governance:
    - Copy `${CLAUDE_PLUGIN_ROOT}/templates/governance.md` to `.claude/governance.md` and ask the user for repo-specific rules. Leave sections empty rather than invent rules.
    - Add `.claude/plans/active.md` and `.claude/governance-log.jsonl` to `.gitignore`. Archived plans stay committed.
+   - Add `Edit(/.claude/plans/active.md)` and `Edit(/.claude/plans/archive/**)` to `permissions.allow` in the project `.claude/settings.json` (create the file or merge into it; keep every existing rule). The leading `/` makes the path relative to the project root, so the rule still matches when the shell is in a subfolder. The plan is the pointer to the approved work: with these rules and the default `governance.planEdits: "all"`, plan writes need no prompt from Claude Code or the guard (ESP-156).
    - Confirm `reviewers` starts with `governance-reviewer` (stage 1) and includes `silent-failure-reviewer` and `security-reviewer`. For an existing config, propose adding any that are missing; don't add them silently.
 5. **PR governance (CI):**
    - Copy `${CLAUDE_PLUGIN_ROOT}/templates/github/` into `.github/` (workflow, scripts, PR template, CODEOWNERS). Copy the whole `scripts/` folder: the scripts import `governance-rules.mjs`.

@@ -33,9 +33,12 @@ const windowsCanonical = (rel) => rel.split('/').map((seg) => seg.replace(/:.*$/
 // folder, ~ the home folder, {project} the project folder as Claude Code names it (each character other than
 // A-Z, a-z, 0-9 becomes "-"). Memory and the scratchpad are trusted for this project only. ESP-125: {uid} is the
 // user's numeric id, since Claude Code on Linux keeps the scratchpad in /tmp/claude-<uid>; with no uid (Windows) an
-// entry naming it trusts nothing.
-const DEFAULT_TRUSTED_WRITE_PATHS = ['$TMP/claude/{project}/**', '$TMP/claude-{uid}/{project}/**', '~/.claude/projects/{project}/memory/**', '~/.claude/session-data/**', '~/.claude/plans/**']
-const PLACEHOLDERS = /\{(project|uid)\}/g
+// entry naming it trusts nothing. ESP-155: {session} is the hook input's session_id, since the desktop app keeps the
+// scratchpad in $TMP/claude/<hash>/<session id>/scratchpad; with no session id in UUID form an entry naming it trusts
+// nothing, so the entry never reaches another session's folder.
+const DEFAULT_TRUSTED_WRITE_PATHS = ['$TMP/claude/{project}/**', '$TMP/claude-{uid}/{project}/**', '$TMP/claude/*/{session}/scratchpad/**', '~/.claude/projects/{project}/memory/**', '~/.claude/session-data/**', '~/.claude/plans/**']
+const PLACEHOLDERS = /\{(project|uid|session)\}/g
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 // A repo list may only name folders under these roots, with at least minLiteral plain folder names after the root,
 // so it can't trust Claude Code's own config (~/.claude/**), keys (~/.ssh) or the whole temp folder.
 const TRUSTED_ROOTS = [{ prefix: '$TMP/', place: 'tmpDir', minLiteral: 1 }, { prefix: '~/.claude/projects/', place: 'homeDir', minLiteral: 1 }, { prefix: '~/.claude/session-data/', place: 'homeDir', minLiteral: 0 }, { prefix: '~/.claude/plans/', place: 'homeDir', minLiteral: 0 }]
@@ -153,11 +156,12 @@ const trustedWriteEntry = (file, gov, root, p, ic, places) => {
   // A hard link shares its content with a file elsewhere, which a write would change in place.
   if (p === path && (statSync(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1) return null
   const project = root.replace(/[^A-Za-z0-9]/g, '-')
+  // A placeholder with no usable value (no uid on Windows, no session id) makes its entry trust nothing.
+  const values = { project, uid: Number.isInteger(places.uid) ? String(places.uid) : null, session: typeof places.session === 'string' && SESSION_ID.test(places.session) ? places.session : null }
   for (const entry of gov.trustedWritePaths ?? DEFAULT_TRUSTED_WRITE_PATHS) {
-    if (entry.includes('{uid}') && !Number.isInteger(places.uid)) continue
+    if ([...entry.matchAll(PLACEHOLDERS)].some(([, name]) => values[name] === null)) continue
     const { prefix, place } = TRUSTED_ROOTS.find((r) => entry.startsWith(r.prefix))
     // The entry after its "$TMP/" or "~/" marker, relative to the temp or home folder.
-    const values = { project, uid: String(places.uid) }
     const segs = entry.slice(prefix.indexOf('/') + 1).replace(PLACEHOLDERS, (_, name) => values[name]).split('/')
     // The plain folders before the first glob are the base; an entry with no glob names one file in its last folder.
     const firstGlob = segs.findIndex((s) => GLOB_CHARS.test(s))
@@ -395,6 +399,9 @@ export const sanitizeConfig = (raw) => {
     advise('"governance.planEdits" must be "allow", "ask" or "all"')
     gov.planEdits = 'ask'
   }
+  // ESP-156: the plan is the pointer to the approved work, so its writes are trusted unless the repo opts out. The link
+  // checks still ask, and governance-reviewer still checks scope added after approval.
+  gov.planEdits ??= 'all'
   for (const [key, problemOf] of [['trustedWritePaths', trustedEntryProblem], ['trustedDeletePaths', deleteEntryProblem]]) {
     if (gov[key] == null) continue
     if (!Array.isArray(gov[key])) {
@@ -1343,7 +1350,7 @@ export const evaluate = async (input, { root, cfg = {}, configError = null, git 
     if (typeof target !== 'string') {
       target = JSON.stringify(target)
       result = decision('ask', 'The edit target is not a file path string. Confirm the edit.', target)
-    } else result = await decideEdit(target, safe, git, root, pathApi, caseInsensitive, tool, ti, { lookups, deadlineMs: lookupDeadlineMs }, { homeDir, tmpDir, uid, longName })
+    } else result = await decideEdit(target, safe, git, root, pathApi, caseInsensitive, tool, ti, { lookups, deadlineMs: lookupDeadlineMs }, { homeDir, tmpDir, uid, session: input.session_id, longName })
   } else return null
 
   // Advisory problems alone (ESP-35 R1) don't change the decision; they are reported beside it, once per change (R4).
