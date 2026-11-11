@@ -925,18 +925,24 @@ describe('plugin structure: review and release efficiency (ESP-11, 39, 42, 43, 4
     const line = rule('Docs-only diff')
     assert.match(line, /every changed file is Markdown \(`\.md`\)/)
     assert.doesNotMatch(line, /plain text/)
-    assert.match(line, /none is a `CLAUDE\.md` or `AGENTS\.md` at any depth, is the `governance\.rulesFile`/)
+    assert.match(line, /none is a `CLAUDE\.md`, `CLAUDE\.local\.md`, `AGENTS\.md` or `REVIEW\.md` at any depth, is the `governance\.rulesFile`, a `git\.versionFiles` entry or the `git\.changelogFile`/)
+    assert.match(line, /`scripts\/`, `output-styles\/`, `\.github\/` or `\.claude\/` folder/)
     for (const d of CODE_FOLDERS) assert.ok(line.includes(`\`${d}\``), d)
     assert.match(line, /at any depth/)
     assert.match(line, ASK_PATHS)
   })
 
-  it('should skip two reviewers on a docs-only diff, say so in the PR, and run convention-reviewer on sonnet (AC3)', () => {
+  it('should skip the reviewer round and the gate commands on a docs-only diff and say so in the PR (AC3)', () => {
     const line = rule('Docs-only diff')
-    assert.match(line, /skip `silent-failure-reviewer` and `security-reviewer`[^\n]*say so in the PR/)
-    assert.match(line, /`convention-reviewer` on the `sonnet` model and say that in the PR too/)
-    assert.match(line, /`governance-reviewer` and any repo-specific reviewer still run/)
+    assert.match(line, /On a docs-only diff, run no reviewer round[^\n]*say so in the PR/)
+    assert.match(line, /`verify` skips the gate commands/)
+    assert.doesNotMatch(line, /`sonnet` model/)
     assert.match(readme(), /\| `reviewers` \|[^\n]*docs-only diff[^\n]*`release` skill/)
+    assert.match(line, /no reviewer round \(no stage 1, no stage 2, no `\/code-review`\)/)
+    const verify = read('skills', 'verify', 'SKILL.md')
+    assert.match(verify, /docs-only diff[^\n]*don't run the gate commands[^\n]*`Gate: SKIPPED \(docs-only diff\)`/)
+    assert.match(verify, /whole branch diff, not the step-2 list[^\n]*merge-base[^\n]*An empty list is not docs-only/)
+    assert.match(verify, /only after the commands pass or step 3 skipped them on a docs-only diff/)
   })
 
   it('should archive the plan in release as the last step before the commit, not at clean-up (AC4)', () => {

@@ -10,6 +10,8 @@
 // finish (no usable config, git can't list the changed files, the log can't be written): a gate that ran nothing
 // fails closed rather than pass. An interrupted run exits 130 (ESP-58); a step it stopped before it started shows
 // `NOT RUN`.
+// On a docs-only diff (docs-only.mjs) the full gate runs no step and no fake-pass check, and ends with
+// `Gate: SKIPPED (docs-only diff)`, exit 0.
 // With --check it loads the full gate (config, steps, base) and runs nothing: exit 0 when the gate can start, else 2.
 // With --iterate (ESP-69) it runs only the `verifyIterate` steps whose `when` prefixes match a changed file, lists the
 // changed files no step covers, and skips the fake-pass check. That is a partial run, never the done gate: it writes
@@ -26,6 +28,7 @@ import { printable, runStep, stepLine, runSelected } from './gate-steps.mjs'
 import { hasControlChar, isPathPrefix } from '../../templates/github/scripts/governance-rules.mjs'
 import { isPlainObject, isNonEmptyString } from '../../templates/github/scripts/workflow-rules.mjs'
 import { editDistance } from '../../templates/github/scripts/supply-chain-rules.mjs'
+import { isDocsOnly, instructionImports } from './docs-only.mjs'
 
 const FAKE_PASS_SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../templates/github/scripts/fake-pass-check.mjs')
 const FAKE_PASS_NAME = 'fake-pass check'
@@ -74,7 +77,7 @@ const isAncestor = (root, a, b) => {
  * The commit the full gate compares with: the merge-base of HEAD and `ref` or `origin/<ref>`, whichever is newer, since
  * a local branch can be behind the one the work was cut from. When neither resolves, HEAD, with a note that says so, so
  * the gate still runs; a base the user named with --base (`explicit`) that can't be found stops the gate instead.
- * @returns {{ commit: string, note: string }}
+ * @returns {{ commit: string, note: string, resolved: boolean }} resolved is false on the HEAD fallback
  */
 const resolveBase = (root, ref, { explicit = false } = {}) => {
   const found = []
@@ -89,12 +92,45 @@ const resolveBase = (root, ref, { explicit = false } = {}) => {
   if (found.length) {
     const [first, second] = found
     const best = second && second.commit !== first.commit && isAncestor(root, first.commit, second.commit) ? second : first
-    return { commit: best.commit, note: `Base: merge-base with ${printable(best.candidate)} (${best.commit.slice(0, 7)})` }
+    return { commit: best.commit, note: `Base: merge-base with ${printable(best.candidate)} (${best.commit.slice(0, 7)})`, resolved: true }
   }
   const why = errors.filter(Boolean).join('; ')
   const missing = `could not find "${printable(ref)}" or "origin/${printable(ref)}"${why ? ` (${printable(why)})` : ''}`
   if (explicit) throw new Error(`--base ${missing}.`)
-  return { commit: 'HEAD', note: `Base: ${missing}, so changed files are compared with HEAD.` }
+  return { commit: 'HEAD', note: `Base: ${missing}, so changed files are compared with HEAD.`, resolved: false }
+}
+
+const gitOk = (root, args) => {
+  try {
+    execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether the changed-file list covers every change on the branch, so a docs-only verdict can be trusted. Only the
+ * configured base branch qualifies, and only from another branch: a `--base` ref, a fallback to HEAD, a ref that is no
+ * branch (`@`, `HEAD~0`, a commit) or the current branch itself gives a merge-base at HEAD that hides committed code.
+ * A detached HEAD, or a local base moved onto unpushed work (`git branch -f develop HEAD`), is not trusted either.
+ * On any doubt the answer is no, so the gate runs.
+ */
+const coversBranch = (root, ref, { resolved, explicit, commit }) => {
+  if (!resolved || explicit) return false
+  const hasRemote = gitOk(root, ['show-ref', '--verify', '--quiet', `refs/remotes/origin/${ref}`])
+  if (!hasRemote && !gitOk(root, ['show-ref', '--verify', '--quiet', `refs/heads/${ref}`])) return false
+  let current
+  try {
+    current = execFileSync('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch {
+    return false // detached HEAD (or symbolic-ref failed): the branch's own commits can't be told apart
+  }
+  // Branch names compare without case: on Windows `Develop` checks out `develop`.
+  const lower = current.toLowerCase()
+  if (lower === ref.toLowerCase() || lower === `origin/${ref}`.toLowerCase()) return false
+  // With a remote base, the merge-base must already be on it, so local commits moved onto the base still count.
+  return !hasRemote || isAncestor(root, commit, `origin/${ref}`)
 }
 
 // The operator that chains a second command onto the first, or null (ESP-53). A chained command reports only the last
@@ -179,16 +215,24 @@ const selectByChanged = (steps, changed) => steps.map((s) => (changed.some((file
 
 /**
  * The steps for this repo, in order; throws on a config the gate can't be built from.
- * @returns {{ steps: { name: string, run: string, timeoutMs: number, skipped?: string }[], notes: string[], base: string }} skipped holds the reason a conditional step isn't run; base is the commit the fake-pass check diffs against
+ * @returns {{ steps: { name: string, run: string, timeoutMs: number, skipped?: string }[], notes: string[], base: string, docsOnly: number }} skipped holds the reason a conditional step isn't run; base is the commit the fake-pass check diffs against; docsOnly is the number of changed files on a docs-only diff, else 0
  */
 const loadGate = (root, { base = null } = {}) => {
   const cfg = readConfig(root)
   const always = checkSteps(cfg.verify ?? null, 'verify', false)
   if (!always.length) throw new Error('.claude/engineering.json "verify" is empty, so there are no gate steps to run.')
   const conditional = checkSteps(cfg.verifyConditional ?? [], 'verifyConditional', true)
-  const { commit, note } = resolveBase(root, base ?? baseBranchOf(cfg), { explicit: base != null })
+  const ref = base ?? baseBranchOf(cfg)
+  const { commit, note, resolved } = resolveBase(root, ref, { explicit: base != null })
+  const branchDiff = coversBranch(root, ref, { resolved, explicit: base != null, commit })
   // Listed even with no conditional step: the fake-pass check needs the same list, so a repo git can't diff stops here.
-  return { steps: [...always, ...selectByChanged(conditional, listChanged(root, commit))], notes: [note], base: commit }
+  const changed = listChanged(root, commit)
+  // Only a whole-branch list can be docs-only (coversBranch); otherwise the gate runs.
+  // Files the instruction files import with `@path` are instructions too; they are only looked up for a list that
+  // passes the rule without them, so a code diff costs no extra reads. A read that fails stops the gate.
+  const importsOf = () => instructionImports(root, [...gitList(root, ['ls-files']), ...gitList(root, ['ls-files', '--others', '--exclude-standard'])])
+  const docsOnly = branchDiff && isDocsOnly(changed, cfg) && isDocsOnly(changed, cfg, importsOf()) ? changed.length : 0
+  return { steps: [...always, ...selectByChanged(conditional, changed)], notes: [note], base: commit, docsOnly }
 }
 
 
@@ -292,6 +336,11 @@ const runGate = async (cwd, mode, options = {}) => {
   }
   const { steps, notes } = loaded
   if (mode.checkOnly) return { exitCode: 0, lines: [...notes, 'Gate check: the gate can start. Nothing ran.'] }
+  // A docs-only diff (the `release` skill's rule) runs no step and no fake-pass check: the user's docs review replaces
+  // them. The verdict names the skip, so it can't be read as a pass.
+  if (loaded.docsOnly) {
+    return { exitCode: 0, lines: [...notes, `SKIPPED  all steps (docs-only diff: ${loaded.docsOnly} Markdown file${loaded.docsOnly === 1 ? '' : 's'})`, 'Gate: SKIPPED (docs-only diff)'] }
+  }
   // Only a partial run gets here: the full gate refuses an empty `verify` list. No step means no log to write, and
   // no PASS: nothing was checked.
   if (steps.every((s) => s.skipped)) {
