@@ -291,6 +291,22 @@ describe('gate runner: docs-only diff', () => {
     assert.equal(r.code, 1, r.stdout + r.stderr)
   })
 
+  it('should run the gate when the only changed doc is one CLAUDE.md imports with @path', async () => {
+    const baseFiles = { 'README.md': 'base\n', 'CLAUDE.md': 'Follow @docs/style.md\n', 'docs/style.md': 'old\n', '.claude/engineering.json': JSON.stringify({ verify: [fail('tests')] }) }
+    const repo = makeRepo({ baseFiles })
+    writeFiles(repo, { 'docs/style.md': 'new\n' })
+    const r = await runGate(repo)
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+  })
+
+  it('should run the gate when the branch deletes a doc that CLAUDE.md imports', async () => {
+    const baseFiles = { 'README.md': 'base\n', 'CLAUDE.md': 'Follow @docs/style.md\n', 'docs/style.md': 'old\n', '.claude/engineering.json': JSON.stringify({ verify: [fail('tests')] }) }
+    const repo = makeRepo({ baseFiles })
+    git(repo, 'rm', '-q', 'docs/style.md')
+    const r = await runGate(repo)
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+  })
+
   it('should still skip on a new branch whose only change is uncommitted docs', async () => {
     const repo = makeRepo({ baseFiles: { 'README.md': 'base\n', '.claude/engineering.json': JSON.stringify({ verify: [fail('tests')] }) } })
     writeFiles(repo, { 'docs/a.md': '# A\n' })

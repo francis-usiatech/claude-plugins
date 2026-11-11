@@ -28,7 +28,7 @@ import { printable, runStep, stepLine, runSelected } from './gate-steps.mjs'
 import { hasControlChar, isPathPrefix } from '../../templates/github/scripts/governance-rules.mjs'
 import { isPlainObject, isNonEmptyString } from '../../templates/github/scripts/workflow-rules.mjs'
 import { editDistance } from '../../templates/github/scripts/supply-chain-rules.mjs'
-import { isDocsOnly } from './docs-only.mjs'
+import { isDocsOnly, instructionImports } from './docs-only.mjs'
 
 const FAKE_PASS_SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../templates/github/scripts/fake-pass-check.mjs')
 const FAKE_PASS_NAME = 'fake-pass check'
@@ -228,7 +228,10 @@ const loadGate = (root, { base = null } = {}) => {
   // Listed even with no conditional step: the fake-pass check needs the same list, so a repo git can't diff stops here.
   const changed = listChanged(root, commit)
   // Only a whole-branch list can be docs-only (coversBranch); otherwise the gate runs.
-  const docsOnly = branchDiff && isDocsOnly(changed, cfg) ? changed.length : 0
+  // Files the instruction files import with `@path` are instructions too; they are only looked up for a list that
+  // passes the rule without them, so a code diff costs no extra reads. A read that fails stops the gate.
+  const importsOf = () => instructionImports(root, [...gitList(root, ['ls-files']), ...gitList(root, ['ls-files', '--others', '--exclude-standard'])])
+  const docsOnly = branchDiff && isDocsOnly(changed, cfg) && isDocsOnly(changed, cfg, importsOf()) ? changed.length : 0
   return { steps: [...always, ...selectByChanged(conditional, changed)], notes: [note], base: commit, docsOnly }
 }
 

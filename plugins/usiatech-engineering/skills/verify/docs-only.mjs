@@ -2,6 +2,8 @@
 // model reading the rule. A docs-only diff skips the gate commands and the reviewer round; the user's docs review
 // replaces them. Every comparison ignores case: on a case-insensitive file system `Skills/` or `agents.MD` is the
 // same file, and an extra match only makes a diff count as code, which runs the gate.
+import { readFileSync, statSync } from 'node:fs'
+import path from 'node:path'
 import { DEFAULT_ASK_PATHS, isStringArray, matchAny } from '../../templates/github/scripts/governance-rules.mjs'
 import { isPlainObject } from '../../templates/github/scripts/workflow-rules.mjs'
 
@@ -11,6 +13,51 @@ const CODE_FOLDERS = ['skills', 'agents', 'commands', 'hooks', 'templates', 'scr
 // Instruction and review-rule files, at any depth.
 const INSTRUCTION_FILES = ['claude.md', 'claude.local.md', 'agents.md', 'review.md']
 const DEFAULT_RULES_FILE = '.claude/governance.md'
+// Claude follows `@path` imports up to five levels deep.
+const MAX_IMPORT_DEPTH = 5
+// An `@path` import: `@` at the start of a line or after whitespace, up to the next space or quote-like character.
+const IMPORT = /(?:^|\s)@([^\s`'"()<>[\]]+)/g
+
+const isInstructionFile = (file) => INSTRUCTION_FILES.includes(file.toLowerCase().split('/').at(-1))
+
+// The repo-relative paths one file imports with `@path`. Home (`~`) and absolute imports point outside the repo, and
+// a path that climbs out of it is dropped; neither can be in the diff.
+const importsOf = (root, file) => {
+  const text = readFileSync(path.join(root, file), 'utf8')
+  const dir = path.posix.dirname(file)
+  return [...text.matchAll(IMPORT)]
+    .map((m) => m[1].replace(/[.,;:!?]+$/, '').replace(/\\/g, '/'))
+    .filter((p) => !p.startsWith('~') && !p.startsWith('/') && !/^[a-z]:/i.test(p))
+    .map((p) => path.posix.normalize(path.posix.join(dir, p)))
+    .filter((p) => p !== '..' && !p.startsWith('../'))
+}
+
+/**
+ * Every file the repo's instruction files (CLAUDE.md, CLAUDE.local.md, AGENTS.md, REVIEW.md at any depth) pull in with
+ * `@path` imports, followed as deep as Claude follows them. Those files are instructions, so a change to one is code.
+ * A file that can't be read throws, so the gate runs rather than skip on a list it couldn't build.
+ * @param {string} root the repo root
+ * @param {string[]} tracked repo-relative paths of every file in the working tree (tracked plus untracked)
+ * @returns {string[]} repo-relative paths of the imported files
+ */
+export const instructionImports = (root, tracked) => {
+  const seen = new Set()
+  let frontier = tracked.filter(isInstructionFile)
+  for (let depth = 0; depth < MAX_IMPORT_DEPTH && frontier.length; depth++) {
+    // A missing target still counts: the branch may have deleted or renamed it. A folder is no file, so it is skipped.
+    // Only a file that exists can be read and followed further.
+    const next = []
+    for (const p of frontier.flatMap((file) => importsOf(root, file))) {
+      if (seen.has(p)) continue
+      const stat = statSync(path.join(root, p), { throwIfNoEntry: false })
+      if (stat?.isDirectory()) continue
+      seen.add(p)
+      if (stat?.isFile()) next.push(p)
+    }
+    frontier = next
+  }
+  return [...seen]
+}
 
 // A config path or glob as git prints paths: `/` separators, no repeated `/`, no leading `./` or `/`.
 const normalGlob = (p) => p.replace(/\\/g, '/').replace(/\/{2,}/g, '/').replace(/^(\.\/|\/)+/, '')
@@ -54,7 +101,7 @@ const isPlainDoc = (file, { askPaths, codeFiles }) => {
   const lower = file.toLowerCase()
   const parts = lower.split('/')
   if (!lower.endsWith('.md')) return false
-  if (INSTRUCTION_FILES.includes(parts.at(-1)) || codeFiles.includes(lower)) return false
+  if (isInstructionFile(lower) || codeFiles.includes(lower)) return false
   if (parts.slice(0, -1).some((dir) => CODE_FOLDERS.includes(dir))) return false
   return !matchAny(file, askPaths, true)
 }
@@ -64,9 +111,11 @@ const isPlainDoc = (file, { askPaths, codeFiles }) => {
  * still runs. The caller must pass the whole branch diff; gate.mjs asks only when its list covers the branch.
  * @param {string[]} changed repo-relative paths of every changed file, renames listed as both paths
  * @param {object} cfg the parsed .claude/engineering.json
+ * @param {string[]} [imported] files the instruction files import (instructionImports); each counts as code
  * @returns {boolean}
  */
-export const isDocsOnly = (changed, cfg) => {
+export const isDocsOnly = (changed, cfg, imported = []) => {
   const inputs = ruleInputs(cfg)
+  inputs.codeFiles.push(...imported.map(normalPath))
   return changed.length > 0 && changed.every((file) => isPlainDoc(file, inputs))
 }

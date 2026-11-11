@@ -1,6 +1,53 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { isDocsOnly } from '../skills/verify/docs-only.mjs'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
+import { after } from 'node:test'
+import { isDocsOnly, instructionImports } from '../skills/verify/docs-only.mjs'
+import { tempDir, cleanupTempDirs } from './helpers.mjs'
+
+after(cleanupTempDirs)
+
+const tree = (files) => {
+  const root = tempDir('usiatech-docs-only-')
+  for (const [rel, text] of Object.entries(files)) {
+    mkdirSync(path.join(root, path.dirname(rel)), { recursive: true })
+    writeFileSync(path.join(root, rel), text)
+  }
+  return { root, files: Object.keys(files) }
+}
+
+describe('instruction imports', () => {
+  it('should follow @path imports from instruction files, relative to each file, up to five levels', () => {
+    const { root, files } = tree({
+      'CLAUDE.md': 'See @docs/style.md and email a@b.com.\n',
+      'docs/style.md': 'More: @./deep/one.md\n',
+      'docs/deep/one.md': '@two.md\n',
+      'docs/deep/two.md': '@three.md\n',
+      'docs/deep/three.md': '@four.md\n',
+      'docs/deep/four.md': '@five.md\n',
+      'docs/deep/five.md': 'end\n',
+      'apps/web/AGENTS.md': 'Rules in @rules/api.md, home @~/x.md, outside @../../../x.md\n',
+      'apps/web/rules/api.md': 'api\n',
+      'docs/plain.md': 'not imported\n'
+    })
+    const got = instructionImports(root, files).sort()
+    assert.deepEqual(got, ['apps/web/rules/api.md', 'docs/deep/four.md', 'docs/deep/one.md', 'docs/deep/three.md', 'docs/deep/two.md', 'docs/style.md'])
+  })
+
+  it('should keep a missing import target, which a branch may have deleted, but not a folder', () => {
+    const { root, files } = tree({
+      'CLAUDE.md': 'See @docs/gone.md and @docs\n',
+      'docs/here.md': 'x\n'
+    })
+    assert.deepEqual(instructionImports(root, files), ['docs/gone.md'])
+  })
+
+  it('should count an imported doc as code', () => {
+    assert.equal(isDocsOnly(['docs/style.md'], {}, ['docs/style.md']), false)
+    assert.equal(isDocsOnly(['docs/other.md'], {}, ['docs/style.md']), true)
+  })
+})
 
 describe('docs-only diff rule', () => {
   it('should count plain Markdown files as docs-only', () => {
