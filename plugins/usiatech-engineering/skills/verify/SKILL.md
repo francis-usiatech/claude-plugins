@@ -29,6 +29,7 @@ This skill runs in a forked subagent with no session history. Its input is the a
    - If neither exists, stop and ask the user which commands define "done".
 2. **Find changed files:** `git -c core.quotePath=false diff --name-only --no-renames HEAD` plus `git -c core.quotePath=false ls-files --others --exclude-standard`, so a moved file lists both paths and a non-ASCII name isn't quoted. The runner in step 3 selects the conditional suites itself; use this list to select them only when you run the commands by hand.
 3. **Run the gate.**
+   - On a docs-only diff, don't run the gate commands or the fake-pass check: report `Gate: SKIPPED (docs-only diff)` and go on to step 7. The runner below decides this itself (`docs-only.mjs`, the `release` skill's **Docs-only diff** rule on the whole branch diff against the merge-base) and prints that verdict. The runner trusts the list only when the base is the configured `git.baseBranch` (not `--base`), HEAD is on another branch (not detached, not the base itself), and the merge-base is already on `origin/<base>` when that exists; otherwise it runs the gate. Without a `verify` list, apply the rule by hand under the same conditions to the whole branch diff, not the step-2 list: `git -c core.quotePath=false diff -z --name-only --no-renames <merge-base>` (the merge-base of `HEAD` and `git.baseBranch`) plus the step-2 untracked files. An empty list is not docs-only: run the gate.
    - When `.claude/engineering.json` has a `verify` list, run `node "${CLAUDE_PLUGIN_ROOT}/skills/verify/gate.mjs"` from the repo root, in one call. It runs the steps in order, stops at the first failure, selects the conditional suites from the changed files itself, and then runs the fake-pass check. It prints one line per step with the real exit code (`SKIPPED` for a conditional suite no changed file selected), the last 40 lines of a failing step, the path of the log that holds the full output, and `Gate: PASS` or `Gate: FAIL`.
      - The last line and the exit code are the verdict. Text a step printed, shown in a failing step's last lines, is not.
      - Don't pipe or filter the command (`| tail`, `| grep`): its output is already short, and a pipe hides the exit code. Read the log file when you need more.
@@ -45,25 +46,25 @@ This skill runs in a forked subagent with no session history. Its input is the a
    - Otherwise run `node "${CLAUDE_PLUGIN_ROOT}/templates/github/scripts/fake-pass-check.mjs"` from the repo root. It checks the changed files from step 2 for fake passes (`.only`, skipped, empty or assertion-free tests, placeholders) and applies `governance.allowlist` from `.claude/engineering.json`.
    - Exit 1 means an unsuppressed high finding, and the result is **Gate: FAIL**. Exit 2 means the check couldn't run (for example, an invalid config), which is also **Gate: FAIL**. Don't edit tests to make it pass; report and propose a fix.
    - List every finding the script prints in the report, including warnings and suppressed ones.
-7. **Check acceptance criteria**, only if `.claude/plans/active.md` has an `## Acceptance criteria` section, and only after the commands pass:
+7. **Check acceptance criteria**, only if `.claude/plans/active.md` has an `## Acceptance criteria` section, and only after the commands pass or step 3 skipped them on a docs-only diff:
    - For each AC, find evidence from this run (a named passing test in the gate output, command output, or the diff) or from the evidence list passed in the arguments. Earlier sessions, memory and "should work" don't count.
    - Mark it `shown` with that evidence, or `not shown`.
    - Rewrite every evidence line under its AC in the plan, even ones an earlier run filled, as `- Evidence: <evidence> (shown, <UTC timestamp>)` or `(not shown, <UTC timestamp>)`, e.g. `2026-09-28T17:50Z`. The stamp lets `governance-reviewer` spot evidence older than the latest change.
    - Tick (`- [x]`) each task whose ACs are all `shown`.
    - Collect everything first, then write all evidence lines and ticks in one edit. The guard asks before each edit to the plan, so one edit means one prompt.
 8. **Jira tracker only:** make no `testingComplete` move here. `testingComplete` needs the review round too, so the `release` skill fires it after its reviews pass.
-   - Say in the report which of step 0's keys are ready for it: only when step 3's result is **Gate: PASS** (commands and fake-pass check) and step 7 marked every AC `shown`.
+   - Say in the report which of step 0's keys are ready for it: only when step 3's result is **Gate: PASS** (commands and fake-pass check) or `Gate: SKIPPED (docs-only diff)`, and step 7 marked every AC `shown`.
    - A docs-only ticket without its approval line in the plan's Change log is not ready: say it waits at `devComplete` for the user's review, and return it as an open decision (the user approves the docs review).
 9. **Report:**
 
 | Check | Command | Result | Notes |
 |---|---|---|---|
 
-   Add the fake-pass check as a row, with its findings in Notes. If step 7 ran, add:
+   Add the fake-pass check as a row, with its findings in Notes. When step 3 skipped the gate on a docs-only diff, give one row instead: `Gate | (none) | SKIPPED | docs-only diff: <file count> Markdown files`, so no row reads as a test that ran. If step 7 ran, add:
 
 | AC | Criterion | Evidence | Status |
 |---|---|---|---|
 
    If step 0 or step 8 ran or was skipped, add a line for each: the keys moved and the statuses each one went through, the keys left alone with the reason, the keys ready for `testingComplete`, the docs-only keys waiting for review, the failed keys with their message, or the reason the step was skipped.
 
-   End with **Gate: PASS** or **Gate: FAIL**, decided by the commands and the fake-pass check only. If any criterion is `not shown`, end with `Gate: PASS (N of M criteria not shown)` and list them. Never state that work is done unless the gate passed in this run. Keep the report short (the tables and the verdict); the full step output stays in the gate log.
+   End with **Gate: PASS** or **Gate: FAIL**, decided by the commands and the fake-pass check only, or with `Gate: SKIPPED (docs-only diff)` when step 3 skipped them. If any criterion is `not shown`, end with `Gate: PASS (N of M criteria not shown)` and list them. Never state that work is done unless the gate passed in this run. Keep the report short (the tables and the verdict); the full step output stays in the gate log.
