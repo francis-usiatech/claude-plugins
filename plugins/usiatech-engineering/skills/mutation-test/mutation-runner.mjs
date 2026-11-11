@@ -77,15 +77,27 @@ export const validateList = (list, root) => {
 // taskkill by its absolute path (ESP-58), so a taskkill earlier on PATH, such as one in the repo, is never the one run.
 export const TASKKILL = path.win32.join(process.env.SystemRoot || process.env.windir || 'C:\\Windows', 'System32', 'taskkill.exe')
 
+/**
+ * ESP-157: whether taskkill's stderr names only processes that had already exited. `taskkill /T` fails when part of
+ * the tree ended between the timeout and the kill; each such member gets "Reason: There is no running instance of the
+ * task.", so the tree is gone. Any other reason, or no ERROR block at all, is a real failure.
+ */
+export const taskkillOnlyGone = (stderr) => {
+  const blocks = String(stderr ?? '').split(/^ERROR:/m).slice(1)
+  return blocks.length > 0 && blocks.every((b) => /^Reason: There is no running instance of the task\.\s*$/m.test(b))
+}
+
 // Kills the shell and everything it started; killing only the shell would leave the test process running.
-// Returns null once the tree is gone, or the reason it could not be killed.
-const killTree = (child) => {
+// Returns null once the tree is gone, or the reason it could not be killed. Tests pass `platform` and `execFile`.
+export const killTree = (child, { platform = process.platform, execFile = execFileSync } = {}) => {
   try {
-    if (process.platform === 'win32') execFileSync(TASKKILL, ['/pid', String(child.pid), '/T', '/F'], { stdio: 'pipe' })
+    if (platform === 'win32') execFile(TASKKILL, ['/pid', String(child.pid), '/T', '/F'], { stdio: 'pipe' })
     else process.kill(-child.pid, 'SIGKILL')
   } catch (e) {
-    // Already gone: ESRCH on POSIX, taskkill exit 128 on Windows. Anything else is a failure.
+    // Already gone: ESRCH on POSIX, taskkill exit 128 on Windows, or only already-exited tree members (ESP-157).
+    // Anything else is a failure.
     if (e.code === 'ESRCH' || e.status === 128) return null
+    if (platform === 'win32' && taskkillOnlyGone(e.stderr)) return null
     return e.message
   }
   return null
