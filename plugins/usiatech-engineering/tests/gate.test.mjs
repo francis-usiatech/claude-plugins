@@ -223,6 +223,120 @@ describe('gate runner: expectNoDiff (ESP-54 AC11)', () => {
   })
 })
 
+describe('gate runner: docs-only diff', () => {
+  it('should run no step and end with Gate: SKIPPED when the branch changes only docs', async () => {
+    // The config sits on the base branch: a changed .claude/engineering.json would make the diff code.
+    const repo = makeRepo({ baseFiles: { 'README.md': 'base\n', '.claude/engineering.json': JSON.stringify({ verify: [fail('tests')] }) }, headFiles: { 'docs/a.md': '# A\n' } })
+    writeFiles(repo, { 'README.md': '# R\n' })
+    const r = await runGate(repo)
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /^SKIPPED {2}all steps \(docs-only diff: 2 Markdown files\)$/m)
+    assert.doesNotMatch(r.stdout, /fake-pass check|^Log: /m)
+    assert.equal(lines(r).at(-1), 'Gate: SKIPPED (docs-only diff)')
+  })
+
+  it('should run the gate when the base branch is missing and only an uncommitted file is Markdown', async () => {
+    const config = JSON.stringify({ verify: [fail('tests')], git: { baseBranch: 'no-such-branch' } })
+    const repo = makeRepo({ baseFiles: { 'README.md': 'base\n', '.claude/engineering.json': config }, headFiles: { 'src/a.mjs': 'export const a = 1\n' } })
+    writeFiles(repo, { 'README.md': '# R\n' })
+    const r = await runGate(repo)
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    assert.doesNotMatch(r.stdout, /docs-only/)
+  })
+
+  it('should run the gate with --base HEAD, which hides committed code', async () => {
+    const repo = makeRepo({ baseFiles: { 'README.md': 'base\n', '.claude/engineering.json': JSON.stringify({ verify: [fail('tests')] }) }, headFiles: { 'src/a.mjs': 'export const a = 1\n' } })
+    writeFiles(repo, { 'README.md': '# R\n' })
+    const r = await runGate(repo, undefined, ['--base', 'HEAD'])
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+  })
+
+  // A branch with committed code and one uncommitted README edit: any base whose merge-base is HEAD would list only
+  // the README, so each of these must still run the gate.
+  const codeBranch = () => {
+    const repo = makeRepo({ baseFiles: { 'README.md': 'base\n', '.claude/engineering.json': JSON.stringify({ verify: [fail('tests')] }) }, headFiles: { 'src/a.mjs': 'export const a = 1\n' } })
+    writeFiles(repo, { 'README.md': '# R\n' })
+    return repo
+  }
+  for (const [label, args] of [['the current branch', ['--base', 'feature/x']], ['@', ['--base', '@']], ['the HEAD commit', null]]) {
+    it(`should run the gate with --base ${label}`, async () => {
+      const repo = codeBranch()
+      const r = await runGate(repo, undefined, args ?? ['--base', git(repo, 'rev-parse', 'HEAD').trim()])
+      assert.equal(r.code, 1, r.stdout + r.stderr)
+    })
+  }
+
+  it('should run the gate on the base branch itself, whose own commits the list would miss', async () => {
+    const repo = codeBranch()
+    git(repo, 'checkout', '-q', '-b', 'develop-local')
+    const cfg = JSON.stringify({ verify: [fail('tests')], git: { baseBranch: 'develop-local' } })
+    writeFiles(repo, { '.claude/engineering.json': cfg })
+    git(repo, 'commit', '-q', '-am', 'cfg')
+    writeFiles(repo, { 'README.md': '# R2\n' })
+    const r = await runGate(repo)
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+  })
+
+  it('should run the gate when the local base was moved onto the branch\'s commits', async () => {
+    const repo = codeBranch()
+    git(repo, 'branch', '-f', 'develop', 'HEAD')
+    const r = await runGate(repo)
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+  })
+
+  it('should run the gate on a detached HEAD', async () => {
+    const repo = codeBranch()
+    git(repo, 'checkout', '-q', '--detach')
+    const r = await runGate(repo)
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+  })
+
+  it('should run the gate when the only changed doc is one CLAUDE.md imports with @path', async () => {
+    const baseFiles = { 'README.md': 'base\n', 'CLAUDE.md': 'Follow @docs/style.md\n', 'docs/style.md': 'old\n', '.claude/engineering.json': JSON.stringify({ verify: [fail('tests')] }) }
+    const repo = makeRepo({ baseFiles })
+    writeFiles(repo, { 'docs/style.md': 'new\n' })
+    const r = await runGate(repo)
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+  })
+
+  it('should run the gate when the branch deletes a doc that CLAUDE.md imports', async () => {
+    const baseFiles = { 'README.md': 'base\n', 'CLAUDE.md': 'Follow @docs/style.md\n', 'docs/style.md': 'old\n', '.claude/engineering.json': JSON.stringify({ verify: [fail('tests')] }) }
+    const repo = makeRepo({ baseFiles })
+    git(repo, 'rm', '-q', 'docs/style.md')
+    const r = await runGate(repo)
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+  })
+
+  it('should still skip on a new branch whose only change is uncommitted docs', async () => {
+    const repo = makeRepo({ baseFiles: { 'README.md': 'base\n', '.claude/engineering.json': JSON.stringify({ verify: [fail('tests')] }) } })
+    writeFiles(repo, { 'docs/a.md': '# A\n' })
+    const r = await runGate(repo)
+    assert.equal(r.code, 0, r.stdout + r.stderr)
+    assert.equal(lines(r).at(-1), 'Gate: SKIPPED (docs-only diff)')
+  })
+
+  it('should run the gate when the branch changes the config next to docs', async () => {
+    const r = await runGate(repoWith({ verify: [fail('tests')] }, { committed: { 'docs/a.md': '# A\n' } }))
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+  })
+
+  it('should run the gate when the branch also changes code', async () => {
+    const r = await runGate(repoWith({ verify: [fail('tests')] }, { committed: { 'docs/a.md': '# A\n', 'src/a.mjs': 'export const a = 1\n' } }))
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    assert.equal(lines(r).at(-1), 'Gate: FAIL')
+  })
+
+  it('should run the gate when only a skill file changes', async () => {
+    const r = await runGate(repoWith({ verify: [fail('tests')] }, { uncommitted: { 'skills/x/SKILL.md': '# X\n' } }))
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+  })
+
+  it('should run the gate when nothing changed', async () => {
+    const r = await runGate(repoWith({ verify: [fail('tests')] }))
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+  })
+})
+
 describe('gate runner: diff base and scan count (ESP-55 AC12)', () => {
   const cond = { ...ok('cond'), when: ['src/'] }
   const committedBranch = (config) => repoWith({ verify: [ok('a')], verifyConditional: [cond], ...config }, { committed: { 'src/a.mjs': 'export const a = 1\n' } })
