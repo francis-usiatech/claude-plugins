@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Review page skeleton (ESP-154). Rules: templates/review-page.md. Replace every {{…}} and repeat the group and item blocks. -->
+<title>{{Topic}} Review</title>
+<style>
+  :root { --bg: #ffffff; --fg: #1d1f23; --muted: #5d6470; --line: #d9dde3; --card: #f6f7f9; --rec: #0f7b3f; --alt: #8a5a00; --code: #eef0f3; --add: #e6f4ea; --del: #fbe9e9; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #16181c; --fg: #e6e8eb; --muted: #9aa1ab; --line: #30343a; --card: #1e2126; --rec: #4cc38a; --alt: #e0a640; --code: #262a30; --add: #1d3326; --del: #3a2224; } }
+  :root[data-theme="dark"] { --bg: #16181c; --fg: #e6e8eb; --muted: #9aa1ab; --line: #30343a; --card: #1e2126; --rec: #4cc38a; --alt: #e0a640; --code: #262a30; --add: #1d3326; --del: #3a2224; }
+  body { background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 24px 16px; }
+  main { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 28px 0 8px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  .lead { color: var(--muted); }
+  .item { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 10px 0; }
+  .id { font-weight: 700; font-family: ui-monospace, monospace; margin-right: 6px; }
+  .rec { color: var(--rec); font-weight: 600; }
+  .alt { color: var(--alt); }
+  code, pre { background: var(--code); border-radius: 4px; font-size: 13px; }
+  code { padding: 1px 4px; overflow-wrap: anywhere; }
+  pre { padding: 8px 10px; overflow-x: auto; white-space: pre; }
+  .add { background: var(--add); display: block; }
+  .del { background: var(--del); display: block; }
+  ul { margin: 6px 0; padding-left: 20px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  td, th { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  .reply { background: var(--card); border-left: 4px solid var(--rec); padding: 10px 14px; margin-top: 24px; }
+</style>
+</head>
+<body>
+<main>
+<h1>{{Topic}} review</h1>
+<p class="lead">One page, one answer. Reply <b>"accept all"</b>, or <b>"accept all except D1.2: …"</b>.</p>
+
+<h2>Evidence</h2>
+<table>
+<tr><th>Fact</th><th>Source</th></tr>
+<tr><td>{{fact}}</td><td>{{where it comes from}}</td></tr>
+</table>
+
+<h2>G1 — {{theme}}</h2>
+<div class="item"><span class="id">D1.1</span> {{what is decided}}
+<ul>
+<li class="rec">Recommended: {{default}} — {{why}}</li>
+<li class="alt">Alternative: {{option}} — {{trade-off}}</li>
+<li>Files: <code>{{path}}</code></li>
+</ul>
+<pre><span class="del">- {{removed line}}</span><span class="add">+ {{added line}}</span></pre>
+</div>
+
+<div class="reply"><b>Reply:</b> "accept all", or "accept all except D&lt;n&gt;: &lt;change&gt;".</div>
+</main>
+</body>
+</html>

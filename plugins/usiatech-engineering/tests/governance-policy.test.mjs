@@ -374,8 +374,9 @@ describe('evaluate: re-audit guard bypasses (ESP-106; R1–R5)', () => {
   }
 
   describe('a ::$DATA stream suffix on Windows (R2)', () => {
+    // ESP-156: planEdits "ask" keeps the plan ask, so the stream name is checked against a real decision.
     const win = (file_path, root = String.raw`C:\repo`) =>
-      evaluate({ tool_name: 'Write', tool_input: { file_path, content: 'x' } }, { root, git: fakeGit(), pathApi: path.win32, caseInsensitive: true })
+      evaluate({ tool_name: 'Write', tool_input: { file_path, content: 'x' } }, { root, git: fakeGit(), pathApi: path.win32, caseInsensitive: true, cfg: { governance: { planEdits: 'ask' } } })
 
     for (const file of ['.env', 'AGENTS.md', 'CLAUDE.md', '.claude/plans/active.md']) {
       it(`should decide ${file}::$DATA like ${file}, logging the suffixed name`, async () => {
@@ -1020,12 +1021,14 @@ describe('evaluate: file edits', () => {
 
   it('should never ask about the guard bookkeeping files', async () => {
     assert.equal((await edit('.claude/governance-log.jsonl')), null)
-    assert.equal((await edit('.claude/plans/archive/2026-09-28-guard.md')), null)
+    // ESP-156: under the default planEdits "all" an archive write is let through and logged as trusted.
+    assert.equal((await edit('.claude/plans/archive/2026-09-28-guard.md'))?.decision ?? null, null)
+    assert.equal((await edit('.claude/plans/archive/2026-09-28-guard.md', { cfg: { governance: { planEdits: 'ask' } } })), null)
   })
 
-  it('should ask before editing the active plan, which sets the edit scope', async () => {
-    assert.match((await edit('.claude/plans/active.md')).reason, /approved plan sets the edit scope/)
-    assert.equal((await edit('.claude/plans/active.md', { cfg: { governance: { requirePlan: true } } })).decision, 'ask')
+  it('should ask before editing the active plan under planEdits "ask", which sets the edit scope', async () => {
+    assert.match((await edit('.claude/plans/active.md', { cfg: { governance: { planEdits: 'ask' } } })).reason, /approved plan sets the edit scope/)
+    assert.equal((await edit('.claude/plans/active.md', { cfg: { governance: { requirePlan: true, planEdits: 'ask' } } })).decision, 'ask')
   })
 
   it('should ask for edits outside the project folder', async () => {
@@ -1313,7 +1316,7 @@ describe('evaluate: case-insensitive file systems', () => {
     assert.equal((await ci('Generated/x.ts')).decision, 'deny')
     assert.equal((await ci('Agents.MD')).decision, 'ask')
     assert.equal((await ci('.Claude/engineering.json')).decision, 'ask')
-    assert.match((await ci('.claude/Plans/Active.md')).reason, /approved plan sets the edit scope/)
+    assert.match((await edit('.claude/Plans/Active.md', { caseInsensitive: true, cfg: { governance: { planEdits: 'ask' } } })).reason, /approved plan sets the edit scope/)
   })
 
   it('should match exactly when case-sensitive', async () => {
@@ -1374,7 +1377,7 @@ describe('evaluate: secrets in edited content', () => {
     assert.equal(pkg.decision, 'ask')
     assert.match(pkg.reason, /hard-coded credential/)
     assert.match(pkg.reason, /governance, CI or dependency file/)
-    assert.match((await run('Write', { file_path: '.claude/plans/active.md', content: cred })).reason, /approved plan sets the edit scope/)
+    assert.match((await run('Write', { file_path: '.claude/plans/active.md', content: cred }, { cfg: { governance: { planEdits: 'ask' } } })).reason, /approved plan sets the edit scope/)
   })
 
   it('should ignore non-string content and malformed edits', async () => {
@@ -2009,6 +2012,56 @@ describe('evaluate: trusted write paths (ESP-9; AC1, AC2)', () => {
     assert.match((await trustedEntry({ ...WIN, uid: null }, winTrusted.scratchpad)).reason, /\$TMP\/claude\/\{project\}\/\*\*/)
   })
 
+  // ESP-155: the desktop app keeps the scratchpad in $TMP/claude/<hash>/<session id>/scratchpad, where <hash> is not
+  // the {project} name, so {session} (the hook input's session_id) binds the entry to this session only.
+  describe('session scratchpad (ESP-155)', () => {
+    const SESSION = '830916e0-fae1-41d9-9802-3ab16c2d5f5c'
+    const OTHER = '11111111-2222-4333-8444-555555555555'
+    const asSession = (env, file_path, session_id, opts = {}) => evaluate({ tool_name: 'Write', session_id, tool_input: { file_path, content: 'notes' } }, { git: fakeGit(), ...env, ...opts })
+    const desktop = (session, name = 'commit-msg.txt') => path.win32.join(String.raw`C:\Users\me\AppData\Local\Temp\claude\573478a5d6165e30`, session, 'scratchpad', name)
+    const trustedAs = async (env, file, session, opts) => {
+      const r = await asSession(env, file, session, opts)
+      assert.equal(r?.decision ?? null, null, r?.reason)
+      const entries = logEntries(r, 'Write')
+      assert.equal(entries[0]?.decision, 'trusted', JSON.stringify(entries))
+      return entries[0]
+    }
+
+    it('should trust this session\'s desktop scratchpad without a prompt (AC1)', async () => {
+      assert.match((await trustedAs(WIN, desktop(SESSION), SESSION)).reason, /\$TMP\/claude\/\*\/\{session\}\/scratchpad\/\*\*/)
+      assert.match((await trustedAs(WIN, desktop(SESSION, String.raw`sub\pr-body.md`), SESSION)).reason, /\{session\}/)
+      assert.match((await trustedAs(POSIX, `/tmp/claude/abc123/${SESSION}/scratchpad/x.md`, SESSION)).reason, /\{session\}/)
+    })
+
+    it('should still ask for another session\'s scratchpad or with no usable session id (AC2)', async () => {
+      assert.match((await asSession(WIN, desktop(OTHER), SESSION)).reason, /outside the project folder/)
+      for (const bad of [undefined, '', 'not-a-uuid', '../x', '*', `${SESSION}/..`, [SESSION], { toString: () => SESSION }]) {
+        assert.match((await asSession(WIN, desktop(SESSION), bad)).reason, /outside the project folder/, String(bad))
+      }
+      // The whole id must be a UUID: one with extra text is refused even for a scratchpad folder of that exact name.
+      for (const padded of [`x-${SESSION}`, `${SESSION}-x`]) {
+        assert.match((await asSession(WIN, desktop(padded), padded)).reason, /outside the project folder/, padded)
+      }
+      // Only the scratchpad folder of the session, not the session folder around it or a folder deeper in Temp.
+      const temp = String.raw`C:\Users\me\AppData\Local\Temp\claude`
+      assert.match((await asSession(WIN, path.win32.join(temp, 'h', SESSION, 'other', 'x.md'), SESSION)).reason, /outside the project folder/)
+      assert.match((await asSession(WIN, path.win32.join(temp, 'a', 'b', SESSION, 'scratchpad', 'x.md'), SESSION)).reason, /outside the project folder/)
+    })
+
+    it('should still ask for never-trusted names inside the scratchpad (AC3)', async () => {
+      for (const name of ['settings.json', String.raw`.git\config`, String.raw`hooks\pre-commit`, 'CLAUDE.md']) {
+        assert.match((await asSession(WIN, desktop(SESSION, name), SESSION)).reason, /outside the project folder/, name)
+      }
+    })
+
+    it('should accept a {session} entry in a repo list (AC4)', async () => {
+      const cfg = { governance: { trustedWritePaths: ['$TMP/claude/*/{session}/scratchpad/notes/**'] } }
+      assert.deepEqual(sanitizeConfig(cfg).advisory, [])
+      await trustedAs(WIN, desktop(SESSION, String.raw`notes\a.md`), SESSION, { cfg })
+      assert.match((await asSession(WIN, desktop(SESSION, 'a.md'), SESSION, { cfg })).reason, /outside the project folder/)
+    })
+  })
+
   it('should trust Claude Code plan-mode files by default (ESP-125; AC10)', async () => {
     assert.match((await trustedEntry(WIN, String.raw`C:\Users\me\.claude\plans\happy-otter.md`)).reason, /~\/\.claude\/plans\/\*\*/)
     assert.match((await trustedEntry(POSIX, '/home/me/.claude/plans/happy-otter.md')).reason, /~\/\.claude\/plans\/\*\*/)
@@ -2173,10 +2226,12 @@ describe('evaluate: trusted write paths (ESP-9; AC1, AC2)', () => {
 
 describe('evaluate: evidence-only plan edits (ESP-9; AC3)', () => {
   const PLAN = '# Plan: x\n\n## Goal\ng\n\n## Acceptance criteria\n- AC1: a works\n  - Evidence:\n\n## Tasks\n- [ ] T1: do a (covers AC1)\n\n## Files\n- `src/**`\n\n## Change log\n- 2026-10-06: drafted\n'
+  // ESP-156: "all" is the default now, so these tests set "allow" to reach the evidence-only check.
+  const ALLOW = { governance: { planEdits: 'allow' } }
   const planEdit = (tool_input, opts = {}) => {
     const root = tempDir()
     if (opts.plan !== null) writeFiles(root, { '.claude/plans/active.md': opts.plan ?? PLAN })
-    return evaluate({ tool_name: opts.tool ?? 'Edit', tool_input: { file_path: '.claude/plans/active.md', ...tool_input } }, { root, git: fakeGit(), ...opts })
+    return evaluate({ tool_name: opts.tool ?? 'Edit', tool_input: { file_path: '.claude/plans/active.md', ...tool_input } }, { root, git: fakeGit(), cfg: ALLOW, ...opts })
   }
   const replace = (old_string, new_string, opts) => planEdit({ old_string, new_string }, opts)
   const evidence = ['  - Evidence:\n', '  - Evidence:\n    - Green: 3/3 pass\n    - (shown, 2026-10-06T00:00Z)\n']
@@ -2234,7 +2289,7 @@ describe('evaluate: evidence-only plan edits (ESP-9; AC3)', () => {
   it('should still ask, not throw, when the plan cannot be read', async () => {
     const root = tempDir()
     mkdirSync(path.join(root, '.claude', 'plans', 'active.md'), { recursive: true })
-    const r = await evaluate({ tool_name: 'Edit', tool_input: { file_path: '.claude/plans/active.md', old_string: 'a', new_string: 'b' } }, { root, git: fakeGit() })
+    const r = await evaluate({ tool_name: 'Edit', tool_input: { file_path: '.claude/plans/active.md', old_string: 'a', new_string: 'b' } }, { root, git: fakeGit(), cfg: ALLOW })
     assert.equal(outcome(r), 'ask')
   })
 
@@ -2265,6 +2320,18 @@ describe('evaluate: planEdits "all" (ESP-24; AC1–AC4)', () => {
     return trusted ? 'trusted' : r?.decision ? `${r.decision}: ${r.reason}` : JSON.stringify(r)
   }
 
+  // ESP-156: the plan is the pointer to the approved work, so every project trusts plan writes unless it sets "allow" or "ask".
+  it('should trust plan and archive writes when planEdits is not set (ESP-156; AC1)', async () => {
+    const files = { '.claude/plans/active.md': PLAN }
+    const add = { file_path: '.claude/plans/active.md', old_string: '- `src/**`\n', new_string: '- `src/**`\n- `lib/**`\n' }
+    for (const cfg of [{}, { governance: {} }]) {
+      assert.equal(outcome(await run('Edit', add, { files, cfg }), 'Edit'), 'trusted')
+      assert.equal(outcome(await run('Write', { file_path: '.claude/plans/active.md', content: PLAN }, { cfg }), 'Write'), 'trusted')
+      assert.equal(outcome(await run('Write', { file_path: ARCHIVE, content: PLAN }, { cfg }), 'Write'), 'trusted')
+    }
+    assert.match((await run('Edit', add, { files, cfg: { governance: { planEdits: 'ask' } } })).reason, /approved plan sets the edit scope/)
+  })
+
   it('should accept "all" with no config problem', async () => {
     assert.equal(await run('Write', { file_path: 'src/a.ts', content: 'x' }), null)
     assert.deepEqual(sanitizeConfig(ALL).problems, [])
@@ -2284,8 +2351,8 @@ describe('evaluate: planEdits "all" (ESP-24; AC1–AC4)', () => {
     assert.equal(outcome(await run('MultiEdit', { file_path: '.claude/plans/active.md', edits: [add, { old_string: 'a works', new_string: 'b works' }] }, { files }), 'MultiEdit'), 'trusted')
   })
 
-  it('should still ask when creating the plan without "all"', async () => {
-    const r = await run('Write', { file_path: '.claude/plans/active.md', content: PLAN }, { cfg: {} })
+  it('should still ask when creating the plan under "allow"', async () => {
+    const r = await run('Write', { file_path: '.claude/plans/active.md', content: PLAN }, { cfg: { governance: { planEdits: 'allow' } } })
     assert.equal(r.decision, 'ask')
     assert.match(r.reason, /approved plan sets the edit scope/)
   })

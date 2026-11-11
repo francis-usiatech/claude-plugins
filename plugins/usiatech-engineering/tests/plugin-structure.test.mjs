@@ -1180,3 +1180,35 @@ describe('plugin structure: setup warning and spec code names (spec 2026-11-09-s
     assert.match(skill('to-spec'), /read the code[^\n]*before naming[^\n]*function[^\n]*file[^\n]*behaviour level/)
   })
 })
+
+describe('plugin structure: fewer prompts (ESP-154, ESP-155, ESP-156)', () => {
+  it('should ship the review-page procedure and skeleton with a dark-mode block (ESP-154; AC2)', () => {
+    const procedure = read('templates', 'review-page.md')
+    for (const part of [/recommended/i, /`D1\.1`/, /Each file once/, /decisions\.batch/, /Re-show only the items a correction changed/, /AskUserQuestion/,
+      /Escape `&`, `<`, `>`, `"` and `'`/, /no `<script>`/, /no remote URLs/]) {
+      assert.match(procedure, part)
+    }
+    const page = read('templates', 'review-page.html')
+    // The skeleton is static: no scripts, event attributes or remote resources.
+    assert.doesNotMatch(page, /<script|\son[a-z]+\s*=|javascript:|(?:src|href)\s*=\s*["']?(?:https?:)?\/\/|@import|url\(\s*["']?(?:https?:)?\/\//i)
+    assert.match(page, /prefers-color-scheme: dark/)
+    assert.match(page, /class="rec"/)
+    assert.match(page, /accept all except/)
+  })
+
+  it('should point every approval step at the review page (ESP-154; AC1)', () => {
+    // to-spec asks nothing: to-tickets shows the spec and its tickets on one page.
+    for (const s of ['clarify', 'approve-plan', 'to-tickets', 'release']) {
+      assert.match(read('skills', s, 'SKILL.md'), /templates\/review-page\.md/, s)
+    }
+  })
+
+  it('should default to trusted plan edits and this session\'s scratchpad (ESP-155, ESP-156)', () => {
+    const gov = JSON.parse(read('templates', 'engineering.json')).governance
+    assert.equal(gov.planEdits, 'all')
+    assert.ok(gov.trustedWritePaths.includes('$TMP/claude/*/{session}/scratchpad/**'))
+    const setup = read('skills', 'setup-engineering', 'SKILL.md')
+    assert.match(setup, /`Edit\(\/\.claude\/plans\/active\.md\)`/)
+    assert.match(setup, /`Edit\(\/\.claude\/plans\/archive\/\*\*\)`/)
+  })
+})
