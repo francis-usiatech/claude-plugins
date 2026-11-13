@@ -54,12 +54,21 @@ try {
   // couldn't be logged is shown with it, since the log would have been its only record.
   const shown = [result?.configWarning, ...unlogged].filter(Boolean)
   const warning = shown.length ? `[governance] ${shown.join(' ')}` : null
-  if (result?.decision) {
+  // ESP-163: an edit the guard fully checked and the plan covers, or a trusted write, is allowed outright; with no
+  // decision Claude Code would prompt for it again. Shell commands are left to Claude Code, trusted or not. Never in
+  // plan mode (a hook allow would skip its read-only stop) or when the mode isn't sent, nor when a dependency lookup
+  // failed open. A plan write trusted by planEdits "all" keeps Claude Code's prompt: the plan sets what is allowed, so
+  // an unprompted plan write could widen Files and then allow any edit (security review 2026-11-13).
+  const allow = !result?.decision && typeof input.permission_mode === 'string' && input.permission_mode !== 'plan'
+    && !result?.failures?.length && !result?.planWrite
+    && (result?.inPlan || (result?.trusted && !SHELL_TOOLS.includes(tool)))
+  const permissionDecision = result?.decision || (allow ? 'allow' : null)
+  if (permissionDecision) {
     process.stdout.write(JSON.stringify({
       ...(warning && { systemMessage: warning }),
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
-        permissionDecision: result.decision,
+        permissionDecision,
         permissionDecisionReason: `[governance] ${result.reason}${result.decision === 'deny' ? ' Explain this to the user and ask how to proceed; do not work around it.' : ''}`,
       },
     }))

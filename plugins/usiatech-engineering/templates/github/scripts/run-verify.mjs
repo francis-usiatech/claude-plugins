@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Runs the same verification gate as the local `verify` skill, from .claude/engineering.json.
-// Env: BASE_REF. Entries: { name, run, when?: [path prefixes], expectNoDiff?: [paths] }
+// Env: BASE_REF. Entries: { name, run, when?: [path prefixes], unless?: [globs], expectNoDiff?: [paths] }
 import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync, existsSync, appendFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { skipReason } from './verify-select.mjs'
 
 // Read the config from the tree this script was loaded from, not the working directory.
 // The workflow runs the base-branch copy (_gov/) against the PR checkout; resolving
@@ -19,7 +20,8 @@ const changed = base ? execFileSync('git', ['-c', 'core.quotePath=false', 'diff'
 // The bootstrap skip holds only while the base branch has no package.json either; a PR that deletes it must not
 // skip every npm step and pass (R6). govRoot is the base-branch checkout.
 const hasPkg = existsSync('package.json') || existsSync(path.join(govRoot, 'package.json'))
-const steps = [...(cfg.verify || []), ...(cfg.verifyConditional || []).filter((s) => (s.when || []).some((w) => changed.some((f) => f.startsWith(w))))]
+// The same selection as the local gate (ESP-160): a `when` prefix match that no `unless` glob excludes.
+const steps = [...(cfg.verify || []), ...(cfg.verifyConditional || []).filter((s) => skipReason(s, changed) === null)]
 
 // A missing or empty config must not report a pass. Without this, an absent
 // engineering.json yields zero steps and the gate reports PASS having run nothing.
