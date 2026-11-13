@@ -1,6 +1,6 @@
 import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
 import { GUARD_SCRIPT, runNode, tempDir, cleanupTempDirs, writeFiles } from './helpers.mjs'
@@ -76,6 +76,22 @@ describe('governance-guard hook', () => {
       const r = await runGuard(root, { tool_name: 'Write', permission_mode: 'default', tool_input: { file_path: file, content: 'x' } })
       assert.doesNotMatch(r.stdout, /"allow"/, file)
     }
+  })
+
+  it('should not allow an in-plan edit reached through a link or junction (security review)', async () => {
+    const root = tempDir()
+    writeFiles(root, { '.claude/plans/active.md': '# Plan\n\n## Files\n- `tools/**`\n', 'gitdir/hooks/.keep': '' })
+    symlinkSync(path.join(root, 'gitdir'), path.join(root, 'tools'), 'junction')
+    const r = await runGuard(root, { tool_name: 'Write', permission_mode: 'default', tool_input: { file_path: 'tools/hooks/pre-commit', content: 'x' } })
+    assert.doesNotMatch(r.stdout, /"allow"/)
+  })
+
+  it('should log an evidence-only plan edit as trusted but leave its prompt to Claude Code (security review)', async () => {
+    const root = tempDir()
+    writeFiles(root, { '.claude/engineering.json': JSON.stringify({ governance: { planEdits: 'allow' } }), '.claude/plans/active.md': '# Plan\n\n## Acceptance criteria\n- AC1: x\n  - Evidence:\n\n## Files\n- `src/**`\n' })
+    const r = await runGuard(root, { tool_name: 'Edit', permission_mode: 'default', tool_input: { file_path: '.claude/plans/active.md', old_string: '  - Evidence:\n', new_string: '  - Evidence: test (shown, 2026-11-13T18:00Z)\n' } })
+    assert.equal(r.stdout, '')
+    assert.deepEqual(readLog(root).map((e) => e.decision), ['trusted'])
   })
 
   it('should not allow an in-plan edit when the hook input has no permission mode', async () => {

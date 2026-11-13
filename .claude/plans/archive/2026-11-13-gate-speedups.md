@@ -102,6 +102,7 @@ Cut wasted full-gate runs (cheap checks first, review round alongside the gate, 
 - Deviations: AC5 reworded (one full gate plus one narrowed rerun); ESP-163 allow narrowed by the security review (no allow for planEdits "all" plan writes, any .git folder, plan mode, a missing permission mode, or failed-open lookups); tests/plugin-structure.test.mjs added to Files.
 
 ## Change log
+- 2026-11-13: after commit 89d6693 and PR 197 (code-review plugin: no issues), the security-guidance commit review found 3 issues. Fixed: no in-plan allow through a link or junction, and no allow for evidence-only plan edits (planWrite). Accepted by Francis and documented in the README: the run record can be faked by a Bash write to the git folder (same trust as the gate output). Gate rerun with --rerun-fix before the fix commit.
 - 2026-11-13: ESP-159 option B and ESP-161 opt-in decided by Francis; ESP-158..162 moved under ESP-117.
 - 2026-11-13: pre-flight FLAG 1 fixed by adding AC13 and widening AC2, AC3, AC6, AC14 (wording and coverage, no new scope); FLAG 3 fixed by listing the AC5 dry run; files `tests/gate-steps.test.mjs` and `templates/engineering.json` added from its notes.
 - 2026-11-13: ESP-163 (guard allow) added to this PR at Francis's request; release together.

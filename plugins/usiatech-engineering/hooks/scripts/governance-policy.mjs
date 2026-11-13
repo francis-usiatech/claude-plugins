@@ -1232,8 +1232,8 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
   const scope = linkProblem ? decision('ask', `Plan or archive write not trusted by governance.planEdits "all": ${linkProblem}`, rel)
     : allPlan ? { ...decision(null, 'Plan or archive write trusted by governance.planEdits "all".', rel), trusted: true, planWrite: true }
     : matchAny(rel, [PLAN_PATH], ic) && gov.planEdits !== 'ask' && evidenceOnlyPlanEdit(rel, tool, ti, root, p)
-      ? { ...decision(null, 'The plan edit only changes evidence, task ticks or the change log.', rel), trusted: true }
-      : decideScope(rel, gov, root, ic, places.planRoot)
+      ? { ...decision(null, 'The plan edit only changes evidence, task ticks or the change log.', rel), trusted: true, planWrite: true }
+      : decideScope(rel, gov, root, ic, places.planRoot, p)
   // A credential or content ask must not hide a scope or governance ask; the user confirms them all at once.
   const reasons = [
     shortName && `"${rel}" has a Windows short name (8.3) segment, which may stand for a governance, plan or protected file. Confirm the edit.`,
@@ -1300,7 +1300,20 @@ const dependencyFindings = async (rel, tool, ti, gov, root, p, ic, net) => {
 
 // Plan, governance-file and plan-scope checks for a project-relative path. In a linked worktree with no plan of its
 // own, the main checkout's plan (planRoot) sets the scope (ESP-82 R13).
-const decideScope = (rel, gov, root, ic, planRoot) => {
+// Whether a project file is reached as written: no link or junction on the way changes where it lands. With a
+// non-native path module (tests) paths are taken as written. A path that can't be resolved is not, so it keeps the
+// prompt (fails closed).
+const reachedDirectly = (rel, root, p, ic) => {
+  if (p !== path) return true
+  try {
+    const realRel = p.relative(realOf(root, p), realOf(p.join(root, rel), p)).split(p.sep).join('/')
+    return ic ? realRel.toLowerCase() === rel.toLowerCase() : realRel === rel
+  } catch {
+    return false
+  }
+}
+
+const decideScope = (rel, gov, root, ic, planRoot, p = path) => {
   // Otherwise a plan could widen its own Files list (e.g. to `**`) and unlock every later edit.
   if (matchAny(rel, [PLAN_PATH], ic)) return decision('ask', `The approved plan sets the edit scope. Changing ${PLAN_PATH} needs explicit confirmation.`, rel)
   if (matchAny(rel, GUARD_EXEMPT_PATHS, ic)) return null
@@ -1313,8 +1326,10 @@ const decideScope = (rel, gov, root, ic, planRoot) => {
     // ESP-163: marked so the hook can tell Claude Code to allow it; otherwise Claude Code prompts for every edit. Never
     // for a git folder, the project's or a nested repo's: a broad Files glob must not let a hook or config there be
     // written unprompted.
+    // Nor through a link or junction: the checks above read the path as written, so `tools -> .git` with `tools/**` in
+    // Files would reach git's hooks (security review 2026-11-13). Such an edit keeps Claude Code's prompt.
     const result = decision(null, `"${rel}" is in the approved plan (Files: ${covered}).`, rel)
-    return matchAny(rel, ['**/.git/**'], ic) ? result : { ...result, inPlan: true }
+    return matchAny(rel, ['**/.git/**'], ic) || !reachedDirectly(rel, root, p, ic) ? result : { ...result, inPlan: true }
   }
   if (!plan && gov.requirePlan) return decision('ask', 'No approved plan is active (.claude/plans/active.md). Run the approve-plan skill first.', rel)
   return null
