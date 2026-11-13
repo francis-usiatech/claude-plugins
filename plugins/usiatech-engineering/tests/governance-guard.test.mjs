@@ -41,6 +41,57 @@ describe('governance-guard hook', () => {
     assert.doesNotMatch(out.permissionDecisionReason, /do not work around it/)
   })
 
+  it('should allow an edit the active plan covers, with no log entry, and leave other edits to Claude Code (ESP-163 R15, R16)', async () => {
+    const root = tempDir()
+    writeFiles(root, { '.claude/plans/active.md': '# Plan\n\n## Files\n- `src/**`\n' })
+    const inPlan = JSON.parse((await runGuard(root, { tool_name: 'Edit', permission_mode: 'default', tool_input: { file_path: 'src/a.ts', old_string: 'a', new_string: 'b' } })).stdout).hookSpecificOutput
+    assert.equal(inPlan.permissionDecision, 'allow')
+    assert.equal(inPlan.permissionDecisionReason, '[governance] "src/a.ts" is in the approved plan (Files: src/**).')
+    assert.equal(JSON.parse((await runGuard(root, { tool_name: 'Write', tool_input: { file_path: 'lib/a.ts', content: 'x' } })).stdout).hookSpecificOutput.permissionDecision, 'ask')
+    assert.deepEqual(readLog(root).map((e) => e.decision), ['ask'], 'only the out-of-plan ask is logged')
+    // With no plan, nothing is printed: Claude Code's own permission mode decides.
+    const noPlan = tempDir()
+    assert.equal((await runGuard(noPlan, { tool_name: 'Write', tool_input: { file_path: 'src/a.ts', content: 'x' } })).stdout, '')
+  })
+
+  it('should not allow an in-plan edit in plan mode: Claude Code keeps its read-only stop (ESP-163)', async () => {
+    const root = tempDir()
+    writeFiles(root, { '.claude/plans/active.md': '# Plan\n\n## Files\n- `src/**`\n' })
+    const r = await runGuard(root, { tool_name: 'Edit', permission_mode: 'plan', tool_input: { file_path: 'src/a.ts', old_string: 'a', new_string: 'b' } })
+    assert.equal(r.stdout, '')
+  })
+
+  it('should log a plan write trusted by planEdits "all" but leave its prompt to Claude Code: the plan sets the scope (ESP-163, security review)', async () => {
+    const root = tempDir()
+    writeFiles(root, { '.claude/engineering.json': JSON.stringify({ governance: { planEdits: 'all' } }), '.claude/plans/active.md': '# Plan\n\n## Files\n- `src/**`\n' })
+    const r = await runGuard(root, { tool_name: 'Write', permission_mode: 'default', tool_input: { file_path: '.claude/plans/active.md', content: '# Plan\n\n## Files\n- `**`\n' } })
+    assert.equal(r.stdout, '')
+    assert.deepEqual(readLog(root).map((e) => e.decision), ['trusted'])
+  })
+
+  it('should not allow an edit under .git even when a Files glob covers it (security review)', async () => {
+    const root = tempDir()
+    writeFiles(root, { '.claude/plans/active.md': '# Plan\n\n## Files\n- `**`\n' })
+    for (const file of ['.git/hooks/pre-commit', 'vendor/x/.git/hooks/pre-commit']) {
+      const r = await runGuard(root, { tool_name: 'Write', permission_mode: 'default', tool_input: { file_path: file, content: 'x' } })
+      assert.doesNotMatch(r.stdout, /"allow"/, file)
+    }
+  })
+
+  it('should not allow an in-plan edit when the hook input has no permission mode', async () => {
+    const root = tempDir()
+    writeFiles(root, { '.claude/plans/active.md': '# Plan\n\n## Files\n- `src/**`\n' })
+    const r = await runGuard(root, { tool_name: 'Edit', tool_input: { file_path: 'src/a.ts', old_string: 'a', new_string: 'b' } })
+    assert.equal(r.stdout, '')
+  })
+
+  it('should not allow a trusted shell command: Claude Code still decides (ESP-163 non-goal)', async () => {
+    const root = tempDir()
+    writeFiles(root, { '.claude/engineering.json': JSON.stringify({ governance: { trustedDeletePaths: ['tmp/'] } }) })
+    const r = await runGuard(root, { tool_name: 'Bash', tool_input: { command: 'rm -rf tmp/cache' } })
+    assert.doesNotMatch(r.stdout, /"allow"/)
+  })
+
   it('should print nothing and log nothing for an allowed action', async () => {
     const root = tempDir()
     const r = await runGuard(root, { tool_name: 'Bash', tool_input: { command: 'git status' } })
@@ -74,12 +125,14 @@ describe('governance-guard hook', () => {
     }
   })
 
-  it('should print no decision for a write to this project\'s scratchpad and log it once as trusted (ESP-9; AC1)', async () => {
+  it('should allow a write to this project\'s scratchpad and log it once as trusted (ESP-9; ESP-163 R15)', async () => {
     const root = tempDir()
     const file = path.join(tmpdir(), 'claude', root.replace(/[^A-Za-z0-9]/g, '-'), 'scratchpad', 'notes.md')
-    const r = await runGuard(root, { tool_name: 'Write', tool_input: { file_path: file, content: 'notes' } })
+    const r = await runGuard(root, { tool_name: 'Write', permission_mode: 'default', tool_input: { file_path: file, content: 'notes' } })
     assert.equal(r.code, 0)
-    assert.equal(r.stdout, '')
+    const out = JSON.parse(r.stdout).hookSpecificOutput
+    assert.equal(out.permissionDecision, 'allow')
+    assert.match(out.permissionDecisionReason, /^\[governance\] Trusted write path /)
     const log = readLog(root)
     assert.deepEqual(log.map((e) => e.decision), ['trusted'], JSON.stringify(log))
     assert.equal(log[0].target, file)

@@ -111,21 +111,40 @@ const checkNoDiff = (root, s, step, before) => {
 
 export const stepLine = (ok, name, step) => `${ok ? 'PASS' : 'FAIL'}  ${name} (${step.result}, ${step.seconds} s)`
 
-// Runs the selected steps; returns the summary lines and whether anything failed.
-export const runSelected = async (root, steps, log, signal) => {
+// The UTC time a step passed, as the gate prints its run time.
+export const utcNow = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z')
+
+// How the run record names a step (ESP-162): its name and command, so an edited command is never reused.
+const stepKey = (s) => `${s.name}\u0000${s.run}`
+
+/**
+ * Runs the selected steps in the order given. A step in `earlier` (step key → UTC time, from the run record at the
+ * same tree) isn't run again: it is shown as `PASSED EARLIER` with that time (ESP-162).
+ * @returns {Promise<{ failed: boolean, lines: string[], passed: Record<string, string> }>} passed holds every step key
+ *   that passed in this run or earlier, with its time, for the next run record
+ */
+export const runSelected = async (root, steps, log, signal, earlier = {}) => {
   const lines = []
+  const passed = {}
   let failed = false
   for (const s of steps) {
     if (s.skipped) { lines.push(`SKIPPED  ${s.name} (${s.skipped})`); continue }
     // An interrupt that lands between two steps stops the gate before the next one starts (ESP-58).
     if (failed || signal?.aborted) { lines.push(`NOT RUN  ${s.name}`); failed = true; continue }
+    const at = Object.hasOwn(earlier, stepKey(s)) ? earlier[stepKey(s)] : null
+    if (at) {
+      lines.push(`PASSED EARLIER  ${s.name} (${at})`)
+      passed[stepKey(s)] = at
+      continue
+    }
     const before = snapshotNoDiff(root, s.expectNoDiff)
     const step = checkNoDiff(root, s, await runStep(log, s.name, s.run, { cwd: root, timeoutMs: s.timeoutMs, signal }), before)
     lines.push(stepLine(step.ok, s.name, step))
-    if (!step.ok) {
+    if (step.ok) passed[stepKey(s)] = utcNow()
+    else {
       failed = true
       lines.push(`--- last ${TAIL_LINES} lines of "${s.name}"`, ...step.output(TAIL_BYTES).slice(-TAIL_LINES), '---')
     }
   }
-  return { failed, lines }
+  return { failed, lines, passed }
 }

@@ -261,11 +261,11 @@ describe('plugin structure: step-3 verify and reviewer', () => {
     assert.match(text, /decided by the commands and the fake-pass check only/)
   })
 
-  it('should make verify run the fake-pass check after the commands pass and fail the gate on a fail finding (AC8)', () => {
+  it('should make verify use the fake-pass check the runner ran first and fail the gate on a fail finding (AC8, ESP-158)', () => {
     const text = body(read('skills', 'verify', 'SKILL.md'))
     const step = text.match(/^\d+\. \*\*Check test content \(fp-\*\)\*\*[\s\S]*?(?=^\d+\. \*\*)/m)?.[0]
     assert.ok(step, 'verify has no "Check test content (fp-*)" step')
-    assert.match(step, /only after the commands pass/)
+    assert.match(step, /the runner already ran this check, first/)
     assert.match(step, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/templates\/github\/scripts\/fake-pass-check\.mjs"/)
     assert.match(step, /\*\*Gate: FAIL\*\*/)
     assert.match(step, /list every finding/i)
@@ -828,12 +828,16 @@ describe('plugin structure: verify --iterate and one full gate (ESP-69 AC3)', ()
     assert.match(iteratePart(), /exit 2/)
   })
 
-  for (const skill of ['verify', 'release']) {
+  // ESP-159: the full gate runs alongside the review round, and any code change after it, tests included, reruns it.
+  for (const [skill, together, rerun] of [
+    ['verify', /full gate runs once per PR, alongside the `release` review round/, /tests-only included, needs the full gate again before the commit/],
+    ['release', /full gate runs once per PR, alongside the review round/, /A review fix that changes code discards that gate run[^\n]*Tests-only fixes count as code/],
+  ]) {
     it(`should state the one-full-gate rule in ${skill}`, () => {
       const text = body(read('skills', skill, 'SKILL.md'))
       assert.match(text, /--iterate` while building/)
-      assert.match(text, /full gate once per PR, after the last code change and before the commit/)
-      assert.match(text, /tests-only included, needs the full gate again before the commit/)
+      assert.match(text, together)
+      assert.match(text, rerun)
     })
   }
 })
@@ -1128,7 +1132,7 @@ describe('plugin structure: Jira events and transport (spec 2026-11-09-speed-bat
     assert.match(verify, /ready for it: only when step 3's result is \*\*Gate: PASS\*\*[^\n]*every AC `shown`/)
     const release = body(read('skills', 'release', 'SKILL.md'))
     const round = release.indexOf('**Decisions:** after stage 2')
-    const fired = release.search(/\*\*Jira tracker only, after the review round:\*\* fire `testingComplete`[^\n]*no blocking finding is open/)
+    const fired = release.search(/\*\*Jira tracker only, after the review round and the final evidence check:\*\* fire `testingComplete`[^\n]*no blocking finding is open/)
     assert.ok(round > -1 && fired > round && fired < release.indexOf('5. Close and archive the plan'), 'release fires testingComplete after the review round, before the commit')
     assert.doesNotMatch(verify, /`verified`|event verified/)
   })

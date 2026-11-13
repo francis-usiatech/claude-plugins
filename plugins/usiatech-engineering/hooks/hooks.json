@@ -1,5 +1,5 @@
 {
-  "description": "Governance guard: denies catastrophic or rule-breaking actions and edits that write secrets, asks for confirmation on risky commands, likely hard-coded credentials, governance/CI/dependency files and edits outside the approved plan; after each Bash command, checks any workflow file it changed; logs every decision to .claude/governance-log.jsonl.",
+  "description": "Governance guard: denies catastrophic or rule-breaking actions and edits that write secrets, asks for confirmation on risky commands, likely hard-coded credentials, governance/CI/dependency files and edits outside the approved plan, and allows edits the plan covers and trusted writes without a second prompt; after each Bash command, checks any workflow file it changed; logs every decision to .claude/governance-log.jsonl.",
   "hooks": {
     "PreToolUse": [
       {

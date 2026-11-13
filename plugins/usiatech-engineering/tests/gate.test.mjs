@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process'
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { pathToFileURL } from 'node:url'
-import { makeRepo, runNode, writeFiles, tempDir, cleanupTempDirs, git, PLUGIN_ROOT } from './helpers.mjs'
+import { makeRepo, makeGovTree, runNode, writeFiles, tempDir, cleanupTempDirs, git, PLUGIN_ROOT } from './helpers.mjs'
 
 // The runner makes a temp folder of its own for each run's log, outside the test's temp dirs.
 const logs = []
@@ -48,8 +48,9 @@ describe('gate runner: steps and verdict (ESP-44)', () => {
     assert.match(r.stdout, /^PASS {2}typecheck \(exit 0, \d+ s\)$/m)
     assert.match(r.stdout, /^PASS {2}tests \(exit 0, \d+ s\)$/m)
     assert.match(r.stdout, /^PASS {2}fake-pass check \(exit 0, scanned \d+ files?, \d+ s\)$/m)
+    // ESP-158: the fake-pass check runs first, then the steps in config order.
+    assert.ok(at(/^PASS {2}fake-pass check /) < at(/^PASS {2}typecheck /), r.stdout)
     assert.ok(at(/^PASS {2}typecheck /) < at(/^PASS {2}tests /), r.stdout)
-    assert.ok(at(/^PASS {2}tests /) < at(/^PASS {2}fake-pass check /), r.stdout)
     assert.match(r.stdout, /^Gate run: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/m)
     assert.equal(out.at(-1), 'Gate: PASS')
   })
@@ -61,7 +62,7 @@ describe('gate runner: steps and verdict (ESP-44)', () => {
     assert.match(r.stdout, /^PASS {2}a \(exit 0, \d+ s\)$/m)
     assert.match(r.stdout, /^FAIL {2}b \(exit 3, \d+ s\)$/m)
     assert.match(r.stdout, /^NOT RUN {2}c$/m)
-    assert.match(r.stdout, /^NOT RUN {2}fake-pass check$/m)
+    assert.match(r.stdout, /^PASS {2}fake-pass check /m, 'the fake-pass check ran first (ESP-158)')
     assert.match(r.stdout, /^out 60$/m, 'the end of the failing output is shown')
     assert.match(r.stdout, /^out 21$/m, 'the last 40 lines are shown')
     assert.doesNotMatch(r.stdout, /^out 20$/m, 'only the last 40 lines are shown')
@@ -746,7 +747,6 @@ setTimeout(() => {}, 60000)
     assert.match(r.stdout, /^PASS {2}a \(exit 0, \d+ s\)$/m)
     assert.match(r.stdout, /^FAIL {2}b \(timed out after 6000 ms, \d+ s\)$/m)
     assert.match(r.stdout, /^NOT RUN {2}c$/m)
-    assert.match(r.stdout, /^NOT RUN {2}fake-pass check$/m)
     assert.match(r.stdout, /^out 60$/m, 'the end of the timed-out output is shown')
     assert.match(r.stdout, /^out 21$/m, 'the last 40 lines are shown')
     assert.doesNotMatch(r.stdout, /^out 20$/m, 'only the last 40 lines are shown')
@@ -785,7 +785,6 @@ setTimeout(() => {}, 60000)
     assert.equal(r.code, 1, r.stdout + r.stderr)
     assert.match(r.stdout, /^FAIL {2}a \(could not start: .+, \d+ s\)$/m)
     assert.match(r.stdout, /^NOT RUN {2}b$/m)
-    assert.match(r.stdout, /^NOT RUN {2}fake-pass check$/m)
     assert.equal(lines(r).at(-1), 'Gate: FAIL')
   })
 
@@ -838,7 +837,7 @@ describe('gate runner: fake-pass check (ESP-44 AC5)', () => {
   it('should fail the gate on a focused test in a changed file and print the finding', async () => {
     const r = await runGate(repoWith({ verify: [ok('tests')] }, { uncommitted: { 'tests/math.test.mjs': FOCUSED } }))
     assert.equal(r.code, 1, r.stdout + r.stderr)
-    assert.match(r.stdout, /^PASS {2}tests /m)
+    assert.match(r.stdout, /^NOT RUN {2}tests$/m, 'the check runs first and stops the gate (ESP-158)')
     assert.match(r.stdout, /^FAIL {2}fake-pass check \(exit 1, scanned \d+ files?, \d+ s\)$/m)
     assert.match(r.stdout, /\[fp-only, high\] tests\/math\.test\.mjs:4 /)
     assert.equal(lines(r).at(-1), 'Gate: FAIL')
@@ -870,8 +869,9 @@ describe('gate runner: log file (ESP-44 AC6)', () => {
     assert.ok(lines(r).length <= 12, `${lines(r).length} lines:\n${r.stdout}`)
     const log = logPath(r)
     assert.ok(log && existsSync(log), `no log at ${log}`)
-    assert.match(readFileSync(log, 'utf8'), /^=== chatty: .* \(output in step-01\.log\)$/m)
-    assert.equal(readFileSync(path.join(path.dirname(log), 'step-01.log'), 'utf8').match(/^line \d+$/gm).length, 500)
+    // step-01.log is the fake-pass check's, which runs first (ESP-158).
+    assert.match(readFileSync(log, 'utf8'), /^=== chatty: .* \(output in step-02\.log\)$/m)
+    assert.equal(readFileSync(path.join(path.dirname(log), 'step-02.log'), 'utf8').match(/^line \d+$/gm).length, 500)
     assert.ok(path.relative(repo, log).startsWith('..') || path.isAbsolute(path.relative(repo, log)), `${log} is inside ${repo}`)
   })
 
@@ -904,7 +904,7 @@ describe('gate runner: log file (ESP-44 AC6)', () => {
   it('should put what a step writes to stderr in the log too', async () => {
     const r = await runGate(repoWith({ verify: [{ name: 'warns', run: 'node -e "console.error(\'to stderr\')"' }] }))
     assert.equal(r.code, 0, r.stdout + r.stderr)
-    assert.match(readFileSync(path.join(path.dirname(logPath(r)), 'step-01.log'), 'utf8'), /^to stderr$/m)
+    assert.match(readFileSync(path.join(path.dirname(logPath(r)), 'step-02.log'), 'utf8'), /^to stderr$/m)
   })
 })
 
@@ -944,5 +944,180 @@ describe('gate runner: old log folders (ESP-56 AC13)', () => {
     assert.equal(r.code, 0, r.stdout + r.stderr)
     assert.ok(existsSync(path.join(target, 'gate.log')), 'the link target is untouched')
     assert.ok(lstatSync(link).isSymbolicLink(), 'the link is left alone')
+  })
+})
+
+describe('gate runner: order, exclusions, resume and fix rerun (ESP-158, ESP-160, ESP-161, ESP-162)', () => {
+  const at = (r, re) => lines(r).findIndex((l) => re.test(l))
+  const slow = (name) => ({ ...ok(name), slow: true })
+  // A step that passes once the flag file exists: the flag lives outside the repo, so the tree doesn't change.
+  const flaky = (name) => ({ name, run: 'node -e "process.exit(require(\'fs\').existsSync(process.env.GATE_FLAG)?0:3)"' })
+  const flagEnv = () => ({ GATE_FLAG: path.join(tempDir('usiatech-flag-'), 'ok') })
+  const inOrder = (r, names) => {
+    const found = names.map((n) => at(r, new RegExp(`^PASS {2}${n} `)))
+    return found.every((i, k) => i >= 0 && (k === 0 || i > found[k - 1]))
+  }
+
+  it('should run the fake-pass check first and stop before any command step on a finding (ESP-158 AC1)', async () => {
+    const r = await runGate(repoWith({ verify: [ok('a'), ok('b')] }, { uncommitted: { 'src/x.test.mjs': FOCUSED } }))
+    assert.equal(r.code, 1, r.stdout)
+    assert.match(r.stdout, /^FAIL {2}fake-pass check /m)
+    assert.match(r.stdout, /^NOT RUN {2}a$/m)
+    assert.match(r.stdout, /^NOT RUN {2}b$/m)
+    assert.equal(lines(r).at(-1), 'Gate: FAIL')
+  })
+
+  it('should run every selected non-slow step before any slow one, in config order inside each group (ESP-158 AC2)', async () => {
+    const config = { verify: [slow('e2e'), ok('lint')], verifyConditional: [{ ...ok('db'), when: ['db/'] }, { ...slow('rls'), when: ['db/'] }] }
+    const r = await runGate(repoWith(config, { uncommitted: { 'db/a.sql': 'x' } }))
+    assert.equal(r.code, 0, r.stdout)
+    assert.ok(inOrder(r, ['fake-pass check', 'lint', 'db', 'e2e', 'rls']), r.stdout)
+  })
+
+  it('should refuse a slow that is not true or false (ESP-158 AC2)', async () => {
+    const r = await runGate(repoWith({ verify: [{ ...ok('e2e'), slow: 'yes' }] }))
+    assert.equal(r.code, 2, r.stdout)
+    assert.match(r.stdout, /"slow" of step "e2e" must be true or false/)
+  })
+
+  it('should keep config order with no slow key, after the fake-pass check (ESP-158 AC3)', async () => {
+    const r = await runGate(repoWith({ verify: [ok('typecheck'), ok('tests'), ok('build')] }))
+    assert.equal(r.code, 0, r.stdout)
+    assert.ok(inOrder(r, ['fake-pass check', 'typecheck', 'tests', 'build']), r.stdout)
+  })
+
+  it('should skip a conditional step whose every matching file is excluded, and say so (ESP-160 AC6, AC7)', async () => {
+    const e2e = { ...ok('demo e2e'), when: ['web/src/'], unless: ['web/src/**/*.live.tsx'] }
+    const config = { verify: [ok('unit')], verifyConditional: [e2e] }
+    const skipped = await runGate(repoWith(config, { uncommitted: { 'web/src/a.live.tsx': 'x', 'web/src/x/b.live.tsx': 'y' } }))
+    assert.equal(skipped.code, 0, skipped.stdout)
+    assert.match(skipped.stdout, /^SKIPPED {2}demo e2e \(every changed file under web\/src\/ matches unless web\/src\/\*\*\/\*\.live\.tsx\)$/m)
+    const selected = await runGate(repoWith(config, { uncommitted: { 'web/src/a.live.tsx': 'x', 'web/src/page.tsx': 'y' } }))
+    assert.match(selected.stdout, /^PASS {2}demo e2e /m)
+  })
+
+  it('should refuse a malformed unless, or unless on an always-run step (ESP-160 AC6)', async () => {
+    for (const [config, message] of [
+      [{ verify: [ok('unit')], verifyConditional: [{ ...ok('e2e'), when: ['web/'], unless: [] }] }, /"unless" of step "e2e" must be a list of globs/],
+      [{ verify: [ok('unit')], verifyConditional: [{ ...ok('e2e'), when: ['web/'], unless: ['../x'] }] }, /"unless" of step "e2e" must be a list of globs/],
+      // A folder-style entry would match no file, so it is refused with the glob spelling.
+      [{ verify: [ok('unit')], verifyConditional: [{ ...ok('e2e'), when: ['web/'], unless: ['web/live/'] }] }, /a folder is written "web\/live\/\*\*", not "web\/live\/"/],
+      [{ verify: [{ ...ok('unit'), unless: ['x/**'] }] }, /step "unit" always runs, so it can't have "unless"/],
+    ]) {
+      const r = await runGate(repoWith(config))
+      assert.equal(r.code, 2, JSON.stringify(config))
+      assert.match(r.stdout, message)
+    }
+  })
+
+  it('should select the same conditional steps as the CI runner for the same diff (ESP-160 AC9)', async () => {
+    const conditional = [
+      { ...ok('web e2e'), when: ['web/'], unless: ['web/**/*.live.tsx'] },
+      { ...ok('api tests'), when: ['api/'] },
+      { ...ok('db tests'), when: ['db/'] },
+    ]
+    const config = { verify: [ok('unit')], verifyConditional: conditional }
+    for (const files of [{ 'web/a.live.tsx': 'x', 'api/b.ts': 'y' }, { 'web/a.tsx': 'x' }, { 'docs/x.ts': 'x' }]) {
+      const repo = makeRepo({ headFiles: { ...files, '.claude/engineering.json': JSON.stringify(config) } })
+      const local = await runGate(repo)
+      const ci = await runNode(path.join(makeGovTree(config), 'run-verify.mjs'), { cwd: repo, env: { BASE_REF: 'develop' } })
+      const localRan = conditional.map((s) => s.name).filter((n) => new RegExp(`^PASS {2}${n} `, 'm').test(local.stdout))
+      const ciRan = conditional.map((s) => s.name).filter((n) => ci.summary.includes(`| ${n} |`))
+      assert.deepEqual(localRan, ciRan, JSON.stringify(files))
+    }
+  })
+
+  it('should resume at the failed step when the tree is unchanged, and name each reused step (ESP-162 AC10, AC13)', async () => {
+    const env = flagEnv()
+    const repo = repoWith({ verify: [ok('a'), flaky('b'), ok('c')] })
+    const first = await runGate(repo, env)
+    assert.equal(first.code, 1, first.stdout)
+    const tree = first.stdout.match(/^Gate tree: ([0-9a-f]{40,64})$/m)?.[1]
+    assert.ok(tree, first.stdout)
+    assert.equal((await runGate(repo, env, ['--tree-hash'])).stdout.trim(), `Gate tree: ${tree}`)
+    const stillFailing = await runGate(repo, env, ['--resume'])
+    assert.equal(lines(stillFailing).at(-1), 'Gate: FAIL')
+    writeFileSync(env.GATE_FLAG, 'ok')
+    const resumed = await runGate(repo, env, ['--resume'])
+    assert.equal(resumed.code, 0, resumed.stdout)
+    const time = String.raw`\(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\)`
+    assert.match(resumed.stdout, /^Resume: reusing the steps that passed at tree /m)
+    assert.match(resumed.stdout, new RegExp(`^PASSED EARLIER {2}fake-pass check ${time}$`, 'm'))
+    assert.match(resumed.stdout, new RegExp(`^PASSED EARLIER {2}a ${time}$`, 'm'))
+    assert.match(resumed.stdout, /^PASS {2}b /m)
+    assert.match(resumed.stdout, /^PASS {2}c /m)
+    assert.match(resumed.stdout, new RegExp(`^Gate tree: ${tree}$`, 'm'))
+    assert.equal(lines(resumed).at(-1), 'Gate: PASS')
+  })
+
+  it('should run every step on --resume after a tracked edit or a new untracked file (ESP-162 AC11)', async () => {
+    for (const change of [{ 'src/a.ts': 'changed' }, { 'src/new.ts': 'new' }]) {
+      const env = flagEnv()
+      const repo = repoWith({ verify: [ok('a'), flaky('b')] }, { committed: { 'src/a.ts': 'a' } })
+      await runGate(repo, env)
+      writeFiles(repo, change)
+      writeFileSync(env.GATE_FLAG, 'ok')
+      const r = await runGate(repo, env, ['--resume'])
+      assert.match(r.stdout, /^Resume: the working tree changed since the last run, so every step runs\.$/m, r.stdout)
+      assert.match(r.stdout, /^PASS {2}a /m)
+      assert.doesNotMatch(r.stdout, /PASSED EARLIER/)
+    }
+  })
+
+  it('should say when the steps changed files git does not ignore, so the tree no longer matches (ESP-162)', async () => {
+    const writer = { name: 'writer', run: 'node -e "require(\'fs\').writeFileSync(\'out.txt\', \'x\')"' }
+    const repo = repoWith({ verify: [writer] })
+    const r = await runGate(repo)
+    assert.equal(r.code, 0, r.stdout)
+    const tree = r.stdout.match(/^Gate tree: ([0-9a-f]{40,64})$/m)?.[1]
+    const now = (await runGate(repo, {}, ['--tree-hash'])).stdout.trim().replace('Gate tree: ', '')
+    assert.notEqual(now, tree)
+    assert.match(r.stdout, new RegExp(`^The steps changed files git doesn't ignore: the tree is now ${now}, not ${tree}\\.`, 'm'))
+  })
+
+  it('should run every step on --resume after a config change (ESP-162 AC12)', async () => {
+    const env = flagEnv()
+    const repo = repoWith({ verify: [ok('a'), flaky('b')] })
+    await runGate(repo, env)
+    writeFiles(repo, { '.claude/engineering.json': JSON.stringify({ verify: [ok('a'), flaky('b')], git: {} }) })
+    writeFileSync(env.GATE_FLAG, 'ok')
+    const r = await runGate(repo, env, ['--resume'])
+    assert.match(r.stdout, /^Resume: \.claude\/engineering\.json changed since the last run, so every step runs\.$/m, r.stdout)
+    assert.match(r.stdout, /^PASS {2}a /m)
+  })
+
+  it('should rerun only the verify steps, the fake-pass check and the steps a fix selects (ESP-161 AC14)', async () => {
+    const config = { verifyRerun: 'fix-diff', verify: [ok('unit')], verifyConditional: [{ ...ok('web'), when: ['web/'] }, { ...ok('api'), when: ['api/'] }] }
+    const repo = makeRepo({ headFiles: { 'web/a.ts': 'a', 'api/b.ts': 'b', '.claude/engineering.json': JSON.stringify(config) } })
+    const full = await runGate(repo)
+    assert.equal(full.code, 0, full.stdout)
+    assert.match(full.stdout, /^PASS {2}web /m)
+    const tree = full.stdout.match(/^Gate tree: (\S+)$/m)[1]
+    writeFiles(repo, { 'api/b.ts': 'fixed' })
+    const rerun = await runGate(repo, {}, ['--rerun-fix'])
+    assert.equal(rerun.code, 0, rerun.stdout)
+    assert.match(rerun.stdout, new RegExp(`^Rerun after full gate at tree ${tree} \\(\\d{4}-[^)]+\\): 1 file changed since\\.$`, 'm'))
+    assert.match(rerun.stdout, /^PASS {2}fake-pass check /m)
+    assert.match(rerun.stdout, /^PASS {2}unit /m)
+    assert.match(rerun.stdout, /^PASS {2}api /m)
+    assert.match(rerun.stdout, /^SKIPPED {2}web \(no changed file under web\/\)$/m)
+    // A narrowed rerun is never a full pass: the next one still compares with the first full pass.
+    writeFiles(repo, { 'api/b.ts': 'fixed again' })
+    assert.match((await runGate(repo, {}, ['--rerun-fix'])).stdout, new RegExp(`^Rerun after full gate at tree ${tree} `, 'm'))
+  })
+
+  it('should refuse --rerun-fix without the option, with an unknown value or without a full pass, and run nothing (ESP-161 AC15)', async () => {
+    const cases = [
+      [{ verify: [ok('unit')] }, /--rerun-fix needs "verifyRerun": "fix-diff"/],
+      [{ verifyRerun: 'all', verify: [ok('unit')] }, /"verifyRerun" can only be "fix-diff"/],
+      [{ verifyRerun: 'fix-diff', verify: [ok('unit')] }, /--rerun-fix needs a recorded full gate pass/],
+    ]
+    for (const [config, message] of cases) {
+      const r = await runGate(repoWith(config), {}, ['--rerun-fix'])
+      assert.equal(r.code, 2, `${JSON.stringify(config)}\n${r.stdout}`)
+      assert.match(r.stdout, message)
+      assert.doesNotMatch(r.stdout, /^PASS /m)
+      assert.equal(lines(r).at(-1), 'Gate: FAIL')
+    }
   })
 })

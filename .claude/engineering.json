@@ -2,7 +2,8 @@
   "verify": [
     {
       "name": "tests",
-      "run": "npm test"
+      "run": "npm test",
+      "timeoutMs": 1200000
     },
     {
       "name": "validate marketplace",
@@ -13,13 +14,28 @@
       "run": "claude plugin validate plugins/usiatech-engineering"
     }
   ],
+  "verifyRerun": "fix-diff",
   "verifyIterate": [
     {
       "name": "gate tests",
-      "run": "node --test plugins/usiatech-engineering/tests/gate.test.mjs",
+      "run": "node --test plugins/usiatech-engineering/tests/gate.test.mjs plugins/usiatech-engineering/tests/gate-record.test.mjs plugins/usiatech-engineering/tests/verify-select.test.mjs plugins/usiatech-engineering/tests/run-verify.test.mjs",
       "when": [
         "plugins/usiatech-engineering/skills/verify/",
-        "plugins/usiatech-engineering/tests/gate.test.mjs"
+        "plugins/usiatech-engineering/templates/github/scripts/verify-select.mjs",
+        "plugins/usiatech-engineering/templates/github/scripts/run-verify.mjs",
+        "plugins/usiatech-engineering/tests/gate.test.mjs",
+        "plugins/usiatech-engineering/tests/gate-record.test.mjs",
+        "plugins/usiatech-engineering/tests/verify-select.test.mjs",
+        "plugins/usiatech-engineering/tests/run-verify.test.mjs"
+      ]
+    },
+    {
+      "name": "guard tests",
+      "run": "node --test plugins/usiatech-engineering/tests/governance-policy.test.mjs plugins/usiatech-engineering/tests/governance-guard.test.mjs",
+      "when": [
+        "plugins/usiatech-engineering/hooks/scripts/",
+        "plugins/usiatech-engineering/tests/governance-policy.test.mjs",
+        "plugins/usiatech-engineering/tests/governance-guard.test.mjs"
       ]
     },
     {

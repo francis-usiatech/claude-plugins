@@ -1230,7 +1230,7 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
   const allPlan = gov.planEdits === 'all' && matchAny(rel, [PLAN_PATH, PLAN_ARCHIVE_PATH], ic)
   const linkProblem = allPlan && planLinkProblem(rel, root, p)
   const scope = linkProblem ? decision('ask', `Plan or archive write not trusted by governance.planEdits "all": ${linkProblem}`, rel)
-    : allPlan ? { ...decision(null, 'Plan or archive write trusted by governance.planEdits "all".', rel), trusted: true }
+    : allPlan ? { ...decision(null, 'Plan or archive write trusted by governance.planEdits "all".', rel), trusted: true, planWrite: true }
     : matchAny(rel, [PLAN_PATH], ic) && gov.planEdits !== 'ask' && evidenceOnlyPlanEdit(rel, tool, ti, root, p)
       ? { ...decision(null, 'The plan edit only changes evidence, task ticks or the change log.', rel), trusted: true }
       : decideScope(rel, gov, root, ic, places.planRoot)
@@ -1243,7 +1243,7 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
   ].filter(Boolean)
   const result = reasons.length
     ? decision('ask', reasons.join(' Also: ') + (findings.length ? ` Findings: ${findings.map(formatFinding).join(' ')}` : ''), rel)
-    : scope?.trusted ? scope
+    : scope?.trusted || scope?.inPlan ? scope
     : findings.length || failures.length ? decision(null, '', rel) : null
   if (result && findings.length) result.findings = findings
   if (result && failures.length) result.failures = failures
@@ -1307,7 +1307,15 @@ const decideScope = (rel, gov, root, ic, planRoot) => {
   const hit = matchAny(rel, gov.askPaths || DEFAULT_ASK_PATHS, ic)
   if (hit) return decision('ask', `"${rel}" is a governance, CI or dependency file (${hit}). Changes need explicit confirmation.`, rel)
   const plan = planFiles(root) ?? (planRoot ? planFiles(planRoot) : null)
-  if (plan && plan.length && !matchAny(rel, plan, ic)) return decision('ask', `"${rel}" is not in the approved plan (.claude/plans/active.md → Files). Confirm the scope change or update the plan.`, rel)
+  if (plan && plan.length) {
+    const covered = matchAny(rel, plan, ic)
+    if (!covered) return decision('ask', `"${rel}" is not in the approved plan (.claude/plans/active.md → Files). Confirm the scope change or update the plan.`, rel)
+    // ESP-163: marked so the hook can tell Claude Code to allow it; otherwise Claude Code prompts for every edit. Never
+    // for a git folder, the project's or a nested repo's: a broad Files glob must not let a hook or config there be
+    // written unprompted.
+    const result = decision(null, `"${rel}" is in the approved plan (Files: ${covered}).`, rel)
+    return matchAny(rel, ['**/.git/**'], ic) ? result : { ...result, inPlan: true }
+  }
   if (!plan && gov.requirePlan) return decision('ask', 'No approved plan is active (.claude/plans/active.md). Run the approve-plan skill first.', rel)
   return null
 }

@@ -18,6 +18,7 @@
     {
       "name": "tenant isolation",
       "run": "pnpm test:rls",
+      "slow": true,
       "when": [
         "packages/db/",
         "apps/api/",
