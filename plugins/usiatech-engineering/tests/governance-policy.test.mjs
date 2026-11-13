@@ -856,15 +856,17 @@ describe('evaluate: edits in a linked worktree (ESP-82; spec R12–R15, AC9–AC
   // Compare real paths: git prints long names, while a runner's TEMP can be an 8.3 short name (C:\Users\RUNNER~1).
   const real = (p) => { try { return realpathSync.native(p) } catch { return path.resolve(p) } }
   const same = (a, b) => real(a).toLowerCase() === real(b).toLowerCase()
+  // An in-plan edit is allowed and marked in plan (ESP-163), so the hook allows it outright.
+  const allowedInPlan = (r) => r?.decision === null && r.inPlan === true
 
   it('should allow an in-plan edit in a worktree under .claude/worktrees, using the main plan (AC9)', async () => {
     const { main, inner } = setup()
-    assert.equal(await run(main, path.join(inner, 'src', 'a.ts')), null)
+    assert.ok(allowedInPlan(await run(main, path.join(inner, 'src', 'a.ts'))))
   })
 
   it('should allow an in-plan edit in a worktree outside the project folder (AC9)', async () => {
     const { main, ext } = setup()
-    assert.equal(await run(main, path.join(ext, 'src', 'a.ts')), null)
+    assert.ok(allowedInPlan(await run(main, path.join(ext, 'src', 'a.ts'))))
   })
 
   it('should ask for ask paths inside a worktree (AC9)', async () => {
@@ -884,7 +886,7 @@ describe('evaluate: edits in a linked worktree (ESP-82; spec R12–R15, AC9–AC
   it('should use the worktree\'s own plan when it has one (AC9)', async () => {
     const { main, ext } = setup()
     writeFiles(ext, { [PLAN_PATH_FOR_TESTS]: PLAN('docs/**') })
-    assert.equal(await run(main, path.join(ext, 'docs', 'x.md')), null)
+    assert.ok(allowedInPlan(await run(main, path.join(ext, 'docs', 'x.md'))))
     assert.match((await run(main, path.join(ext, 'src', 'a.ts')))?.reason ?? '', /not in the approved plan/)
   })
 
@@ -946,7 +948,7 @@ describe('evaluate: edits in a linked worktree (ESP-82; spec R12–R15, AC9–AC
     const { main, ext } = setup()
     const link = path.join(tempDir('usiatech-wt-link-'), 'l')
     symlinkSync(path.dirname(ext), link, 'junction')
-    assert.equal(await run(main, path.join(link, 'ext', 'src', 'a.ts')), null)
+    assert.ok(allowedInPlan(await run(main, path.join(link, 'ext', 'src', 'a.ts'))))
   })
 
   it('should log a worktree decision with a worktree field (AC12; R15)', async () => {
@@ -1059,10 +1061,31 @@ describe('evaluate: approved plan scope', () => {
     return root
   }
 
-  it('should allow files covered by the plan', async () => {
+  it('should allow files covered by the plan and mark them in plan (ESP-163 R15)', async () => {
     const root = planRoot()
-    assert.equal((await edit('src/a/b.ts', { root })), null)
-    assert.equal((await edit('docs/guide.md', { root })), null)
+    for (const [file, glob] of [['src/a/b.ts', 'src/**'], ['docs/guide.md', 'docs/guide.md']]) {
+      const r = await edit(file, { root })
+      assert.equal(r.decision, null, file)
+      assert.equal(r.inPlan, true, file)
+      assert.equal(r.reason, `"${file}" is in the approved plan (Files: ${glob}).`)
+      assert.deepEqual(logEntries(r, 'Write'), [], 'an in-plan allow is not logged')
+    }
+  })
+
+  it('should still ask for an in-plan file that is an ask path, holds a likely secret or comes with a config problem (ESP-163 R16)', async () => {
+    const root = tempDir()
+    writeFiles(root, { '.claude/plans/active.md': '# Plan\n\n## Files\n- `src/**`\n- `AGENTS.md`\n' })
+    assert.equal((await edit('AGENTS.md', { root })).decision, 'ask')
+    const awsKey = 'AKIA' + 'Q'.repeat(16)
+    const secret = await evaluate({ tool_name: 'Write', tool_input: { file_path: 'src/a.ts', content: `const key = '${awsKey}'` } }, { root, git: fakeGit() })
+    assert.equal(secret.decision, 'deny')
+    assert.equal(secret.inPlan, undefined)
+    const broken = await evaluate({ tool_name: 'Write', tool_input: { file_path: 'src/a.ts', content: 'x' } }, { root, git: fakeGit(), configError: 'could not be parsed' })
+    assert.equal(broken.decision, 'ask')
+  })
+
+  it('should not mark an edit in plan when no plan is active (ESP-163 R16)', async () => {
+    assert.equal((await edit('src/a.ts')), null)
   })
 
   it('should ask for files outside the plan, including ones listed under other sections', async () => {
@@ -1086,7 +1109,7 @@ describe('evaluate: approved plan scope', () => {
   it('should not take scope from the Tasks or Acceptance criteria sections', async () => {
     const root = tempDir()
     writeFiles(root, { '.claude/plans/active.md': '# Plan\n\n## Acceptance criteria\n- AC1: `lib/a.ts` works\n  - Evidence: \n\n## Tasks\n- [ ] T1: edit `lib/b.ts` (covers AC1)\n\n## Files\n- `src/**`\n' })
-    assert.equal((await edit('src/x.ts', { root })), null)
+    assert.equal((await edit('src/x.ts', { root })).inPlan, true)
     assert.match((await edit('lib/b.ts', { root })).reason, /not in the approved plan/)
     assert.match((await edit('lib/a.ts', { root })).reason, /not in the approved plan/)
   })
