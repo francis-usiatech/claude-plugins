@@ -13,11 +13,15 @@ const isHidden = atom({ plugin: 'usiatech-usage-band', key: 'isHidden' } as cons
 
 // Brand from www.usiatech.com: Inter 800, "Usia" primary-dark, "Tech" accent, primary-light logo gradient.
 const BRAND = { usia: '#075985', tech: '#f59e0b', panel: '#f8fafc', light: '#0ea5e9' }
+// Alternating segment shades: translucent slate, so both work on light and dark themes.
+const SEGMENT = ['#94a3b829', '#94a3b80f']
+const segmentProps = (index: number) =>
+  ({ flexDirection: 'row', alignItems: 'center', columnGap: 1, paddingX: 1, backgroundColor: SEGMENT[index % 2] }) as const
 const LEVEL = { ok: '#0ea5e9', warn: '#f59e0b', hot: '#ef4444', track: '#94a3b866' }
 
 const LOGO_PATHS = `<rect width="24" height="24" rx="5" fill="url(#ug)"/><path d="M5 7C5 5.9 5.9 5 7 5H17C18.1 5 19 5.9 19 7V14C19 17.87 15.87 21 12 21C8.13 21 5 17.87 5 14V7Z" stroke="#fff" stroke-width="2.5" fill="none"/><path d="M12 10V15" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/><circle cx="12" cy="8" r="1.5" fill="#fff"/>`
 // The logo alone keeps the desktop band one text row high, as the stock usage band.
-const LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><defs><linearGradient id="ug" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="${BRAND.light}"/><stop offset="100%" stop-color="${BRAND.usia}"/></linearGradient></defs>${LOGO_PATHS}</svg>`
+const LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><defs><linearGradient id="ug" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="${BRAND.light}"/><stop offset="100%" stop-color="${BRAND.usia}"/></linearGradient></defs><title>UsiaTech</title>${LOGO_PATHS}</svg>`
 const ICON_PX = 16
 
 const levelColor = (percent: number | null): string =>
@@ -170,28 +174,36 @@ export const register: Register = (on, options) => {
 
     const { Box, Text, Svg, Button } = $.ui.resolve(e)
     // One footnote-size row, so the band is no taller than the stock usage band.
-    // The gauges wrap inside their own Box; the close glyph keeps the top-right corner.
+    // Segments alternate shades to read apart; they wrap in their own Box, and
+    // the close glyph keeps the top-right corner.
     return (
       <Box borderStyle="round" borderColor={BRAND.light} flexDirection="row" alignItems="flex-start" columnGap={1} paddingX={1}>
-        <Box flexDirection="row" alignItems="center" columnGap={2} flexGrow={1} flexShrink={1} flexWrap="wrap">
-          <Box flexDirection="row" alignItems="center" columnGap={1}>
-            <Svg source={LOGO_SVG} alt="UsiaTech" width={ICON_PX} height={ICON_PX} />
+        <Box flexDirection="row" alignItems="center" flexGrow={1} flexShrink={1} flexWrap="wrap">
+          <Box {...segmentProps(0)}>
+            <Svg source={LOGO_SVG} alt="UsiaTech" width={ICON_PX} height={ICON_PX} isInteractive />
             <Text size="footnote" color={BRAND.usia}>{s.model}</Text>
-        </Box>
-        {gauges.map((g) => (
-          <Box key={g.key} flexDirection="row" alignItems="center" columnGap={1}>
-            <Svg source={ringSvg(g.percent)} alt={`${g.key} ${percentText(g.percent)}`} width={ICON_PX} height={ICON_PX} />
-            <Text size="footnote" bold>{percentText(g.percent)}</Text>
-            <Text size="footnote" dimColor>{g.caption}</Text>
           </Box>
-        ))}
-        <Text size="footnote">
-          <Text bold>{cost}</Text>
-          {delta && <Text color={BRAND.usia} backgroundColor="#e0f2fe"> {delta} </Text>}
-        </Text>
+          {gauges.map((g, i) => (
+            <Box key={g.key} {...segmentProps(i + 1)}>
+              <Svg source={ringSvg(g.percent)} alt={`${g.key} ${percentText(g.percent)}`} width={ICON_PX} height={ICON_PX} />
+              <Text size="footnote" bold>{percentText(g.percent)}</Text>
+              <Text size="footnote" dimColor>{g.caption}</Text>
+            </Box>
+          ))}
+          <Box {...segmentProps(gauges.length + 1)}>
+            <Text size="footnote">
+              <Text bold>{cost}</Text>
+              {delta && <Text color={BRAND.usia} backgroundColor="#e0f2fe"> {delta} </Text>}
+            </Text>
+          </Box>
         </Box>
-        <Box flexShrink={0}>
-          <Button key="hide" role="dismiss" label="Hide for this session" plain dimColor onPress={hide}>×</Button>
+        {/* The desktop draws the label, not the children: the label is the glyph alone.
+            Button has no tooltip, so a card shown on hover stands in for one. */}
+        <Box key="hide-tip" flexShrink={0}>
+          <Button key="hide" role="dismiss" label="×" plain dimColor onPress={hide} />
+          <Box position="absolute" top={0} right={2} display="none" hover={{ display: 'flex' }} backgroundColor={BRAND.panel} paddingX={1}>
+            <Text size="footnote" wrap="truncate">Hide for this session</Text>
+          </Box>
         </Box>
       </Box>
     )
