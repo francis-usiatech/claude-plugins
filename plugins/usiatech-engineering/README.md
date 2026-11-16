@@ -433,6 +433,7 @@ Semver. Record changes below.
 
 | Version | Change |
 |---|---|
+| 0.30.1 | **Usage band 0.3.1 (PR #213):** the desktop band has no border, shorter captions (`5h 12:50 PM`, `wk Sat 10:00 AM`, `ctx 191k/1M`, the terminal too), and text that steps down from footnote to caption size as the window narrows, wrapping only below that. **Upgrade:** `claude plugin update usiatech-usage-band@usiatech`. |
 | 0.30.0 | **Usage band 0.3.0 (PRs #209, #210):** the band's segments (model, 5h, week, ctx, cost) alternate darker and lighter backgrounds; the close button reads `×` alone, with a "Hide for this session" card on hover; the logo shows a "UsiaTech" tooltip. **Upgrade:** `claude plugin update usiatech-usage-band@usiatech`. |
 | 0.29.1 | **Usage band 0.2.1 (PR #206):** the band's close button is a small `×` in its top-right corner, so the desktop band stays one row high. **Upgrade:** `claude plugin update usiatech-usage-band@usiatech`. |
 | 0.29.0 | **Usage band 0.2.0 (PR #203):** the desktop band is one compact row, no taller than the stock usage band (logo only, footnote text, 16px rings, close button at the top right). Hiding it lasts for the current session; the band's new `hidden` option in `/config` hides it in every session. **Behaviour change:** a hide choice saved by usage band 0.1.0 is no longer read. **Upgrade:** `claude plugin update usiatech-usage-band@usiatech`. |
