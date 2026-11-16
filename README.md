@@ -4,8 +4,8 @@ Public Claude Code plugin marketplace from UsiaTech.
 
 | Plugin               | Version | Install ID                      |
 | -------------------- | ------- | ------------------------------- |
-| UsiaTech Engineering | 0.29.0  | `usiatech-engineering@usiatech` |
-| UsiaTech Usage Band  | 0.2.0   | `usiatech-usage-band@usiatech`  |
+| UsiaTech Engineering | 0.29.1  | `usiatech-engineering@usiatech` |
+| UsiaTech Usage Band  | 0.2.1   | `usiatech-usage-band@usiatech`  |
 
 ## Install
 
