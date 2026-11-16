@@ -2,7 +2,17 @@
   "name": "usiatech-usage-band",
   "version": "0.1.0",
   "description": "UsiaTech band above the prompt: 5-hour and weekly limits, context fill, model and session cost with the last turn's cost",
-  "author": { "name": "Francis Amalraj" },
+  "author": {
+    "name": "Francis Amalraj"
+  },
   "license": "MIT",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "hidden": {
+      "type": "boolean",
+      "title": "Hide the usage band",
+      "description": "Hide the band in every session. The band's close button and /usage-band hide hide it for the current session only.",
+      "default": false
+    }
+  }
 }
