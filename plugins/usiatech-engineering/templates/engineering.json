@@ -76,7 +76,7 @@
     "tracker": "github"
   },
   "governance": {
-    "$comment": "Guard settings. Commands are case-insensitive regexes. Defaults already cover destructive git/SQL/rm, curl|sh, --no-verify, dependency adds, remote/infra commands, secrets reads and sudo. allowlist suppresses one workflow/dependency finding by rule ID plus a path glob or package name (still reported, never blocks); a wf-* entry needs one literal file path and can't cover wf-unparsed, otherwise it suppresses nothing and is reported as wf-allowlist-ignored, e.g. {\"rule\": \"wf-unpinned-action\", \"path\": \".github/workflows/pr-governance.yml\", \"reason\": \"...\"} or {\"rule\": \"sc-install-script\", \"package\": \"esbuild\", \"reason\": \"postinstall only fetches its platform binary\"}; it ships empty. trustedWritePaths (writes outside the project that don't ask, still logged as trusted; the values shown are the defaults, [] asks again) and planEdits (\"allow\" lets plan edits that only change evidence, task ticks or the change log through; \"ask\" asks for every plan edit; \"all\" trusts every plan and archive write, still logged, so the governance-reviewer becomes the only scope check on plan changes) are explained in the README under Trusted writes. approvalLabel and requirementRefPattern (null = default C-number/FR/AC/ADR/D-item/\u00a7/#issue) are also used by the PR governance workflow.",
+    "$comment": "Guard settings. Commands are case-insensitive regexes. Defaults already cover destructive git/SQL/rm, curl|sh, --no-verify, dependency adds, remote/infra commands, secrets reads and sudo. allowlist suppresses one workflow/dependency finding by rule ID plus a path glob or package name (still reported, never blocks); a wf-* entry needs one literal file path and can't cover wf-unparsed, otherwise it suppresses nothing and is reported as wf-allowlist-ignored, e.g. {\"rule\": \"wf-unpinned-action\", \"path\": \".github/workflows/pr-governance.yml\", \"reason\": \"...\"} or {\"rule\": \"sc-install-script\", \"package\": \"esbuild\", \"reason\": \"postinstall only fetches its platform binary\"}; it ships empty. trustedWritePaths (writes outside the project that don't ask, still logged as trusted; the values shown are the defaults, [] asks again) and planEdits (\"allow\" lets plan edits that only change evidence, task ticks or the change log through; \"ask\" asks for every plan edit; \"all\" trusts every plan and archive write, still logged, so the governance-reviewer becomes the only scope check on plan changes) are explained in the README under Trusted writes. approvalLabel and requirementRefPattern (null = default C-number/FR/AC/ADR/D-item/\u00a7/#issue) are also used by the PR governance workflow. ESP-166 (ADR-0005): each restriction from agentsFiles to uncheckable, and each governance.commands key, takes \"deny\", \"ask\" or \"allow\"; the values shown are the defaults, and \"allow\" is logged as allowed-by-config. agentsFiles to dependencyFiles set the askPaths groups (the PR workflow reads them too). Edits to .claude/engineering.json, .claude/settings*.json, .claude/hooks/**, .claude/agents/** and any .git folder or file always ask. adrEdits decides edits under adrPaths instead of the plan's Files list. uncheckable covers edits the guard can't read (8.3 short names, links, a failed lookup). bypass: true turns every other ask into an allow, logged as bypassed; denies and destructive commands stay. See the README under Guard settings.",
     "protectedBranches": [
       "main",
       "master"
@@ -86,6 +86,7 @@
       "AGENTS.md",
       "**/AGENTS.md",
       "CLAUDE.md",
+      "**/CLAUDE.md",
       "REVIEW.md",
       ".github/**",
       "**/package.json"
@@ -103,6 +104,37 @@
     "planEdits": "all",
     "rulesFile": ".claude/governance.md",
     "approvalLabel": "governance-approved",
-    "requirementRefPattern": null
+    "requirementRefPattern": null,
+    "agentsFiles": "ask",
+    "claudeMdFiles": "ask",
+    "reviewFile": "ask",
+    "claudeConfig": "ask",
+    "ciFiles": "ask",
+    "dependencyFiles": "ask",
+    "adrEdits": "allow",
+    "adrPaths": ["docs/adr/**", "docs/decisions/**"],
+    "planScope": "ask",
+    "outsideWrites": "ask",
+    "envFiles": "deny",
+    "secrets": "deny",
+    "possibleSecrets": "ask",
+    "protectedPaths": "deny",
+    "immutableFiles": "deny",
+    "workflowFindings": "ask",
+    "dependencyFindings": "ask",
+    "uncheckable": "ask",
+    "commands": {
+      "$comment": "Non-destructive command rules, each \"deny\", \"ask\" or \"allow\". Destructive commands have no key and always keep their deny or ask: the built-in denies, force push, discarding work, branch deletes, history rewrites, recursive delete, destructive SQL and database resets.",
+      "addDependency": "ask",
+      "publishPackage": "ask",
+      "remoteInfra": "ask",
+      "readSecrets": "ask",
+      "writeEnvFile": "ask",
+      "sudo": "ask",
+      "worldWritable": "ask",
+      "protectedBranchWork": "ask",
+      "protectedBranchPush": "ask"
+    },
+    "bypass": false
   }
 }

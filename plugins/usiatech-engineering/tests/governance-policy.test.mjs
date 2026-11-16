@@ -874,7 +874,8 @@ describe('evaluate: edits in a linked worktree (ESP-82; spec R12–R15, AC9–AC
     for (const file of [path.join(inner, '.claude', 'settings.json'), path.join(inner, 'AGENTS.md'), path.join(ext, '.github', 'CODEOWNERS'), path.join(ext, 'AGENTS.md')]) {
       const result = await run(main, file)
       assert.equal(result?.decision, 'ask', file)
-      assert.match(result.reason, /governance, CI or dependency file/)
+      // ESP-166: .claude/settings.json is the guard's own config, which asks with its own reason.
+      assert.match(result.reason, /governance, CI or dependency file|the guard's own config/)
     }
   })
 
@@ -2864,5 +2865,240 @@ describe('evaluate: advisory warning, once per change (ESP-48; spec R4, R5, R7, 
 
   it('should not track warnings when no marker is given', async () => {
     assert.equal(await run(BATCH), null)
+  })
+})
+
+describe('evaluate: one setting per restriction (ESP-166; ADR-0005)', () => {
+  const gov = (settings) => ({ cfg: { governance: settings } })
+  const write = (file_path, content, opts = {}) => evaluate({ tool_name: 'Write', tool_input: { file_path, content } }, { root: opts.root || tempDir(), git: fakeGit(opts.branch, opts.tracked), ...opts })
+  const allowedBy = (r) => logEntries(r, 'Write').filter((e) => e.decision === 'allowed-by-config').map((e) => e.reason)
+  const planRoot = () => {
+    const root = tempDir()
+    writeFiles(root, { '.claude/plans/active.md': '# Plan\n\n## Files\n- `src/**`\n' })
+    return root
+  }
+
+  // AC1
+  // A package.json Edit with no readable content also has its own dependency finding, which follows its own key.
+  for (const [key, file, extra = {}] of [['agentsFiles', 'AGENTS.md'], ['agentsFiles', 'pkg/AGENTS.md'], ['claudeMdFiles', 'CLAUDE.md'], ['claudeMdFiles', 'docs/CLAUDE.md'], ['reviewFile', 'REVIEW.md'], ['claudeConfig', '.claude/commands/x.md'], ['ciFiles', '.github/CODEOWNERS'], ['dependencyFiles', 'pkg/package.json', { dependencyFindings: 'allow' }]]) {
+    it(`should follow governance.${key} for ${file}`, async () => {
+      assert.equal((await edit(file))?.decision, 'ask', 'unset asks as today')
+      assert.equal((await edit(file, gov({ ...extra, [key]: 'deny' })))?.decision, 'deny')
+      const r = await edit(file, gov({ ...extra, [key]: 'allow' }))
+      assert.equal(r?.decision ?? null, null, r?.reason)
+      assert.equal(r.allowEdit, undefined, 'a group allow only drops the guard ask; Claude Code decides, as for any file')
+      assert.ok(allowedBy(r).includes(`governance.${key} is "allow".`), JSON.stringify(allowedBy(r)))
+    })
+  }
+
+  // AC2
+  for (const file of ['.claude/engineering.json', '.claude/settings.json', '.claude/settings.local.json']) {
+    it(`should always ask for the guard's own config ${file}`, async () => {
+      for (const settings of [{ claudeConfig: 'allow' }, { bypass: true }, { claudeConfig: 'allow', bypass: true }]) {
+        const r = await edit(file, gov(settings))
+        assert.equal(r?.decision, 'ask', JSON.stringify(settings))
+        assert.match(r.reason, /the guard's own config/)
+      }
+      assert.equal((await edit(file, gov({ claudeConfig: 'deny' })))?.decision, 'deny')
+    })
+  }
+
+  // AC3
+  it('should let ADR edits outside the plan through by default and follow governance.adrEdits', async () => {
+    const root = planRoot()
+    const r = await edit('docs/adr/0001-x.md', { root })
+    assert.equal(r?.decision ?? null, null, r?.reason)
+    assert.equal(r.allowEdit, true, 'adrEdits stands in for the plan, so the edit is allowed outright')
+    assert.deepEqual(allowedBy(r), ['governance.adrEdits is "allow".'])
+    const bare = sanitizeConfig({ governance: { adrPaths: ['**', '*/**', 'arch/**'] } })
+    assert.deepEqual(bare.gov.settings.adrPaths, ['arch/**'], 'wildcard-only entries are dropped')
+    assert.equal(bare.advisory.filter((p) => /must name a folder/.test(p)).length, 2)
+    assert.equal((await edit('docs/decisions/0002-y.md', { root }))?.decision ?? null, null)
+    assert.match((await edit('docs/adr/0001-x.md', { root, ...gov({ adrEdits: 'ask' }) }))?.reason ?? '', /architecture decision record/)
+    assert.equal((await edit('docs/adr/0001-x.md', { root, ...gov({ adrEdits: 'deny' }) }))?.decision, 'deny')
+    assert.equal((await edit('arch/0001.md', { root, ...gov({ adrPaths: ['arch/**'] }) }))?.decision ?? null, null)
+    assert.match((await edit('docs/adr/0001-x.md', { root, ...gov({ adrPaths: ['arch/**'] }) }))?.reason ?? '', /not in the approved plan/)
+  })
+
+  it('should keep requirePlan for ADR edits when no plan is active', async () => {
+    assert.match((await edit('docs/adr/0001-x.md', { cfg: { governance: { requirePlan: true } } }))?.reason ?? '', /No approved plan/)
+    const r = await edit('docs/adr/0001-x.md', {})
+    assert.equal(r?.decision ?? null, null)
+    assert.equal(r?.allowEdit, undefined, 'no outright allow without a plan')
+  })
+
+  // AC4
+  it('should follow governance.planScope', async () => {
+    const root = planRoot()
+    assert.match((await edit('lib/x.ts', { root }))?.reason ?? '', /not in the approved plan/)
+    assert.equal((await edit('lib/x.ts', { root, ...gov({ planScope: 'deny' }) }))?.decision, 'deny')
+    const r = await edit('lib/x.ts', { root, ...gov({ planScope: 'allow' }) })
+    assert.equal(r?.decision ?? null, null)
+    assert.equal(r.allowEdit, true)
+    assert.deepEqual(allowedBy(r), ['governance.planScope is "allow".'])
+    // A content setting only drops the guard's own ask; it never allows outright.
+    const secretAllowed = await write('src/db.ts', 'const password = "' + 'h'.repeat(16) + '"', gov({ possibleSecrets: 'allow' }))
+    assert.equal(secretAllowed?.allowEdit, undefined)
+  })
+
+  it('should follow governance.outsideWrites, but always ask for agent config outside the project', async () => {
+    const POSIX = { root: '/home/me/src/my-app', homeDir: '/home/me', tmpDir: '/tmp', pathApi: path.posix, caseInsensitive: false }
+    const out = (file, settings) => evaluate({ tool_name: 'Write', tool_input: { file_path: file, content: 'x' } }, { git: fakeGit(), ...POSIX, ...gov(settings) })
+    assert.equal((await out('/home/me/other/notes.txt', {}))?.decision, 'ask')
+    assert.equal((await out('/home/me/other/notes.txt', { outsideWrites: 'deny' }))?.decision, 'deny')
+    const r = await out('/home/me/other/notes.txt', { outsideWrites: 'allow' })
+    assert.equal(r?.decision ?? null, null)
+    assert.deepEqual(allowedBy(r), ['governance.outsideWrites is "allow".'])
+    for (const file of ['/home/me/.claude/settings.json', '/home/me/other/.git/config', '/home/me/.ssh/config', '/home/me/x/CLAUDE.md']) {
+      const asked = await out(file, { outsideWrites: 'allow', bypass: true })
+      assert.equal(asked?.decision, 'ask', file)
+      assert.match(asked.reason, /agent config/)
+    }
+  })
+
+  it('should follow governance.envFiles', async () => {
+    assert.equal((await edit('.env'))?.decision, 'deny')
+    assert.equal((await edit('.env', gov({ envFiles: 'ask' })))?.decision, 'ask')
+    assert.equal((await edit('.env', gov({ envFiles: 'allow' })))?.decision ?? null, null)
+  })
+
+  it('should follow governance.secrets and governance.possibleSecrets', async () => {
+    // Built at runtime so this file never holds a secret-shaped literal.
+    const awsKey = 'AKIA' + 'Q'.repeat(16)
+    const password = 'const password = "' + 'h'.repeat(16) + '"'
+    assert.equal((await write('src/a.ts', awsKey))?.decision, 'deny')
+    assert.equal((await write('src/a.ts', awsKey, gov({ secrets: 'ask' })))?.decision, 'ask')
+    assert.equal((await write('src/a.ts', awsKey, gov({ secrets: 'allow' })))?.decision ?? null, null)
+    assert.equal((await write('src/a.ts', password))?.decision, 'ask')
+    assert.equal((await write('src/a.ts', password, gov({ possibleSecrets: 'deny' })))?.decision, 'deny')
+    assert.equal((await write('src/a.ts', password, gov({ possibleSecrets: 'allow' })))?.decision ?? null, null)
+  })
+
+  it('should follow governance.protectedPaths and governance.immutableFiles', async () => {
+    assert.equal((await edit('generated/x.ts'))?.decision, 'deny')
+    assert.equal((await edit('generated/x.ts', gov({ protectedPaths: 'ask' })))?.decision, 'ask')
+    assert.equal((await edit('generated/x.ts', gov({ protectedPaths: 'allow' })))?.decision ?? null, null)
+    const root = tempDir()
+    writeFiles(root, { 'migrations/001.sql': 'select 1' })
+    const cfg = (settings) => ({ cfg: { immutableWhenCommitted: ['migrations/*.sql'], governance: settings } })
+    assert.equal((await edit('migrations/001.sql', { root, tracked: true, ...cfg({}) }))?.decision, 'deny')
+    assert.equal((await edit('migrations/001.sql', { root, tracked: true, ...cfg({ immutableFiles: 'ask' }) }))?.decision, 'ask')
+    assert.equal((await edit('migrations/001.sql', { root, tracked: true, ...cfg({ immutableFiles: 'allow' }) }))?.decision ?? null, null)
+  })
+
+  it('should follow governance.workflowFindings and governance.dependencyFindings', async () => {
+    const injection = 'on: issues\njobs:\n  a:\n    steps:\n      - run: echo "${{ github.event.issue.title }}"\n'
+    const lookups = { registry: async () => ({ found: true, version: '1.0.0', deprecated: null, latestTime: new Date().toISOString(), scripts: {} }), advisories: async () => ({}) }
+    const base = { askPaths: [] }
+    assert.equal((await write('.github/workflows/ci.yml', injection, gov(base)))?.decision, 'ask')
+    const wf = await write('.github/workflows/ci.yml', injection, gov({ ...base, workflowFindings: 'allow' }))
+    assert.equal(wf?.decision ?? null, null)
+    assert.equal(wf.findings.length, 1, 'the finding is still logged')
+    assert.equal((await write('package.json', '{', { lookups, ...gov(base) }))?.decision, 'ask')
+    assert.equal((await write('package.json', '{', { lookups, ...gov({ ...base, dependencyFindings: 'allow' }) }))?.decision ?? null, null)
+    assert.equal((await write('package.json', '{', { lookups, ...gov({ ...base, dependencyFindings: 'deny' }) }))?.decision, 'deny')
+  })
+
+  it('should follow governance.uncheckable on the edit side', async () => {
+    const odd = (settings) => evaluate({ tool_name: 'Edit', tool_input: { file_path: 7 } }, { root: tempDir(), git: fakeGit(), ...gov(settings) })
+    assert.equal((await odd({}))?.decision, 'ask')
+    assert.equal((await odd({ uncheckable: 'deny' }))?.decision, 'deny')
+    assert.equal((await odd({ uncheckable: 'allow' }))?.decision ?? null, null)
+  })
+
+  it('should still run the content and outside-write checks when governance.uncheckable is "allow"', async () => {
+    // homeDir null makes the trusted-path lookup throw.
+    const outside = { homeDir: null, tmpDir: null, ...gov({ uncheckable: 'allow' }) }
+    const open = { homeDir: null, tmpDir: null, ...gov({ uncheckable: 'allow', outsideWrites: 'allow' }) }
+    assert.equal((await write(path.join(tempDir(), '.env'), 'X=1', open))?.decision, 'deny')
+    assert.match((await write(path.join(tempDir(), 'a.md'), 'notes', outside))?.reason ?? '', /outside the project folder/)
+    const broken = { git: { ...fakeGit(), linkedWorktree: () => { throw new Error('git broke') } }, ...gov({ uncheckable: 'allow' }) }
+    assert.equal((await write('.claude/worktrees/x/.env', 'X=1', broken))?.decision, 'deny')
+  })
+
+  // AC5
+  for (const [key, cmd, branch] of [
+    ['addDependency', 'npm install lodash'],
+    ['publishPackage', 'npm publish'],
+    ['remoteInfra', 'ssh build-host uptime'],
+    ['readSecrets', 'cat .env'],
+    ['writeEnvFile', 'echo X=1 > .env'],
+    ['sudo', 'sudo ls'],
+    ['worldWritable', 'chmod 777 out'],
+    ['protectedBranchWork', 'git commit -m x', 'main'],
+    ['protectedBranchPush', 'git push origin main'],
+  ]) {
+    it(`should follow governance.commands.${key} for: ${cmd}`, async () => {
+      const run = (settings) => bash(cmd, { branch, ...gov({ commands: settings }) })
+      assert.equal((await run({}))?.decision, 'ask')
+      assert.equal((await run({ [key]: 'deny' }))?.decision, 'deny')
+      const r = await run({ [key]: 'allow' })
+      assert.equal(r?.decision ?? null, null, r?.reason)
+      assert.deepEqual(logEntries(r, 'Bash').map((e) => e.reason), [`governance.commands.${key} is "allow".`])
+    })
+  }
+
+  it('should still ask for a fixed destructive rule beside an allowed command', async () => {
+    const r = await bash('npm install lodash && git push --force', gov({ commands: { addDependency: 'allow' } }))
+    assert.equal(r?.decision, 'ask')
+    assert.match(r.reason, /force push/)
+  })
+
+  it('should always ask for git internals and Claude Code hooks and agents', async () => {
+    for (const file of ['.git', 'sub/.git', '.git/hooks/pre-commit', '.git/config', 'sub/.git/config', '.claude/hooks/x.mjs', '.claude/agents/a.md']) {
+      for (const settings of [{}, { planScope: 'allow' }, { claudeConfig: 'allow', bypass: true }]) {
+        const r = await edit(file, gov(settings))
+        assert.equal(r?.decision, 'ask', `${file} ${JSON.stringify(settings)}`)
+        assert.match(r.reason, /git internals or a Claude Code hook or agent/)
+      }
+    }
+    assert.equal((await edit('.claude/hooks/x.mjs', gov({ claudeConfig: 'deny' })))?.decision, 'deny')
+    assert.equal((await edit('.git/config', gov({ claudeConfig: 'deny' })))?.decision, 'ask')
+    assert.equal((await write(path.join(tempDir(), 'agents', 'x.md'), 'notes', gov({ outsideWrites: 'allow' })))?.decision, 'ask', 'agents folders outside the project ask too')
+  })
+
+  it('should keep asking for destroying infrastructure under remoteInfra "allow" and bypass', async () => {
+    for (const cmd of ['terraform destroy', 'kubectl delete pod x', 'docker system prune', 'docker volume rm v']) {
+      for (const settings of [{ commands: { remoteInfra: 'allow' } }, { bypass: true }]) {
+        const r = await bash(cmd, gov(settings))
+        assert.equal(r?.decision, 'ask', `${cmd} ${JSON.stringify(settings)}`)
+        assert.match(r.reason, /destroying infrastructure/)
+      }
+    }
+  })
+
+  // AC6
+  it('should let asks through under governance.bypass, logged as bypassed', async () => {
+    const r = await edit('AGENTS.md', gov({ bypass: true }))
+    assert.equal(r?.decision ?? null, null)
+    assert.equal(r.bypassed, true)
+    assert.deepEqual(logEntries(r, 'Edit').map((e) => e.decision), ['bypassed'])
+    assert.equal((await bash('npm install lodash', gov({ bypass: true })))?.decision ?? null, null)
+  })
+
+  it('should keep denies, fixed destructive asks and config problems under governance.bypass', async () => {
+    const on = gov({ bypass: true })
+    assert.equal((await bash('rm -rf /', on))?.decision, 'deny')
+    assert.equal((await bash('psql -c "DROP DATABASE app"', on))?.decision, 'deny')
+    assert.equal((await edit('.env', on))?.decision, 'deny')
+    for (const cmd of ['git push --force', 'rm -r build', 'git reset --hard HEAD~1', 'psql -c "DROP TABLE users"', 'git rebase main']) {
+      assert.equal((await bash(cmd, on))?.decision, 'ask', cmd)
+    }
+    assert.equal((await edit('AGENTS.md', { cfg: { governance: { bypass: true, askPaths: 'AGENTS.md' } } }))?.decision, 'ask', 'a broken config is not read as a bypass')
+  })
+
+  // AC7
+  it('should report bad values as advisory and use the stricter of the default and ask', async () => {
+    const safe = sanitizeConfig({ governance: { agentsFiles: 'maybe', adrEdits: 3, bypass: 'yes', commands: { forcePush: 'allow', sudo: 'nope' }, adrPaths: 'docs' } })
+    assert.deepEqual(safe.escalating, [])
+    for (const re of [/"governance\.agentsFiles" must be/, /"governance\.adrEdits" must be/, /"governance\.bypass" must be true or false/, /unknown key "forcePush"/, /"governance\.commands\.sudo" must be/, /"governance\.adrPaths" must be/]) {
+      assert.ok(safe.advisory.some((p) => re.test(p)), re.source)
+    }
+    assert.equal(safe.gov.settings.edit.agentsFiles, 'ask')
+    assert.equal(safe.gov.settings.edit.adrEdits, 'ask')
+    assert.equal(safe.gov.settings.bypass, false)
+    assert.deepEqual(safe.gov.settings.adrPaths, [])
+    assert.equal((await bash('git push --force', gov({ commands: { forcePush: 'allow' } })))?.decision, 'ask', 'a destructive rule has no setting')
+    assert.equal((await edit('AGENTS.md', gov({ agentsFiles: 'maybe' })))?.decision, 'ask')
   })
 })

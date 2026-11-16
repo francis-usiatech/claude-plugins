@@ -164,6 +164,29 @@ describe('governance-checks', () => {
       assert.equal((await runChecks({ repo, config, labels: ['owner-ok'] })).code, 0)
     })
 
+    // ESP-166 (ADR-0005) AC8: the guard's file-group settings, read from the base-branch config.
+    it('should need no label for a file group set to "allow" in the base-branch config', async () => {
+      const repo = makeRepo({ headFiles: { 'AGENTS.md': 'x', 'docs/CLAUDE.md': 'y' } })
+      assert.equal((await runChecks({ repo })).code, 1)
+      const r = await runChecks({ repo, config: { governance: { agentsFiles: 'allow', claudeMdFiles: 'allow' } } })
+      assert.equal(r.code, 0, r.stdout)
+      assert.doesNotMatch(r.stdout, /Governance\/CI\/dependency files changed/)
+    })
+
+    it('should still need the label for the guard\'s own config and for other groups', async () => {
+      const repo = makeRepo({ headFiles: { '.claude/engineering.json': '{}', 'REVIEW.md': 'x' } })
+      const r = await runChecks({ repo, config: { governance: { claudeConfig: 'allow' } } })
+      assert.equal(r.code, 1)
+      assert.match(r.stdout, /Governance\/CI\/dependency files changed: \.claude\/engineering\.json, REVIEW\.md/)
+    })
+
+    it('should report a bad setting with the shared validator', async () => {
+      const repo = makeRepo({ headFiles: { 'src/a.ts': 'x' } })
+      const r = await runChecks({ repo, config: { governance: { agentsFiles: 'maybe' } } })
+      assert.equal(r.code, 1)
+      assert.match(r.stdout, /Base-branch \.claude\/engineering\.json: "governance\.agentsFiles" must be "deny", "ask" or "allow"/)
+    })
+
     it('should require the approval label when a governance file is renamed out of its folder (F5)', async () => {
       const repo = makeRepo({ baseFiles: { '.github/workflows/sec.yml': 'name: sec\n' } })
       git(repo, 'mv', '.github/workflows/sec.yml', 'old-sec.yml')
