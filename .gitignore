@@ -3,3 +3,6 @@
 node_modules/
 .claude/governance-log.jsonl
 .claude/plans/active.md
+
+# Types Claude Code writes beside a plugin it loads as a mod
+plugins/*/.claude-plugin/types/

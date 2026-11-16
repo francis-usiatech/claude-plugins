@@ -14,7 +14,7 @@ import {
   BRANCH_DELETE_RULE, RECURSIVE_DELETE_RULE, hasControlChar,
   DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH, parseAllowlist, allowlistWarnings,
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, applyAllowlist, blockingFindings, formatFinding, oneLine, TIER,
-  isPathPrefix, CONTROL_CODE_POINTS, GIT_PREFIX,
+  isPathPrefix, CONTROL_CODE_POINTS, GIT_PREFIX, resolveSettings, askPathGroup, GUARD_CONFIG_PATHS, AGENT_CODE_PATHS, COMMAND_SETTINGS,
 } from '../../templates/github/scripts/governance-rules.mjs'
 import { STATE_FOLDER, stateDir, checkedStateDir, SHELL_TOOLS } from './governance-state.mjs'
 import { lookupTargets, runLookups, createLookups } from '../../templates/github/scripts/supply-chain-lookups.mjs'
@@ -44,7 +44,9 @@ const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 const TRUSTED_ROOTS = [{ prefix: '$TMP/', place: 'tmpDir', minLiteral: 1 }, { prefix: '~/.claude/projects/', place: 'homeDir', minLiteral: 1 }, { prefix: '~/.claude/session-data/', place: 'homeDir', minLiteral: 0 }, { prefix: '~/.claude/plans/', place: 'homeDir', minLiteral: 0 }]
 // Never trusted inside a trusted folder: agent config, git internals, hooks, plugins and keys (compared lower-case).
 const NEVER_TRUSTED_NAMES = ['settings.json', 'settings.local.json', '.mcp.json', '.claude.json', 'claude.md', 'agents.md']
-const NEVER_TRUSTED_SEGMENTS = ['.git', 'hooks', 'plugins', '.ssh']
+// A linked worktree's or submodule's .git is a file naming the git folder, so it counts as git internals too.
+const GIT_PATHS = ['**/.git', '**/.git/**']
+const NEVER_TRUSTED_SEGMENTS = ['.git', 'hooks', 'agents', 'plugins', '.ssh']
 const GLOB_CHARS = /[*?[{]/
 // ESP-21: the after-Bash snapshots live in $TMP/usiatech-governance (STATE_FOLDER in governance-state.mjs). Trusting
 // that folder would let an Edit or Write rewrite a snapshot without a prompt and hide a workflow change, so
@@ -402,6 +404,10 @@ export const sanitizeConfig = (raw) => {
   // ESP-156: the plan is the pointer to the approved work, so its writes are trusted unless the repo opts out. The link
   // checks still ask, and governance-reviewer still checks scope added after approval.
   gov.planEdits ??= 'all'
+  // ESP-166 (ADR-0005): one setting per restriction. A bad value only makes the guard stricter, so it is advisory.
+  const settings = resolveSettings(gov)
+  advise(...settings.problems)
+  gov.settings = settings
   for (const [key, problemOf] of [['trustedWritePaths', trustedEntryProblem], ['trustedDeletePaths', deleteEntryProblem]]) {
     if (gov[key] == null) continue
     if (!Array.isArray(gov[key])) {
@@ -563,6 +569,17 @@ const evidenceOnlyPlanEdit = (rel, tool, ti, root, p) => {
 }
 
 const decision = (d, reason, target) => ({ decision: d, reason, target })
+// A fixed decision: no setting changes it and governance.bypass leaves it as it is (ADR-0005).
+const fixed = (d, reason, target) => ({ ...decision(d, reason, target), fixed: true })
+// ESP-166: the decision a restriction's setting gives (`level` is "deny", "ask" or "allow"), or null for "allow", which
+// is noted in `allowed` under the setting's name so the log records it.
+// The settings that stand in for the plan's Files list, so an edit they let through is allowed outright.
+const SCOPE_SETTINGS = ['governance.planScope', 'governance.adrEdits']
+const bySetting = (name, level, reason, target, allowed) => {
+  if (level !== 'allow') return decision(level, reason, target)
+  allowed.push(name)
+  return null
+}
 
 // The text an edit would write, so content rules can check it. Non-string parts are ignored rather than thrown on.
 const editedText = (tool, ti) => {
@@ -1072,7 +1089,11 @@ const trustedDeleteReason = (cmd, tool, ctx) => {
   return reasons.length ? [...new Set(reasons)].join(' ') : null
 }
 
-const decideBash = (cmd, { cfg, gov, repoRules }, git, root, tool, cwd, p = path, ic = CASE_INSENSITIVE_FS) => {
+// ESP-166: the governance.commands key of each keyed ASK_COMMANDS rule, by its reason. The rest are fixed.
+const COMMAND_KEY_BY_REASON = new Map(Object.entries(COMMAND_SETTINGS).map(([key, why]) => [why, key]))
+
+const decideBash = (cmd, { cfg, gov, repoRules }, git, root, tool, cwd, p = path, ic = CASE_INSENSITIVE_FS, allowed = []) => {
+  const commands = gov.settings.commands
   if (squeezeSpaces(cmd).length > MAX_TOTAL_CHARS) return decision('deny', `Blocked: the command is over ${MAX_TOTAL_CHARS / 1024 / 1024} MB, too long for the guard to check. Write it to a script file and run that instead.`, cmd)
   const text = withoutDataText(cmd, tool, shellOutsideQuietFolder(cwd, root, p))
   // The unescaped form too, so a quoted or split flag or name (`'-enc'`, `-e''nc`, `p''owershell`) is still read.
@@ -1087,15 +1108,21 @@ const decideBash = (cmd, { cfg, gov, repoRules }, git, root, tool, cwd, p = path
     if (rule === DROP_DATABASE_RULE && readOnlyCommand(cmd, tool)) continue
     return decision('deny', `Blocked: ${why}.`, cmd)
   }
-  if (forms.some((c) => c.length > MAX_COMMAND_CHARS)) return decision('ask', `The command is over ${MAX_COMMAND_CHARS / 1024} KB, too long for the guard to check fully. Confirm it is part of the approved plan.`, cmd)
-  if (encoded.includes(null)) return decision('ask', 'The command has a PowerShell -EncodedCommand the guard could not decode. Confirm it is part of the approved plan.', cmd)
+  // ESP-166: the command-side fail-closed checks guard the destructive rules, so they are fixed (ADR-0005).
+  if (forms.some((c) => c.length > MAX_COMMAND_CHARS)) return fixed('ask', `The command is over ${MAX_COMMAND_CHARS / 1024} KB, too long for the guard to check fully. Confirm it is part of the approved plan.`, cmd)
+  if (encoded.includes(null)) return fixed('ask', 'The command has a PowerShell -EncodedCommand the guard could not decode. Confirm it is part of the approved plan.', cmd)
   const protectedBranches = gov.protectedBranches || [cfg.git?.releaseBranch || 'main', 'master']
   const gitAction = forms.map((c) => c.match(new RegExp(String.raw`${GIT_PREFIX}(commit|merge|push)\b`))).find(Boolean)
   if (gitAction) {
     const branch = git.currentBranch(root)
-    if (branch && protectedBranches.includes(branch)) return decision('ask', `Git ${gitAction[1]} while on protected branch "${branch}". Work should happen on a feature branch.`, cmd)
-    for (const b of protectedBranches) {
-      if (forms.some((c) => pushTargets(c, b))) return decision('ask', `Push to protected branch "${b}".`, cmd)
+    if (branch && protectedBranches.includes(branch)) {
+      const d = bySetting('governance.commands.protectedBranchWork', commands.protectedBranchWork, `Git ${gitAction[1]} while on protected branch "${branch}". Work should happen on a feature branch.`, cmd, allowed)
+      if (d) return d
+    }
+    const pushed = protectedBranches.find((b) => forms.some((c) => pushTargets(c, b)))
+    if (pushed) {
+      const d = bySetting('governance.commands.protectedBranchPush', commands.protectedBranchPush, `Push to protected branch "${pushed}".`, cmd, allowed)
+      if (d) return d
     }
   }
   // ESP-150: a plain `git branch -d` or a recursive delete of trusted paths skips its own rule only, and only when every
@@ -1110,36 +1137,72 @@ const decideBash = (cmd, { cfg, gov, repoRules }, git, root, tool, cwd, p = path
       trusted ??= trustedDeleteReason(cmd, tool, ctx) ?? false
       if (trusted) continue
     }
-    return decision('ask', `Risky action: ${why}. Confirm it is part of the approved plan.`, cmd)
+    const reason = `Risky action: ${why}. Confirm it is part of the approved plan.`
+    // ESP-166: a keyed rule follows its setting and an allowed one lets the loop go on, so a fixed rule that also
+    // matches still asks. A built-in rule with no key is destructive and fixed; a repo's own ask rule is not.
+    if (repoRules.ask.includes(rule)) return decision('ask', reason, cmd)
+    const key = COMMAND_KEY_BY_REASON.get(why)
+    if (!key) return fixed('ask', reason, cmd)
+    const d = bySetting(`governance.commands.${key}`, commands[key], reason, cmd, allowed)
+    if (d) return d
   }
   // R6: the after-Bash check trusts its snapshot, so a command that could rewrite one needs confirmation.
-  if (forms.some((c) => SNAPSHOT_COMMAND.test(c))) return decision('ask', 'The command names the after-Bash workflow snapshots (usiatech-governance, bash-wf-*), which could hide a workflow change. Confirm it is part of the approved plan.', cmd)
+  if (forms.some((c) => SNAPSHOT_COMMAND.test(c))) return fixed('ask', 'The command names the after-Bash workflow snapshots (usiatech-governance, bash-wf-*), which could hide a workflow change. Confirm it is part of the approved plan.', cmd)
   return trusted ? { ...decision(null, trusted, cmd), trusted: true } : null
 }
 
 // ESP-9: an edit outside the project asks, unless it falls under a trusted write path. A trusted write still gets
 // the env-file and secret checks, and is returned as an allow (decision null) that logEntries records as "trusted".
+// ESP-166: an outside path naming agent config, git internals, hooks, plugins or keys, which always asks.
+const agentConfigTarget = (file, root, p) => {
+  const parts = p.resolve(root, file).split(/[\\/]/).map((s) => s.toLowerCase())
+  return parts.some((s) => NEVER_TRUSTED_SEGMENTS.includes(s)) || NEVER_TRUSTED_NAMES.includes(parts.at(-1))
+}
+
+// The env-file and secret checks for an edit, by their settings: the first deny, else every ask, or [] (ESP-166).
+const contentDecisions = (file, base, cfg, s, ic, tool, ti, allowed) => {
+  const found = []
+  if (isSecretEnvFile(base, cfg.allowEnvExample !== false, ic)) found.push(bySetting('governance.envFiles', s.envFiles, 'Env files hold secrets.', file, allowed))
+  const secret = findSecret(editedText(tool, ti))
+  if (secret?.decision === 'deny') found.push(bySetting('governance.secrets', s.secrets, `The edit writes what looks like a ${secret.why}. Keep secrets in env files or a secret manager.`, file, allowed))
+  else if (secret) found.push(bySetting('governance.possibleSecrets', s.possibleSecrets, `The edit looks like it hard-codes a ${secret.why}. Confirm it is not a real secret.`, file, allowed))
+  return found.filter(Boolean)
+}
+
 const decideOutsideEdit = (file, gov, root, p, ic, tool, ti, places, cfg) => {
+  const s = gov.settings.edit
+  const allowed = places.allowed
+  // An uncheckable lookup set to "allow" only drops that ask: the edit gets no trusted entry and the checks below still run.
+  let entry = null
   if (p.sep === '\\' && SHORT_NAME.test(file)) {
     const long = longPathOf(p.resolve(root, file), p, places.longName)
-    if (!long || SHORT_NAME.test(long)) return decision('ask', `Edit outside the project folder (${file}) through a Windows short name (8.3) the guard could not resolve.`, file)
-    const result = decideOutsideEdit(long, gov, root, p, ic, tool, ti, places, cfg)
-    return result && { ...result, target: file }
+    if (long && !SHORT_NAME.test(long)) {
+      const result = decideOutsideEdit(long, gov, root, p, ic, tool, ti, places, cfg)
+      return result && { ...result, target: file }
+    }
+    const d = bySetting('governance.uncheckable', s.uncheckable, `Edit outside the project folder (${file}) through a Windows short name (8.3) the guard could not resolve.`, file, allowed)
+    if (d) return d
+  } else {
+    // Fail closed: a lookup that throws (an unreadable folder, a link loop, a dangling link) must not reach the hook's
+    // fail-open catch, since an outside edit asked before trusted write paths existed.
+    try {
+      entry = trustedWriteEntry(file, gov, root, p, ic, places)
+    } catch (e) {
+      const d = bySetting('governance.uncheckable', s.uncheckable, `Edit outside the project folder (${file}). The guard could not check it against the trusted write paths: ${e?.message || e}.`, file, allowed)
+      if (d) return d
+    }
   }
-  let entry
-  // Fail closed: a lookup that throws (an unreadable folder, a link loop, a dangling link) must not reach the hook's
-  // fail-open catch, since an outside edit asked before trusted write paths existed.
-  try {
-    entry = trustedWriteEntry(file, gov, root, p, ic, places)
-  } catch (e) {
-    return decision('ask', `Edit outside the project folder (${file}). The guard could not check it against the trusted write paths: ${e?.message || e}.`, file)
+  if (!entry) {
+    // Agent config and keys outside the project always ask (ADR-0005), whatever outsideWrites says.
+    if (agentConfigTarget(file, root, p)) return fixed('ask', `Edit outside the project folder (${file}), to agent config, git internals, hooks, plugins or keys.`, file)
+    const d = bySetting('governance.outsideWrites', s.outsideWrites, `Edit outside the project folder (${file}).`, file, allowed)
+    if (d) return d
   }
-  if (!entry) return decision('ask', `Edit outside the project folder (${file}).`, file)
-  if (isSecretEnvFile(p.basename(file), cfg.allowEnvExample !== false, ic)) return decision('deny', 'Env files hold secrets.', file)
-  const secret = findSecret(editedText(tool, ti))
-  if (secret?.decision === 'deny') return decision('deny', `The edit writes what looks like a ${secret.why}. Keep secrets in env files or a secret manager.`, file)
-  if (secret) return decision('ask', `The edit looks like it hard-codes a ${secret.why}. Confirm it is not a real secret.`, file)
-  return { ...decision(null, `Trusted write path "${entry}".`, file), trusted: true }
+  const found = contentDecisions(file, p.basename(file), cfg, s, ic, tool, ti, allowed)
+  const deny = found.find((d) => d.decision === 'deny')
+  if (deny) return deny
+  if (found.length) return decision('ask', found.map((d) => d.reason).join(' Also: '), file)
+  return entry ? { ...decision(null, `Trusted write path "${entry}".`, file), trusted: true } : null
 }
 
 // ESP-82: where Claude Code puts the worktrees of isolated agents.
@@ -1155,7 +1218,10 @@ const decideWorktreeEdit = async (file, safe, git, root, p, ic, tool, ti, net, p
     top = git.linkedWorktree?.(root, file) ?? null
   } catch (e) {
     const why = `The guard could not check whether it is in a linked worktree: ${e?.message || e}.`
-    return { result: decision('ask', fallback?.decision === 'ask' ? `${fallback.reason} ${why}` : `Edit ${file}. ${why}`, file) }
+    if (fallback?.decision === 'ask') return { result: { ...fallback, reason: `${fallback.reason} ${why}` } }
+    const d = bySetting('governance.uncheckable', safe.gov.settings.edit.uncheckable, `Edit ${file}. ${why}`, file, places.allowed)
+    // Allowed: decide it as a project edit (null), so the content, path and scope checks still run.
+    return d ? { result: d } : null
   }
   if (!top) return null
   // git gives the real path; compare the file's real folder with it, so an 8.3 name (C:\Users\RUNNER~1) or a link
@@ -1189,11 +1255,16 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
   const rel = relNative.split(p.sep).join('/')
   const worktreeEdit = (fallback) => decideWorktreeEdit(file, { cfg, gov }, git, root, p, ic, tool, ti, net, places, fallback)
   if (outside) {
-    // The git probes run only for an outside edit that would ask: a trusted write or a deny needs no worktree check.
+    // A trusted write or a deny needs no worktree check. Every other outside edit gets one, including one that
+    // outsideWrites or uncheckable allowed: an edit in a linked worktree keeps the project's rules (ESP-82 R13).
     const result = decideOutsideEdit(file, gov, root, p, ic, tool, ti, places, cfg)
-    if (result?.decision !== 'ask') return result
+    if (result?.decision === 'deny' || result?.trusted) return result
     const worktree = await worktreeEdit(result)
-    return worktree ? worktree.result : result
+    if (!worktree) return result
+    // Decided as a project edit, so outsideWrites didn't allow it.
+    const i = places.allowed.indexOf('governance.outsideWrites')
+    if (i >= 0) places.allowed.splice(i, 1)
+    return worktree.result
   }
   if (matchAny(rel, [WORKTREES_PATH], ic)) {
     const worktree = await worktreeEdit(null)
@@ -1205,21 +1276,21 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
     return result && { ...result, target: rel }
   }
 
-  if (isSecretEnvFile(path.posix.basename(rel), cfg.allowEnvExample !== false, ic)) return decision('deny', 'Env files hold secrets.', rel)
-  const prot = matchAny(rel, cfg.protectedPaths || DEFAULT_PROTECTED_PATHS, ic)
-  if (prot) return decision('deny', `Protected path "${prot}" (generated or managed file; regenerate instead).`, rel)
-  for (const g of cfg.immutableWhenCommitted || []) {
-    if (matchAny(rel, [g], ic) && existsSync(p.join(root, rel)) && git.isTracked(root, rel)) {
-      return decision('deny', `"${rel}" matches "${g}" and is already committed; create a new file instead.`, rel)
-    }
-  }
+  // ESP-166: each restriction follows its own setting (ADR-0005). A deny returns at once; an ask joins the others.
+  const s = gov.settings.edit
+  const allowed = places.allowed
+  const found = []
   // ESP-110 item 10: an 8.3 short name (AGENTS~1.MD) may stand for any long name, so the path checks can't see it.
-  // It is one of the ask reasons below, so it never turns a deny into an ask or hides another ask.
-  const shortName = p.sep === '\\' && SHORT_NAME.test(rel)
-
+  // It is an ask, so it never turns a deny into an ask or hides another ask.
+  if (p.sep === '\\' && SHORT_NAME.test(rel)) found.push(bySetting('governance.uncheckable', s.uncheckable, `"${rel}" has a Windows short name (8.3) segment, which may stand for a governance, plan or protected file. Confirm the edit.`, rel, allowed))
   // Before the plan/exempt/ask checks: a secret is never fine, wherever it is written.
-  const secret = findSecret(editedText(tool, ti))
-  if (secret?.decision === 'deny') return decision('deny', `The edit writes what looks like a ${secret.why}. Keep secrets in env files or a secret manager.`, rel)
+  found.push(...contentDecisions(rel, path.posix.basename(rel), cfg, s, ic, tool, ti, allowed))
+  const prot = matchAny(rel, cfg.protectedPaths || DEFAULT_PROTECTED_PATHS, ic)
+  if (prot) found.push(bySetting('governance.protectedPaths', s.protectedPaths, `Protected path "${prot}" (generated or managed file; regenerate instead).`, rel, allowed))
+  const immutable = (cfg.immutableWhenCommitted || []).find((g) => matchAny(rel, [g], ic) && existsSync(p.join(root, rel)) && git.isTracked(root, rel))
+  if (immutable) found.push(bySetting('governance.immutableFiles', s.immutableFiles, `"${rel}" matches "${immutable}" and is already committed; create a new file instead.`, rel, allowed))
+  const firstDeny = found.find((d) => d?.decision === 'deny')
+  if (firstDeny) return firstDeny
   const kind = isWorkflowPath(rel) ? 'workflow' : dependencyKind(rel) ? 'dependency' : null
   const { findings, failures } = kind === 'workflow' ? { findings: workflowFindings(rel, tool, ti, gov, root, p, ic), failures: [] }
     : kind === 'dependency' ? await dependencyFindings(rel, tool, ti, gov, root, p, ic, net)
@@ -1229,21 +1300,24 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
   // A path that leaves .claude/plans through a link asks instead (R9).
   const allPlan = gov.planEdits === 'all' && matchAny(rel, [PLAN_PATH, PLAN_ARCHIVE_PATH], ic)
   const linkProblem = allPlan && planLinkProblem(rel, root, p)
-  const scope = linkProblem ? decision('ask', `Plan or archive write not trusted by governance.planEdits "all": ${linkProblem}`, rel)
+  const scope = linkProblem ? bySetting('governance.uncheckable', s.uncheckable, `Plan or archive write not trusted by governance.planEdits "all": ${linkProblem}`, rel, allowed)
     : allPlan ? { ...decision(null, 'Plan or archive write trusted by governance.planEdits "all".', rel), trusted: true, planWrite: true }
     : matchAny(rel, [PLAN_PATH], ic) && gov.planEdits !== 'ask' && evidenceOnlyPlanEdit(rel, tool, ti, root, p)
       ? { ...decision(null, 'The plan edit only changes evidence, task ticks or the change log.', rel), trusted: true, planWrite: true }
-      : decideScope(rel, gov, root, ic, places.planRoot, p)
+      : decideScope(rel, gov, root, ic, places.planRoot, p, allowed)
+  const findingsKey = kind === 'workflow' ? 'workflowFindings' : 'dependencyFindings'
+  if (blocking.length) found.push(bySetting(`governance.${findingsKey}`, s[findingsKey], `The ${kind} change has ${blocking.length} high-risk finding(s).`, rel, allowed))
+  if (scope?.decision) found.push(scope)
+  const asks = found.filter(Boolean)
+  const deny = asks.find((d) => d.decision === 'deny')
   // A credential or content ask must not hide a scope or governance ask; the user confirms them all at once.
-  const reasons = [
-    shortName && `"${rel}" has a Windows short name (8.3) segment, which may stand for a governance, plan or protected file. Confirm the edit.`,
-    secret && `The edit looks like it hard-codes a ${secret.why}. Confirm it is not a real secret.`,
-    blocking.length && `The ${kind} change has ${blocking.length} high-risk finding(s).`,
-    scope?.decision && scope.reason,
-  ].filter(Boolean)
-  const result = reasons.length
-    ? decision('ask', reasons.join(' Also: ') + (findings.length ? ` Findings: ${findings.map(formatFinding).join(' ')}` : ''), rel)
+  const result = deny ? { ...deny }
+    : asks.length ? { ...decision('ask', asks.map((d) => d.reason).join(' Also: ') + (findings.length ? ` Findings: ${findings.map(formatFinding).join(' ')}` : ''), rel), ...(asks.some((d) => d.fixed) && { fixed: true }) }
     : scope?.trusted || scope?.inPlan ? scope
+    // ESP-166: an edit the scope settings let through (planScope or adrEdits stand in for the plan's Files list) is
+    // allowed outright, as an in-plan edit is, and never in a git folder or through a link (the checks above read the
+    // path as written). Other settings only drop the guard's own ask, so Claude Code's mode decides, as for any edit.
+    : allowed.some((name) => SCOPE_SETTINGS.includes(name)) && !matchAny(rel, GIT_PATHS, ic) && reachedDirectly(rel, root, p, ic) ? { ...decision(null, '', rel), allowEdit: true }
     : findings.length || failures.length ? decision(null, '', rel) : null
   if (result && findings.length) result.findings = findings
   if (result && failures.length) result.failures = failures
@@ -1313,23 +1387,43 @@ const reachedDirectly = (rel, root, p, ic) => {
   }
 }
 
-const decideScope = (rel, gov, root, ic, planRoot, p = path) => {
+const AGENT_INTERNAL_PATHS = [...GIT_PATHS, ...AGENT_CODE_PATHS]
+
+const decideScope = (rel, gov, root, ic, planRoot, p = path, allowed = []) => {
+  const { edit: s, adrPaths } = gov.settings
   // Otherwise a plan could widen its own Files list (e.g. to `**`) and unlock every later edit.
   if (matchAny(rel, [PLAN_PATH], ic)) return decision('ask', `The approved plan sets the edit scope. Changing ${PLAN_PATH} needs explicit confirmation.`, rel)
   if (matchAny(rel, GUARD_EXEMPT_PATHS, ic)) return null
+  // ESP-166 (ADR-0005): the guard's own config always asks, so only the user can loosen the guard.
+  if (matchAny(rel, GUARD_CONFIG_PATHS, ic)) return fixed(s.claudeConfig === 'deny' ? 'deny' : 'ask', `"${rel}" is the guard's own config. Changes always need explicit confirmation.`, rel)
+  // Git internals and Claude Code's hooks and agents run code or change what runs, so no setting or bypass lifts this
+  // ask (security review 2026-11-16).
+  if (matchAny(rel, AGENT_INTERNAL_PATHS, ic)) {
+    const deny = s.claudeConfig === 'deny' && matchAny(rel, ['.claude/**'], ic)
+    return fixed(deny ? 'deny' : 'ask', `"${rel}" is git internals or a Claude Code hook or agent. Changes always need explicit confirmation.`, rel)
+  }
   const hit = matchAny(rel, gov.askPaths || DEFAULT_ASK_PATHS, ic)
-  if (hit) return decision('ask', `"${rel}" is a governance, CI or dependency file (${hit}). Changes need explicit confirmation.`, rel)
+  if (hit) {
+    // A path in a group follows the group's setting; a repo's own askPaths entry outside every group always asks.
+    const group = askPathGroup(rel, ic)
+    const reason = `"${rel}" is a governance, CI or dependency file (${hit}). Changes need explicit confirmation.`
+    const d = group ? bySetting(`governance.${group}`, s[group], reason, rel, allowed) : decision('ask', reason, rel)
+    if (d) return d
+  }
   const plan = planFiles(root) ?? (planRoot ? planFiles(planRoot) : null)
   if (plan && plan.length) {
     const covered = matchAny(rel, plan, ic)
-    if (!covered) return decision('ask', `"${rel}" is not in the approved plan (.claude/plans/active.md → Files). Confirm the scope change or update the plan.`, rel)
+    // ADRs outside the Files list follow governance.adrEdits instead, so a comment or a renumber doesn't ask. Only with
+    // an active plan: with none, requirePlan keeps its meaning (ADR-0005).
+    if (!covered && matchAny(rel, adrPaths, ic)) return bySetting('governance.adrEdits', s.adrEdits, `"${rel}" is an architecture decision record (governance.adrEdits). Confirm the edit.`, rel, allowed)
+    if (!covered) return bySetting('governance.planScope', s.planScope, `"${rel}" is not in the approved plan (.claude/plans/active.md → Files). Confirm the scope change or update the plan.`, rel, allowed)
     // ESP-163: marked so the hook can tell Claude Code to allow it; otherwise Claude Code prompts for every edit. Never
     // for a git folder, the project's or a nested repo's: a broad Files glob must not let a hook or config there be
     // written unprompted.
     // Nor through a link or junction: the checks above read the path as written, so `tools -> .git` with `tools/**` in
     // Files would reach git's hooks (security review 2026-11-13). Such an edit keeps Claude Code's prompt.
     const result = decision(null, `"${rel}" is in the approved plan (Files: ${covered}).`, rel)
-    return matchAny(rel, ['**/.git/**'], ic) || !reachedDirectly(rel, root, p, ic) ? result : { ...result, inPlan: true }
+    return matchAny(rel, GIT_PATHS, ic) || !reachedDirectly(rel, root, p, ic) ? result : { ...result, inPlan: true }
   }
   if (!plan && gov.requirePlan) return decision('ask', 'No approved plan is active (.claude/plans/active.md). Run the approve-plan skill first.', rel)
   return null
@@ -1364,17 +1458,25 @@ export const evaluate = async (input, { root, cfg = {}, configError = null, git 
 
   let result = null
   let target = ''
+  // ESP-166: the settings that said "allow" on the way, named for the log.
+  const allowed = []
   if (SHELL_TOOLS.includes(tool)) {
     target = String(ti.command || '')
-    result = decideBash(target, safe, git, root, tool, input.cwd, pathApi, caseInsensitive)
+    result = decideBash(target, safe, git, root, tool, input.cwd, pathApi, caseInsensitive, allowed)
   } else if (EDIT_TOOLS.includes(tool)) {
     target = ti.file_path || ti.notebook_path || ''
     if (!target) return null
     if (typeof target !== 'string') {
       target = JSON.stringify(target)
-      result = decision('ask', 'The edit target is not a file path string. Confirm the edit.', target)
-    } else result = await decideEdit(target, safe, git, root, pathApi, caseInsensitive, tool, ti, { lookups, deadlineMs: lookupDeadlineMs }, { homeDir, tmpDir, uid, session: input.session_id, longName })
+      result = bySetting('governance.uncheckable', safe.gov.settings.edit.uncheckable, 'The edit target is not a file path string. Confirm the edit.', target, allowed)
+    } else result = await decideEdit(target, safe, git, root, pathApi, caseInsensitive, tool, ti, { lookups, deadlineMs: lookupDeadlineMs }, { homeDir, tmpDir, uid, session: input.session_id, longName, allowed })
   } else return null
+  if (allowed.length) result = { ...(result ?? decision(null, '', target)), configAllowed: [...new Set(allowed)] }
+  // ESP-166 (ADR-0005): governance.bypass lets every ask through that isn't fixed; denies stay. A broken config is
+  // never read as a bypass, so the escalation below still asks.
+  if (!escalating && safe.gov.settings.bypass && result?.decision === 'ask' && !result.fixed) {
+    result = { ...result, decision: null, reason: `governance.bypass: ${result.reason}`, bypassed: true }
+  }
 
   // Advisory problems alone (ESP-35 R1) don't change the decision; they are reported beside it, once per change (R4).
   if (!escalating && markerFile) {
@@ -1413,7 +1515,9 @@ export const logEntries = (result, tool) => {
     ...(result.markerError ? [{ ...atConfig, decision: 'error', reason: result.markerError }] : []),
     ...(result.findings || []).map((f) => ({ ...at, decision: 'finding', rule: f.rule, tier: f.tier, file: f.file, line: f.line, detail: f.detail, suppressed: !!f.suppressed })),
     ...(result.failures || []).map((f) => ({ ...at, decision: 'error', lookup: f.lookup, reason: `lookup failed open (${f.lookup}): ${f.reason}` })),
+    ...(result.configAllowed || []).map((name) => ({ ...at, decision: 'allowed-by-config', reason: `${name} is "allow".` })),
     ...(result.decision ? [{ ...at, decision: result.decision, reason: result.reason }] : []),
     ...(!result.decision && result.trusted ? [{ ...at, decision: 'trusted', reason: result.reason }] : []),
+    ...(result.bypassed ? [{ ...at, decision: 'bypassed', reason: result.reason }] : []),
   ]
 }

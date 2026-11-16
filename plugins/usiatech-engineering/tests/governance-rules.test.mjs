@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {
   globToRegExp, matchAny, isSecretEnvFile, findSecret, DENY_COMMANDS, ASK_COMMANDS,
   DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, parseAllowlist, applyAllowlist, allowlistWarnings, blockingFindings, formatFinding,
-  checkWorkflow, isWorkflowPath,
+  checkWorkflow, isWorkflowPath, ASK_PATH_GROUPS, askPathGroup, resolveSettings, COMMAND_SETTINGS,
 } from '../templates/github/scripts/governance-rules.mjs'
 
 describe('globToRegExp', () => {
@@ -70,6 +70,28 @@ describe('rule tables', () => {
     assert.ok(DEFAULT_ASK_PATHS.includes('REVIEW.md'))
     assert.ok(DEFAULT_ASK_PATHS.includes('.github/**'))
     assert.deepEqual(DEFAULT_PROTECTED_PATHS, ['generated/**', '**/generated/**'])
+  })
+
+  // ESP-166 (ADR-0005): one group per setting key; every default ask path is in exactly one group.
+  it('should put each default ask path in one settings group, nested CLAUDE.md included', () => {
+    assert.deepEqual(DEFAULT_ASK_PATHS, Object.values(ASK_PATH_GROUPS).flat())
+    assert.ok(DEFAULT_ASK_PATHS.includes('**/CLAUDE.md'))
+    for (const [rel, group] of [['AGENTS.md', 'agentsFiles'], ['a/b/CLAUDE.md', 'claudeMdFiles'], ['.claude/x.json', 'claudeConfig'], ['.github/ci.yml', 'ciFiles'], ['web/package.json', 'dependencyFiles'], ['src/a.ts', undefined]]) {
+      assert.equal(askPathGroup(rel), group, rel)
+    }
+  })
+
+  it('should resolve settings to their defaults and name every keyed command rule', () => {
+    const { edit, commands, bypass, adrPaths, problems } = resolveSettings(undefined)
+    assert.equal(edit.adrEdits, 'allow')
+    assert.equal(edit.secrets, 'deny')
+    assert.equal(edit.agentsFiles, 'ask')
+    assert.equal(commands.addDependency, 'ask')
+    assert.equal(bypass, false)
+    assert.deepEqual(adrPaths, ['docs/adr/**', 'docs/decisions/**'])
+    assert.deepEqual(problems, [])
+    const reasons = ASK_COMMANDS.map(([why]) => why)
+    for (const why of Object.values(COMMAND_SETTINGS)) assert.ok(reasons.includes(why), why)
   })
 })
 

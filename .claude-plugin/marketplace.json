@@ -1,13 +1,19 @@
 {
   "name": "usiatech",
   "owner": { "name": "Francis Amalraj" },
-  "metadata": { "description": "UsiaTech private plugin marketplace" },
+  "metadata": { "description": "UsiaTech public Claude Code plugin marketplace" },
   "plugins": [
     {
       "name": "usiatech-engineering",
       "source": "./plugins/usiatech-engineering",
       "description": "UsiaTech Engineering: verification gate, release flow, plan approval and scope control, governance and convention review, user-guide updates, and a guard for dangerous actions.",
       "version": "0.27.0"
+    },
+    {
+      "name": "usiatech-usage-band",
+      "source": "./plugins/usiatech-usage-band",
+      "description": "UsiaTech Usage Band: 5-hour and weekly limits, context fill, model and session cost above the prompt, in UsiaTech branding, on the CLI, desktop app and VS Code.",
+      "version": "0.1.0"
     }
   ]
 }
