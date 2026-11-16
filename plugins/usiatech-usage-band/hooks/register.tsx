@@ -22,7 +22,22 @@ const LEVEL = { ok: '#0ea5e9', warn: '#f59e0b', hot: '#ef4444', track: '#94a3b86
 const LOGO_PATHS = `<rect width="24" height="24" rx="5" fill="url(#ug)"/><path d="M5 7C5 5.9 5.9 5 7 5H17C18.1 5 19 5.9 19 7V14C19 17.87 15.87 21 12 21C8.13 21 5 17.87 5 14V7Z" stroke="#fff" stroke-width="2.5" fill="none"/><path d="M12 10V15" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/><circle cx="12" cy="8" r="1.5" fill="#fff"/>`
 // The logo alone keeps the desktop band one text row high, as the stock usage band.
 const LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><defs><linearGradient id="ug" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="${BRAND.light}"/><stop offset="100%" stop-color="${BRAND.usia}"/></linearGradient></defs><title>UsiaTech</title>${LOGO_PATHS}</svg>`
-const ICON_PX = 16
+// The text steps down as the window narrows, so the band keeps to one row; it wraps only below the smallest step.
+type Fit = { size: 'footnote' | 'caption'; iconPx: number }
+const FITS: readonly { fit: Fit; scale: number }[] = [
+  { fit: { size: 'footnote', iconPx: 16 }, scale: 1 },
+  { fit: { size: 'caption', iconPx: 14 }, scale: 0.85 },
+]
+// Cells a segment takes beyond its text: icon, padding and gaps.
+const SEGMENT_CELLS = 5
+
+// Picks the largest step whose estimated row width fits the surface; no width reported, the largest.
+const fitFor = (columns: number | undefined, texts: readonly string[]): Fit => {
+  if (!columns) return FITS[0].fit
+  const textCells = texts.reduce((sum, t) => sum + t.length, 0)
+  const needed = (scale: number) => textCells * scale + texts.length * SEGMENT_CELLS + 2
+  return (FITS.find((f) => needed(f.scale) <= columns) ?? FITS[FITS.length - 1]).fit
+}
 
 const levelColor = (percent: number | null): string =>
   percent == null ? LEVEL.track : percent >= 85 ? LEVEL.hot : percent >= 60 ? LEVEL.warn : LEVEL.ok
@@ -84,10 +99,10 @@ type Gauge = { key: string; percent: number | null; caption: string }
 
 const gaugesOf = (s: Snapshot): Gauge[] => {
   const reset = (limit: Limit | null, withDay: boolean) => resetText(limit?.resetsAt ?? null, withDay)
-  const tokens = s.contextTokens == null ? '' : ` · ${tokensText(s.contextTokens)}/${tokensText(s.contextWindow)}`
+  const tokens = s.contextTokens == null ? '' : ` ${tokensText(s.contextTokens)}/${tokensText(s.contextWindow)}`
   return [
-    { key: '5h', percent: s.fiveHour?.percent ?? null, caption: `5h${reset(s.fiveHour, false) && ` · ${reset(s.fiveHour, false)}`}` },
-    { key: 'wk', percent: s.week?.percent ?? null, caption: `week${reset(s.week, true) && ` · ${reset(s.week, true)}`}` },
+    { key: '5h', percent: s.fiveHour?.percent ?? null, caption: `5h${reset(s.fiveHour, false) && ` ${reset(s.fiveHour, false)}`}` },
+    { key: 'wk', percent: s.week?.percent ?? null, caption: `wk${reset(s.week, true) && ` ${reset(s.week, true)}`}` },
     { key: 'ctx', percent: s.contextPercent, caption: `ctx${tokens}` },
   ]
 }
@@ -173,25 +188,30 @@ export const register: Register = (on, options) => {
     }
 
     const { Box, Text, Svg, Button } = $.ui.resolve(e)
-    // One footnote-size row, so the band is no taller than the stock usage band.
-    // Segments alternate shades to read apart; they wrap in their own Box, and
-    // the close glyph keeps the top-right corner.
+    const { size, iconPx } = fitFor(e.viewport?.columns, [
+      s.model,
+      ...gauges.map((g) => `${percentText(g.percent)} ${g.caption}`),
+      `${cost} ${delta}`,
+    ])
+    // One row with no border; alternating segment shades set the parts apart. The text size follows
+    // the width (fitFor), the segments wrap only below the smallest step, and the close glyph keeps
+    // the top-right corner.
     return (
-      <Box borderStyle="round" borderColor={BRAND.light} flexDirection="row" alignItems="flex-start" columnGap={1} paddingX={1}>
+      <Box flexDirection="row" alignItems="flex-start" columnGap={1}>
         <Box flexDirection="row" alignItems="center" flexGrow={1} flexShrink={1} flexWrap="wrap">
           <Box {...segmentProps(0)}>
-            <Svg source={LOGO_SVG} alt="UsiaTech" width={ICON_PX} height={ICON_PX} isInteractive />
-            <Text size="footnote" color={BRAND.usia}>{s.model}</Text>
+            <Svg source={LOGO_SVG} alt="UsiaTech" width={iconPx} height={iconPx} isInteractive />
+            <Text size={size} color={BRAND.usia}>{s.model}</Text>
           </Box>
           {gauges.map((g, i) => (
             <Box key={g.key} {...segmentProps(i + 1)}>
-              <Svg source={ringSvg(g.percent)} alt={`${g.key} ${percentText(g.percent)}`} width={ICON_PX} height={ICON_PX} />
-              <Text size="footnote" bold>{percentText(g.percent)}</Text>
-              <Text size="footnote" dimColor>{g.caption}</Text>
+              <Svg source={ringSvg(g.percent)} alt={`${g.key} ${percentText(g.percent)}`} width={iconPx} height={iconPx} />
+              <Text size={size} bold>{percentText(g.percent)}</Text>
+              <Text size={size} dimColor>{g.caption}</Text>
             </Box>
           ))}
           <Box {...segmentProps(gauges.length + 1)}>
-            <Text size="footnote">
+            <Text size={size}>
               <Text bold>{cost}</Text>
               {delta && <Text color={BRAND.usia} backgroundColor="#e0f2fe"> {delta} </Text>}
             </Text>
@@ -202,7 +222,7 @@ export const register: Register = (on, options) => {
         <Box key="hide-tip" flexShrink={0}>
           <Button key="hide" role="dismiss" label="×" plain dimColor onPress={hide} />
           <Box position="absolute" top={0} right={2} display="none" hover={{ display: 'flex' }} backgroundColor={BRAND.panel} paddingX={1}>
-            <Text size="footnote" wrap="truncate">Hide for this session</Text>
+            <Text size={size} wrap="truncate">Hide for this session</Text>
           </Box>
         </Box>
       </Box>

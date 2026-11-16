@@ -107,3 +107,21 @@ test('the close button hides the band for this session', async ($, on) => {
   expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
   await ui.unmount()
 })
+
+test('the desktop text steps down from footnote to caption as the window narrows', async ($, on) => {
+  mock.store(on)
+  on('ui.log', () => ({ value: undefined }))
+  on('command.register', () => ({ value: { command: 'usage-band' } }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.usage', () => ({ value: USAGE }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  for (const [columns, size] of [[200, 'footnote'], [80, 'caption']] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop', viewport: { columns, rows: 40 } })
+    const model = await ui.find({ type: 'Text', text: /^Opus 5\.5$/ })
+    expect(model?.props.size).toBe(size)
+    await ui.unmount()
+  }
+})
