@@ -7,13 +7,13 @@
       "name": "usiatech-engineering",
       "source": "./plugins/usiatech-engineering",
       "description": "UsiaTech Engineering: verification gate, release flow, plan approval and scope control, governance and convention review, user-guide updates, and a guard for dangerous actions.",
-      "version": "0.28.0"
+      "version": "0.29.0"
     },
     {
       "name": "usiatech-usage-band",
       "source": "./plugins/usiatech-usage-band",
       "description": "UsiaTech Usage Band: 5-hour and weekly limits, context fill, model and session cost above the prompt, in UsiaTech branding, on the CLI, desktop app and VS Code.",
-      "version": "0.1.0"
+      "version": "0.2.0"
     }
   ]
 }
