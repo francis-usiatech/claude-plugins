@@ -65,3 +65,45 @@ test('/usage-band hide hides the band and /usage-band show brings it back', asyn
   const unknown = await $.command.run({ command: 'usage-band', args: 'maybe' })
   expect(unknown.text).toContain('Unknown option')
 })
+
+test('the "hidden" option hides the band in every session and /usage-band show points to it', { options: { hidden: true } }, async ($, on) => {
+  mock.store(on)
+  on('ui.log', () => ({ value: undefined }))
+  on('command.register', () => ({ value: { command: 'usage-band' } }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.usage', () => ({ value: USAGE }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
+  await ui.unmount()
+
+  const show = await $.command.run({ command: 'usage-band', args: 'show' })
+  expect(show.text).toContain('"hidden" option')
+})
+
+test('the close button hides the band for this session', async ($, on) => {
+  mock.store(on)
+  on('ui.log', () => ({ value: undefined }))
+  on('command.register', () => ({ value: { command: 'usage-band' } }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.usage', () => ({ value: USAGE }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await ui.press({ key: 'hide' })
+  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
+  await ui.unmount()
+})

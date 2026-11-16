@@ -14,19 +14,20 @@ A ring is blue under 60%, amber from 60% and red from 85%.
 
 ## Where it works
 
-| Surface | Logo and wordmark | Gauges |
+| Surface | Brand | Gauges |
 |---|---|---|
-| Desktop app | SVG | SVG rings |
-| VS Code extension | SVG | SVG rings |
+| Desktop app | SVG logo | SVG rings |
+| VS Code extension | SVG logo | SVG rings |
 | CLI (terminal) | Coloured "UsiaTech" text | Pie glyphs `○◔◑◕●` |
 
-The terminal draws the wordmark in its own font. The desktop and VS Code use Inter where it is installed, otherwise the system font.
+The desktop and VS Code draw one compact row, no taller than the stock usage band: the logo, footnote-size text and small rings. The terminal draws the wordmark in its own font.
 
 ## Show or hide it
 
 - `/usage-band hide` hides the band, `/usage-band show` shows it, and `/usage-band` alone toggles it.
-- The band's own **Hide** button (`×` in the terminal) hides it too.
-- The choice is kept for later sessions.
+- The band's own close button (top right on the desktop, `×` in the terminal) hides it too.
+- These hide the band for the current session only.
+- To hide it in every session, turn on the plugin's **Hide the usage band** option (`hidden`) in `/config`.
 
 ## Limits
 
