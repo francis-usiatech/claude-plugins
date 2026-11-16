@@ -170,11 +170,13 @@ export const register: Register = (on, options) => {
 
     const { Box, Text, Svg, Button } = $.ui.resolve(e)
     // One footnote-size row, so the band is no taller than the stock usage band.
+    // The gauges wrap inside their own Box; the close glyph keeps the top-right corner.
     return (
-      <Box borderStyle="round" borderColor={BRAND.light} flexDirection="row" alignItems="center" columnGap={2} paddingX={1} flexWrap="wrap">
-        <Box flexDirection="row" alignItems="center" columnGap={1}>
-          <Svg source={LOGO_SVG} alt="UsiaTech" width={ICON_PX} height={ICON_PX} />
-          <Text size="footnote" color={BRAND.usia}>{s.model}</Text>
+      <Box borderStyle="round" borderColor={BRAND.light} flexDirection="row" alignItems="flex-start" columnGap={1} paddingX={1}>
+        <Box flexDirection="row" alignItems="center" columnGap={2} flexGrow={1} flexShrink={1} flexWrap="wrap">
+          <Box flexDirection="row" alignItems="center" columnGap={1}>
+            <Svg source={LOGO_SVG} alt="UsiaTech" width={ICON_PX} height={ICON_PX} />
+            <Text size="footnote" color={BRAND.usia}>{s.model}</Text>
         </Box>
         {gauges.map((g) => (
           <Box key={g.key} flexDirection="row" alignItems="center" columnGap={1}>
@@ -187,7 +189,10 @@ export const register: Register = (on, options) => {
           <Text bold>{cost}</Text>
           {delta && <Text color={BRAND.usia} backgroundColor="#e0f2fe"> {delta} </Text>}
         </Text>
-        <Button key="hide" role="dismiss" label="Hide for this session" onPress={hide} />
+        </Box>
+        <Box flexShrink={0}>
+          <Button key="hide" role="dismiss" label="Hide for this session" plain dimColor onPress={hide}>×</Button>
+        </Box>
       </Box>
     )
   })
