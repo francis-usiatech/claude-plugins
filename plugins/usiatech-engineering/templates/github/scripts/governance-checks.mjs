@@ -9,7 +9,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMainModule } from './main-module.mjs'
 import {
-  matchAny, isSecretEnvFile, isPlainObject, isStringArray, DEFAULT_ASK_PATHS, resolveSettings, askPathGroup, GUARD_CONFIG_PATHS,
+  matchAny, isSecretEnvFile, isPlainObject, isStringArray, DEFAULT_ASK_PATHS, resolveSettings, askPathGroup, GUARD_CONFIG_PATHS, AGENT_CODE_PATHS,
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, checkFakePasses, isJsTsFile,
   parseAllowlist, applyAllowlist, allowlistWarnings, blockingFindings, formatFinding, PROJECT_KEY, jiraKeyPattern,
 } from './governance-rules.mjs'
@@ -215,7 +215,7 @@ export const runGovernanceChecks = async ({ env, lookups, govRoot = SCRIPT_GOV_R
   settings.problems.forEach((p) => configError(`${p}.`))
   const groupAllowed = (p) => {
     const group = askPathGroup(p, IGNORE_CASE)
-    return !!group && settings.edit[group] === 'allow' && !matchAny(p, GUARD_CONFIG_PATHS, IGNORE_CASE)
+    return !!group && settings.edit[group] === 'allow' && !matchAny(p, [...GUARD_CONFIG_PATHS, ...AGENT_CODE_PATHS], IGNORE_CASE)
   }
   const govTouched = []
   for (const [status, p1, p2] of changes) {

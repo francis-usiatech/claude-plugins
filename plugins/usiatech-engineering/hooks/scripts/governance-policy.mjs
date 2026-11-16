@@ -14,7 +14,7 @@ import {
   BRANCH_DELETE_RULE, RECURSIVE_DELETE_RULE, hasControlChar,
   DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH, parseAllowlist, allowlistWarnings,
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, applyAllowlist, blockingFindings, formatFinding, oneLine, TIER,
-  isPathPrefix, CONTROL_CODE_POINTS, GIT_PREFIX, resolveSettings, askPathGroup, GUARD_CONFIG_PATHS, COMMAND_SETTINGS,
+  isPathPrefix, CONTROL_CODE_POINTS, GIT_PREFIX, resolveSettings, askPathGroup, GUARD_CONFIG_PATHS, AGENT_CODE_PATHS, COMMAND_SETTINGS,
 } from '../../templates/github/scripts/governance-rules.mjs'
 import { STATE_FOLDER, stateDir, checkedStateDir, SHELL_TOOLS } from './governance-state.mjs'
 import { lookupTargets, runLookups, createLookups } from '../../templates/github/scripts/supply-chain-lookups.mjs'
@@ -1255,11 +1255,16 @@ const decideEdit = async (file, { cfg, gov }, git, root, p, ic, tool, ti, net, p
   const rel = relNative.split(p.sep).join('/')
   const worktreeEdit = (fallback) => decideWorktreeEdit(file, { cfg, gov }, git, root, p, ic, tool, ti, net, places, fallback)
   if (outside) {
-    // The git probes run only for an outside edit that would ask: a trusted write or a deny needs no worktree check.
+    // A trusted write or a deny needs no worktree check. Every other outside edit gets one, including one that
+    // outsideWrites or uncheckable allowed: an edit in a linked worktree keeps the project's rules (ESP-82 R13).
     const result = decideOutsideEdit(file, gov, root, p, ic, tool, ti, places, cfg)
-    if (result?.decision !== 'ask') return result
+    if (result?.decision === 'deny' || result?.trusted) return result
     const worktree = await worktreeEdit(result)
-    return worktree ? worktree.result : result
+    if (!worktree) return result
+    // Decided as a project edit, so outsideWrites didn't allow it.
+    const i = places.allowed.indexOf('governance.outsideWrites')
+    if (i >= 0) places.allowed.splice(i, 1)
+    return worktree.result
   }
   if (matchAny(rel, [WORKTREES_PATH], ic)) {
     const worktree = await worktreeEdit(null)
@@ -1382,7 +1387,7 @@ const reachedDirectly = (rel, root, p, ic) => {
   }
 }
 
-const AGENT_INTERNAL_PATHS = [...GIT_PATHS, '.claude/hooks/**', '.claude/agents/**']
+const AGENT_INTERNAL_PATHS = [...GIT_PATHS, ...AGENT_CODE_PATHS]
 
 const decideScope = (rel, gov, root, ic, planRoot, p = path, allowed = []) => {
   const { edit: s, adrPaths } = gov.settings

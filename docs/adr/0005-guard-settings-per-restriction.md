@@ -85,7 +85,7 @@ These have no key, and bypass leaves them as they are:
 - Every deny still denies, and so do the fixed rules.
 - To lift one deny, set that key to `"ask"` or `"allow"`.
 
-**CI (D7.1).** The PR governance check reads the same file-group keys from the base-branch config, through the same validator. A file whose group is `"allow"` needs no approval label.
+**CI (D7.1).** The PR governance check reads the same file-group keys from the base-branch config, through the same validator. A file whose group is `"allow"` needs no approval label, except the guard config files and `.claude/hooks/**` and `.claude/agents/**`, which always need it.
 
 ## ADR-0004
 

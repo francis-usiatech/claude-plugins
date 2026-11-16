@@ -142,6 +142,9 @@ export const DEFAULT_ASK_PATHS = Object.values(ASK_PATH_GROUPS).flat()
 export const askPathGroup = (rel, ignoreCase = false) => Object.keys(ASK_PATH_GROUPS).find((k) => matchAny(rel, ASK_PATH_GROUPS[k], ignoreCase))
 // The guard's own config: edits always ask (or deny under claudeConfig "deny"), whatever the settings or bypass say.
 export const GUARD_CONFIG_PATHS = ['.claude/engineering.json', '.claude/settings.json', '.claude/settings.local.json']
+// ESP-166 (ADR-0005): Claude Code hooks and agents run code, so like the guard's config no setting or bypass lifts their
+// ask, and the PR check always wants the label for them.
+export const AGENT_CODE_PATHS = ['.claude/hooks/**', '.claude/agents/**']
 // Architecture decision records: governance.adrEdits decides them instead of the plan-scope check.
 const DEFAULT_ADR_PATHS = ['docs/adr/**', 'docs/decisions/**']
 // Generated or managed files: the guard denies edits (regenerate instead).

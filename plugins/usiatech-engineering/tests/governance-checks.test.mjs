@@ -180,6 +180,13 @@ describe('governance-checks', () => {
       assert.match(r.stdout, /Governance\/CI\/dependency files changed: \.claude\/engineering\.json, REVIEW\.md/)
     })
 
+    it('should still need the label for Claude Code hooks and agents under claudeConfig "allow"', async () => {
+      const repo = makeRepo({ headFiles: { '.claude/hooks/x.mjs': 'x', '.claude/agents/a.md': 'y', '.claude/commands/c.md': 'z' } })
+      const r = await runChecks({ repo, config: { governance: { claudeConfig: 'allow' } } })
+      assert.equal(r.code, 1)
+      assert.match(r.stdout, /Governance\/CI\/dependency files changed: \.claude\/agents\/a\.md, \.claude\/hooks\/x\.mjs\./)
+    })
+
     it('should report a bad setting with the shared validator', async () => {
       const repo = makeRepo({ headFiles: { 'src/a.ts': 'x' } })
       const r = await runChecks({ repo, config: { governance: { agentsFiles: 'maybe' } } })

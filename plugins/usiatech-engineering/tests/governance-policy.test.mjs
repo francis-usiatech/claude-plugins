@@ -928,6 +928,16 @@ describe('evaluate: edits in a linked worktree (ESP-82; spec R12–R15, AC9–AC
     assert.match((await run(main, path.join(ext, 'src', 'a.ts')))?.reason ?? '', /outside the project folder/)
   })
 
+  it('should keep the project rules of a linked worktree under governance.outsideWrites "allow" (ESP-166)', async () => {
+    const { main, ext } = setup()
+    const cfg = { protectedPaths: ['src/gen/**'], governance: { outsideWrites: 'allow' } }
+    assert.equal((await run(main, path.join(ext, 'src', 'gen', 'x.ts'), { cfg }))?.decision, 'deny')
+    const r = await run(main, path.join(ext, '.claude', 'engineering.json'), { cfg })
+    assert.equal(r?.decision, 'ask')
+    assert.match(r.reason, /the guard's own config/)
+    assert.ok(allowedInPlan(await run(main, path.join(ext, 'src', 'a.ts'), { cfg })), 'an in-plan edit is still allowed')
+  })
+
   it('should keep asking when the worktree lookup throws (AC10)', async () => {
     const { main, inner } = setup()
     const throwing = { ...gitProbe, linkedWorktree: () => { throw new Error('git broke') } }
