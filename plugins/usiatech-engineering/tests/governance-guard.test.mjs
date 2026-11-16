@@ -227,6 +227,27 @@ describe('governance-guard hook', () => {
     assert.match(out.permissionDecisionReason, /could not be logged/)
   })
 
+  // ESP-166: a bypassed or setting-allowed action's log line is its only record too.
+  it('should ask for a bypassed edit when its log entry cannot be written (ESP-166)', async () => {
+    const root = tempDir()
+    writeFiles(root, { '.claude/engineering.json': JSON.stringify({ governance: { bypass: true } }) })
+    mkdirSync(path.join(root, '.claude', 'governance-log.jsonl'), { recursive: true })
+    const r = await runGuard(root, { tool_name: 'Edit', tool_input: { file_path: 'AGENTS.md' }, permission_mode: 'default' })
+    const out = JSON.parse(r.stdout).hookSpecificOutput
+    assert.equal(out.permissionDecision, 'ask')
+    assert.match(out.permissionDecisionReason, /could not be logged/)
+  })
+
+  it('should allow an ADR edit outside the plan outright, and leave a group allow to Claude Code (ESP-166)', async () => {
+    const root = tempDir()
+    writeFiles(root, { '.claude/plans/active.md': '# Plan\n\n## Files\n- `src/**`\n', '.claude/engineering.json': JSON.stringify({ governance: { agentsFiles: 'allow' } }) })
+    const adr = await runGuard(root, { tool_name: 'Edit', tool_input: { file_path: 'docs/adr/0001-x.md' }, permission_mode: 'default' })
+    assert.equal(JSON.parse(adr.stdout).hookSpecificOutput.permissionDecision, 'allow')
+    // AGENTS.md is allowed by its group but not in the plan, so planScope still asks.
+    const agents = await runGuard(root, { tool_name: 'Edit', tool_input: { file_path: 'AGENTS.md' }, permission_mode: 'default' })
+    assert.match(JSON.parse(agents.stdout).hookSpecificOutput.permissionDecisionReason, /not in the approved plan/)
+  })
+
   it('should ask and name the problem when engineering.json is malformed', async () => {
     const root = tempDir()
     writeFiles(root, { '.claude/engineering.json': '{ not json' })

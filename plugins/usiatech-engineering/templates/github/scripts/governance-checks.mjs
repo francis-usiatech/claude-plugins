@@ -9,7 +9,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMainModule } from './main-module.mjs'
 import {
-  matchAny, isSecretEnvFile, isPlainObject, isStringArray, DEFAULT_ASK_PATHS,
+  matchAny, isSecretEnvFile, isPlainObject, isStringArray, DEFAULT_ASK_PATHS, resolveSettings, askPathGroup, GUARD_CONFIG_PATHS, AGENT_CODE_PATHS,
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, checkFakePasses, isJsTsFile,
   parseAllowlist, applyAllowlist, allowlistWarnings, blockingFindings, formatFinding, PROJECT_KEY, jiraKeyPattern,
 } from './governance-rules.mjs'
@@ -209,12 +209,20 @@ export const runGovernanceChecks = async ({ env, lookups, govRoot = SCRIPT_GOV_R
   const changes = changedFiles(base, cwd)
   const govPaths = stringList(gov, 'askPaths', 'governance.askPaths', DEFAULT_ASK_PATHS)
   const immutable = stringList(cfg, 'immutableWhenCommitted', 'immutableWhenCommitted', [])
+  // ESP-166 (ADR-0005): the guard's settings, checked by the same validator. A file group set to "allow" in the
+  // base-branch config needs no label; a repo's own askPaths entry outside every group, and the guard's own config, always do.
+  const settings = resolveSettings(gov)
+  settings.problems.forEach((p) => configError(`${p}.`))
+  const groupAllowed = (p) => {
+    const group = askPathGroup(p, IGNORE_CASE)
+    return !!group && settings.edit[group] === 'allow' && !matchAny(p, [...GUARD_CONFIG_PATHS, ...AGENT_CODE_PATHS], IGNORE_CASE)
+  }
   const govTouched = []
   for (const [status, p1, p2] of changes) {
     // A rename counts at both ends, so moving a governance file out of its folder still needs the label.
     for (const p of [p1, p2].filter(Boolean)) {
       if (isSecretEnvFile(path.posix.basename(p), cfg.allowEnvExample !== false, IGNORE_CASE) && status !== 'D') errors.push(`Env file committed: ${p}`)
-      if (matchAny(p, govPaths, IGNORE_CASE)) govTouched.push(p)
+      if (matchAny(p, govPaths, IGNORE_CASE) && !groupAllowed(p)) govTouched.push(p)
     }
     if (/^[MDRT]/.test(status) && matchAny(p1, immutable, IGNORE_CASE)) errors.push(`Committed immutable file changed (${status}): ${p1}. Create a new file (e.g. a new migration) instead.`)
   }

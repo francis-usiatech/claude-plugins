@@ -37,7 +37,8 @@ try {
     if (markerError && !logDecision(root, { tool, target: CONFIG_FILE, decision: 'error', reason: markerError })) unlogged.push(markerError)
   }
   // The log line is a trusted write's only record, so a trusted write that can't be logged needs a prompt instead.
-  if (!logged && !result?.decision && result?.trusted) {
+  // ESP-166: so is the record of an allow from a setting or from governance.bypass.
+  if (!logged && !result?.decision && (result?.trusted || result?.bypassed || result?.configAllowed?.length)) {
     result = { ...result, decision: 'ask', reason: `${result.reason} It could not be logged to .claude/governance-log.jsonl, so it needs confirmation.` }
   }
   if (SHELL_TOOLS.includes(tool) && result?.decision !== 'deny') {
@@ -58,10 +59,11 @@ try {
   // decision Claude Code would prompt for it again. Shell commands are left to Claude Code, trusted or not. Never in
   // plan mode (a hook allow would skip its read-only stop) or when the mode isn't sent, nor when a dependency lookup
   // failed open. A plan write trusted by planEdits "all" keeps Claude Code's prompt: the plan sets what is allowed, so
-  // an unprompted plan write could widen Files and then allow any edit (security review 2026-11-13).
+  // an unprompted plan write could widen Files and then allow any edit (security review 2026-11-13). ESP-166: an edit
+  // let through only because a governance setting says "allow" (allowEdit) is allowed the same way.
   const allow = !result?.decision && typeof input.permission_mode === 'string' && input.permission_mode !== 'plan'
     && !result?.failures?.length && !result?.planWrite
-    && (result?.inPlan || (result?.trusted && !SHELL_TOOLS.includes(tool)))
+    && (result?.inPlan || ((result?.trusted || result?.allowEdit) && !SHELL_TOOLS.includes(tool)))
   const permissionDecision = result?.decision || (allow ? 'allow' : null)
   if (permissionDecision) {
     process.stdout.write(JSON.stringify({

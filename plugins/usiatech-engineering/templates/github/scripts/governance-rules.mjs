@@ -117,7 +117,9 @@ export const ASK_COMMANDS = [
   ['resetting/dropping a database', String.raw`\b(prisma\s+migrate\s+reset|drizzle-kit\s+drop|db:reset|db:drop)\b`],
   ['adding a dependency', String.raw`\b(npm\s+(i|install|add)\s+[^-\s]|pnpm\s+(add|install\s+[^-\s])|yarn\s+add|pip3?\s+install|npx\s+-y\s)`],
   ['publishing a package', String.raw`\b(npm|pnpm|yarn)\s+publish\b`],
-  ['remote host / infrastructure change', String.raw`\b(ssh|scp|rsync)\s|\b(terraform\s+(apply|destroy)|kubectl\s+(apply|delete)|ansible-playbook\b(?!.*--check)|firebase\s+deploy|docker\s+(system\s+prune|volume\s+rm))`],
+  ['remote host / infrastructure change', String.raw`\b(ssh|scp|rsync)\s|\b(terraform\s+apply|kubectl\s+apply|ansible-playbook\b(?!.*--check)|firebase\s+deploy)`],
+  // ESP-166: split from the rule above so governance.commands.remoteInfra can't lift it; destructive, so it has no key.
+  ['destroying infrastructure', String.raw`\b(terraform\s+destroy|kubectl\s+delete|docker\s+(system\s+prune|volume\s+rm))`],
   ['reading secrets', String.raw`\b(cat|less|more|head|tail|type|bat)\s+[^|;&]*\.env(?!\.example)(\.[\w-]+)?(\s|$)|\bprintenv\b`],
   // ESP-110 item 7: Edit and Write deny env files, so a shell write to one asks, in Bash and PowerShell alike.
   ['writing an env file', String.raw`(>|\btee\b|\b(set|add)-content\b|\bout-file\b|\b(cp|mv|copy-item|move-item)\b|\bsed\s+-i)[^|;&]*\.env(?!\.example)(\.[\w-]+)?["']?(\s|$|[;&|)])`],
@@ -126,13 +128,101 @@ export const ASK_COMMANDS = [
 ]
 
 // Governance, CI and dependency files: the guard asks before editing them, CI requires the approval label.
-export const DEFAULT_ASK_PATHS = ['.claude/**', 'AGENTS.md', '**/AGENTS.md', 'CLAUDE.md', 'REVIEW.md', '.github/**', '**/package.json']
+// ESP-166 (ADR-0005): one group per governance setting key, so a repo can turn each group off on its own.
+export const ASK_PATH_GROUPS = {
+  agentsFiles: ['AGENTS.md', '**/AGENTS.md'],
+  claudeMdFiles: ['CLAUDE.md', '**/CLAUDE.md'],
+  reviewFile: ['REVIEW.md'],
+  claudeConfig: ['.claude/**'],
+  ciFiles: ['.github/**'],
+  dependencyFiles: ['**/package.json'],
+}
+export const DEFAULT_ASK_PATHS = Object.values(ASK_PATH_GROUPS).flat()
+/** The ask-path group key a path falls in, or undefined. A repo's own askPaths entry outside every group has none. */
+export const askPathGroup = (rel, ignoreCase = false) => Object.keys(ASK_PATH_GROUPS).find((k) => matchAny(rel, ASK_PATH_GROUPS[k], ignoreCase))
+// The guard's own config: edits always ask (or deny under claudeConfig "deny"), whatever the settings or bypass say.
+export const GUARD_CONFIG_PATHS = ['.claude/engineering.json', '.claude/settings.json', '.claude/settings.local.json']
+// ESP-166 (ADR-0005): Claude Code hooks and agents run code, so like the guard's config no setting or bypass lifts their
+// ask, and the PR check always wants the label for them.
+export const AGENT_CODE_PATHS = ['.claude/hooks/**', '.claude/agents/**']
+// Architecture decision records: governance.adrEdits decides them instead of the plan-scope check.
+const DEFAULT_ADR_PATHS = ['docs/adr/**', 'docs/decisions/**']
 // Generated or managed files: the guard denies edits (regenerate instead).
 export const DEFAULT_PROTECTED_PATHS = ['generated/**', '**/generated/**']
 // The approved plan sets the edit scope, so the guard always asks before it changes (checked before the exemptions).
 export const PLAN_PATH = '.claude/plans/active.md'
 // Files the guard's own bookkeeping writes; never subject to ask/plan checks.
 export const GUARD_EXEMPT_PATHS = ['.claude/plans/**', '.claude/governance-log.jsonl']
+
+// ESP-166 (ADR-0005): one setting per restriction, each "deny", "ask" or "allow". Edit keys sit directly under
+// governance, command keys under governance.commands. Destructive command rules have no key: they are fixed.
+const SETTING_VALUES = ['deny', 'ask', 'allow']
+const STRICTNESS = { allow: 0, ask: 1, deny: 2 }
+const EDIT_SETTINGS = {
+  agentsFiles: 'ask', claudeMdFiles: 'ask', reviewFile: 'ask', claudeConfig: 'ask', ciFiles: 'ask', dependencyFiles: 'ask',
+  adrEdits: 'allow', planScope: 'ask', outsideWrites: 'ask',
+  envFiles: 'deny', secrets: 'deny', possibleSecrets: 'ask', protectedPaths: 'deny', immutableFiles: 'deny',
+  workflowFindings: 'ask', dependencyFindings: 'ask', uncheckable: 'ask',
+}
+// Each command key names the ASK_COMMANDS rule (by its reason) it sets; the protected-branch keys set the branch checks.
+export const COMMAND_SETTINGS = {
+  addDependency: 'adding a dependency',
+  publishPackage: 'publishing a package',
+  remoteInfra: 'remote host / infrastructure change',
+  readSecrets: 'reading secrets',
+  writeEnvFile: 'writing an env file',
+  sudo: 'elevated privileges',
+  worldWritable: 'world-writable permissions',
+}
+const BRANCH_SETTINGS = ['protectedBranchWork', 'protectedBranchPush']
+const quote = (v) => JSON.stringify(String(v).slice(0, 60))
+
+/**
+ * The governance settings with their defaults, checked by the one validator the guard and CI share. A bad value is
+ * replaced by the stricter of its default and "ask", so every problem only makes the guard stricter.
+ * @param {object} gov  the governance object (a non-object reads as empty)
+ * @returns {{ edit: Record<string, string>, commands: Record<string, string>, bypass: boolean, adrPaths: string[], problems: string[] }}
+ */
+export const resolveSettings = (gov) => {
+  const g = isPlainObject(gov) ? gov : {}
+  const problems = []
+  const pick = (value, fallback, label) => {
+    if (value == null) return fallback
+    if (SETTING_VALUES.includes(value)) return value
+    problems.push(`"${label}" must be "deny", "ask" or "allow" (${quote(value)})`)
+    return STRICTNESS[fallback] >= STRICTNESS.ask ? fallback : 'ask'
+  }
+  const edit = Object.fromEntries(Object.entries(EDIT_SETTINGS).map(([key, def]) => [key, pick(g[key], def, `governance.${key}`)]))
+  let raw = g.commands ?? {}
+  if (!isPlainObject(raw)) {
+    problems.push('"governance.commands" must be an object')
+    raw = {}
+  }
+  const known = [...Object.keys(COMMAND_SETTINGS), ...BRANCH_SETTINGS]
+  for (const key of Object.keys(raw).filter((k) => !known.includes(k) && k !== '$comment')) {
+    problems.push(`"governance.commands" has an unknown key ${quote(key)}; destructive command rules have no setting`)
+  }
+  const commands = Object.fromEntries(known.map((key) => [key, pick(raw[key], 'ask', `governance.commands.${key}`)]))
+  let bypass = g.bypass ?? false
+  if (typeof bypass !== 'boolean') {
+    problems.push('"governance.bypass" must be true or false')
+    bypass = false
+  }
+  let adrPaths = g.adrPaths ?? DEFAULT_ADR_PATHS
+  if (!isStringArray(adrPaths)) {
+    // No path at all, the strictest value: the defaults would let more skip the plan-scope check.
+    problems.push('"governance.adrPaths" must be an array of strings')
+    adrPaths = []
+  } else {
+    // An entry of wildcards alone (`**`, `*/**`) would take every file out of the plan-scope check: dropped.
+    adrPaths = adrPaths.filter((e, i) => {
+      const bare = e.split('/').every((s) => /^[*?]*$/.test(s))
+      if (bare) problems.push(`"governance.adrPaths[${i}]" must name a folder, not only wildcards (${quote(e)})`)
+      return !bare
+    })
+  }
+  return { edit, commands, bypass, adrPaths, problems }
+}
 
 // Content rules for workflow (B10) files. Findings are { rule, tier, file, line, detail, package? }; tier is 'high'
 // (the guard asks, CI fails unless labelled) or 'warning' (reported only).
