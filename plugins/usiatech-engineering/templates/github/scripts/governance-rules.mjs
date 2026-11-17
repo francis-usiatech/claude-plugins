@@ -330,3 +330,16 @@ export const findSecret = (text) => {
   }
   return null
 }
+
+const OUTPUT_LEVELS = ['low', 'medium', 'high']
+
+/**
+ * ESP-167: the config problem with an `output` value, or null. A null or missing `output` or `output.level` counts as
+ * absent, as sanitizeConfig treats other keys. Read by the output-level SessionStart hook and the guard's sanitizeConfig.
+ */
+export const outputSettingProblem = (output) => {
+  if (output == null) return null
+  if (!isPlainObject(output)) return '"output" must be an object'
+  if (output.level != null && !OUTPUT_LEVELS.includes(output.level)) return '"output.level" must be "low", "medium" or "high"'
+  return null
+}
