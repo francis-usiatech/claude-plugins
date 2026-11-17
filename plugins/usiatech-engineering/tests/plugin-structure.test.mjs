@@ -1222,3 +1222,21 @@ describe('plugin structure: fewer prompts (ESP-154, ESP-155, ESP-156)', () => {
     assert.match(setup, /`Edit\(\/\.claude\/plans\/archive\/\*\*\)`/)
   })
 })
+
+describe('plugin structure: output level (ESP-167 AC4)', () => {
+  it('should register the output-level hook for every SessionStart source, compaction included', () => {
+    const entries = JSON.parse(read('hooks', 'hooks.json')).hooks.SessionStart
+    assert.equal(entries.length, 1)
+    assert.deepEqual(entries[0].matcher.split('|').sort(), ['clear', 'compact', 'resume', 'startup'])
+    assert.match(entries[0].hooks[0].command, /hooks\/scripts\/output-level\.mjs/)
+  })
+
+  it('should ship output.level "low" in the config template and document the key in the README', () => {
+    assert.equal(JSON.parse(read('templates', 'engineering.json')).output?.level, 'low')
+    assert.match(read('README.md'), /^\| `output` \|[^\n]*`low`[^\n]*`medium`[^\n]*`high`/m)
+  })
+
+  it('should keep review pages in full detail whatever output.level is', () => {
+    assert.match(read('templates', 'review-page.md'), /full detail[^\n]*whatever[^\n]*`output\.level`/i)
+  })
+})
