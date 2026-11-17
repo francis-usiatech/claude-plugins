@@ -125,3 +125,48 @@ test('the desktop text steps down from footnote to caption as the window narrows
     await ui.unmount()
   }
 })
+
+test('the close button stays on the first row: the outer row never wraps on desktop and VS Code', async ($, on) => {
+  mock.store(on)
+  on('ui.log', () => ({ value: undefined }))
+  on('command.register', () => ({ value: { command: 'usage-band' } }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.usage', () => ({ value: USAGE }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  // VS Code wraps a row Box that sets no flexWrap, which dropped the close button to a second row.
+  for (const surface of ['desktop', 'vscode'] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface, viewport: { columns: 60, rows: 40 } })
+    // find returns the outermost match first: the band's own row.
+    expect((await ui.find({ type: 'Box' }))?.props.flexWrap).toBe('nowrap')
+    await ui.unmount()
+  }
+})
+
+test('the text size follows bodyColumns and leaves room for the close button', async ($, on) => {
+  mock.store(on)
+  on('ui.log', () => ({ value: undefined }))
+  on('command.register', () => ({ value: { command: 'usage-band' } }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  // No rate limits: the captions hold no clock time, so the row's width is fixed.
+  on('session.usage', () => ({ value: { ...USAGE, rateLimits: [] } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/', surface: 'vscode', isInteractive: true })
+
+  // The row needs 65 cells at footnote size: 36 of text, 5 per segment and 4 for the close button.
+  const cases = [[200, 65, 'footnote'], [200, 64, 'caption'], [80, 200, 'footnote']] as const
+  for (const [columns, bodyColumns, size] of cases) {
+    const ui = await $.ui.mount({
+      ...BAND,
+      props: { ...BAND.props, bodyColumns },
+      surface: 'vscode',
+      viewport: { columns, rows: 40 },
+    })
+    const model = await ui.find({ type: 'Text', text: /^Opus 5\.5$/ })
+    expect(model?.props.size).toBe(size)
+    await ui.unmount()
+  }
+})

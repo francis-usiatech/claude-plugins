@@ -30,12 +30,14 @@ const FITS: readonly { fit: Fit; scale: number }[] = [
 ]
 // Cells a segment takes beyond its text: icon, padding and gaps.
 const SEGMENT_CELLS = 5
+// Cells the close button takes: its glyph, its padding and the gap before it.
+const CLOSE_CELLS = 4
 
-// Picks the largest step whose estimated row width fits the surface; no width reported, the largest.
+// Picks the largest step whose estimated row width fits the band's body; no width reported, the largest.
 const fitFor = (columns: number | undefined, texts: readonly string[]): Fit => {
   if (!columns) return FITS[0].fit
   const textCells = texts.reduce((sum, t) => sum + t.length, 0)
-  const needed = (scale: number) => textCells * scale + texts.length * SEGMENT_CELLS + 2
+  const needed = (scale: number) => textCells * scale + texts.length * SEGMENT_CELLS + CLOSE_CELLS
   return (FITS.find((f) => needed(f.scale) <= columns) ?? FITS[FITS.length - 1]).fit
 }
 
@@ -188,16 +190,18 @@ export const register: Register = (on, options) => {
     }
 
     const { Box, Text, Svg, Button } = $.ui.resolve(e)
-    const { size, iconPx } = fitFor(e.viewport?.columns, [
+    const { size, iconPx } = fitFor(e.props.bodyColumns || e.viewport?.columns, [
       s.model,
       ...gauges.map((g) => `${percentText(g.percent)} ${g.caption}`),
-      `${cost} ${delta}`,
+      // As drawn: the delta chip pads its text with a space on each side.
+      `${cost}${delta && ` ${delta} `}`,
     ])
     // One row with no border; alternating segment shades set the parts apart. The text size follows
     // the width (fitFor), the segments wrap only below the smallest step, and the close glyph keeps
-    // the top-right corner.
+    // the top-right corner. The outer row says nowrap: VS Code wraps a row that sets no flexWrap,
+    // which dropped the close glyph to a row of its own.
     return (
-      <Box flexDirection="row" alignItems="flex-start" columnGap={1}>
+      <Box flexDirection="row" flexWrap="nowrap" alignItems="flex-start" columnGap={1}>
         <Box flexDirection="row" alignItems="center" flexGrow={1} flexShrink={1} flexWrap="wrap">
           <Box {...segmentProps(0)}>
             <Svg source={LOGO_SVG} alt="UsiaTech" width={iconPx} height={iconPx} isInteractive />

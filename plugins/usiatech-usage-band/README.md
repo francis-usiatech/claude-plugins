@@ -20,7 +20,7 @@ A ring is blue under 60%, amber from 60% and red from 85%.
 | VS Code extension | SVG logo | SVG rings |
 | CLI (terminal) | Coloured "UsiaTech" text | Pie glyphs `○◔◑◕●` |
 
-The desktop and VS Code draw one compact row, no taller than the stock usage band: the logo, footnote-size text and small rings. The terminal draws the wordmark in its own font.
+The desktop and VS Code draw one compact row, no taller than the stock usage band: the logo, footnote-size text and small rings. When the row is tight the text steps down to caption size; the close button stays on the first row, at the top right. The terminal draws the wordmark in its own font.
 
 ## Show or hide it
 
@@ -32,6 +32,8 @@ The desktop and VS Code draw one compact row, no taller than the stock usage ban
 ## Limits
 
 - The 5-hour and weekly limits appear only on a Claude subscription, after the session's first response. Until then their rings read `–`.
+- `–` means there is no reading yet, not zero. In a new window the limits and the context read `–` and the cost `$0.00` until the first response.
+- After `/clear` the limits keep their last reading, because they belong to the account. The context reads `–` and the cost restarts at `$0.00`, because `/clear` starts the session over.
 - The last turn's cost appears after the first finished turn.
 
 ## Install
