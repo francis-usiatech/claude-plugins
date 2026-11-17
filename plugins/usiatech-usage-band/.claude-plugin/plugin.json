@@ -1,6 +1,6 @@
 {
   "name": "usiatech-usage-band",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "UsiaTech band above the prompt: 5-hour and weekly limits, context fill, model and session cost with the last turn's cost",
   "author": {
     "name": "Francis Amalraj"
