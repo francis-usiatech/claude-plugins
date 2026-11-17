@@ -67,6 +67,10 @@
     "$comment": "Advice from scripts/session-check.mjs at the start of release and approve-plan. contextAdvisoryTokens (default 300000, a positive whole number) is the context size above which it recommends compacting or a fresh session, once per session. Read from the base branch.",
     "contextAdvisoryTokens": 300000
   },
+  "output": {
+    "$comment": "How much progress detail Claude shows, read from the base branch at session start and after a compaction (hooks/scripts/output-level.mjs). \"low\" (the default): one line per step. \"medium\": that line plus at most two lines of the command, when there is one. \"high\": normal output. Specs, plans, approval and decision questions, and HTML review pages are always in full detail. See the README under Output level.",
+    "level": "low"
+  },
   "decisions": {
     "batch": true,
     "nitsNeedDecision": false

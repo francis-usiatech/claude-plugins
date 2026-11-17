@@ -7,6 +7,7 @@ One HTML page that collects every open approval and decision of a step, so the u
 - The step has two or more open decisions, or any decision shows file content (an ADR, spec, plan, design note or a file diff).
 - A single yes/no with no file content stays a plain question in chat.
 - When `.claude/engineering.json` sets `decisions.batch` to `false`, don't build a page: ask about each item on its own.
+- The page is always in full detail, whatever `output.level` is (ESP-167). The level shortens progress messages only, never a review page, spec, plan or approval question.
 
 ## What goes on the page
 

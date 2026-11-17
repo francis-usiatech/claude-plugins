@@ -71,6 +71,22 @@ Start from `templates/engineering.json` (or run the `setup-engineering` skill).
 | `planning` | How `approve-plan` plans. `preflightReviewers` (default none) is a list of `{ "agent": "<name>", "when": ["<prefix>", …] }` entries: extra agents that `approve-plan` runs on the draft plan in design mode, in parallel with `governance-reviewer`. An entry with `when` runs only when a prefix matches the start of a path in the plan's **Files** section (same prefix rules as `verifyConditional.when`); one without `when` always runs. Their `BLOCK`s must be fixed, and their `FLAG`s join the one batched pre-flight question, each labelled with the reviewer that raised it. A reviewer that fails or isn't installed is reported by name and doesn't count as a pass. A bad value is reported once as an advisory config problem (see "Config problems" below), and `approve-plan` skips an invalid entry and names it by its index, never by its `agent` value. A pre-flight reviewer receives only the draft plan. `sensitivePaths` (ESP-152, default none) is a list of path prefixes (same rules as `when`). When it is set, a small-route plan whose **Files** has no entry under a sensitive path, an ask path or the governance rules file gets a light `governance-reviewer` pre-flight on `sonnet`; any other plan gets the full pre-flight on the agent file's model, and the plain 5-path rule no longer applies. Without it, nothing changes. Older guards ignore the `planning` key |
 | `governance` | `protectedBranches`, `askPaths`, `requirePlan`, extra `denyCommands` / `askCommands` (regex + reason), `allowlist` (see below), `trustedWritePaths`, `trustedDeletePaths` and `planEdits` (`"allow"`, `"ask"` or `"all"`; see "Trusted writes" below), `rulesFile`; one setting per restriction (`agentsFiles` … `uncheckable`, `commands.*`), `adrPaths` and `bypass` (see "Guard settings" below) |
 | `tickets` | Ticket tracker for `to-tickets`, `approve-plan` and `release`. `tracker` is `"github"` (default when the section is missing) or `"jira"`; see "Jira tracker" below |
+| `output` | `level`: how much progress detail Claude shows, `low` (default), `medium` or `high`; see "Output level" below. A bad value is reported once as an advisory config problem and counts as `low`. Older guards ignore the `output` key |
+
+### Output level
+`output.level` sets how much Claude shows for each step (ESP-167):
+
+| Level | Each step shows |
+|---|---|
+| `low` (default) | One line that describes the step |
+| `medium` | That line, plus at most two lines of the command it ran, when there is one |
+| `high` | Normal output |
+
+- **Always in full detail, whatever the level:** specs, plans, approval and decision questions to the user, and the HTML review pages (`templates/review-page.md`). The level never shortens them.
+- **How it works:** the SessionStart hook `hooks/scripts/output-level.mjs` reads the level from the base-branch `.claude/engineering.json` (the working copy when the base branch has none). At `low` and `medium` it adds the rule to the session context, at start-up and again after a compaction. At `high` it adds nothing. A change to the level takes effect once it is on the base branch, at the next session start, resume, `/clear` or compaction.
+- **Enforcement:** the rule is model context. A hook can't check or rewrite Claude's chat text, so nothing checks the output mechanically.
+- **Problems:** a missing or unreadable config means `low`. An invalid value also means `low`: the rule then names the config problem, and the guard reports it once as an advisory config problem. The hook never fails a session start.
+- **Scope:** reports that reviewer agents and forked skills (`verify`, `release-steps`) send back to the main agent are not shortened. The main agent applies the level when it relays them.
 
 ### Jira tracker
 With `tickets.tracker` set to `"jira"`, the skills file and move tickets in Jira through the Atlassian connector or `scripts/jira-tracker.mjs` (no dependencies; the decision is [ADR 0003](../../docs/adr/0003-jira-ticket-tracker.md)):
@@ -433,6 +449,7 @@ Semver. Record changes below.
 
 | Version | Change |
 |---|---|
+| 0.31.0 | **Output level (ESP-167, PR #216):** the new `output.level` setting (`low` by default, `medium` or `high`) sets how much progress detail Claude shows: one line per step, that line plus at most two lines of the command, or normal output. Specs, plans, approval and decision questions, and HTML review pages are always in full detail. A new SessionStart hook, `hooks/scripts/output-level.mjs`, adds the rule to the session context at start-up and after a compaction. The guard reports a bad value once as an advisory config problem.<br>**Behaviour change:** with no `output` setting, sessions now use `low`. Set `"output": { "level": "high" }` on the base branch to keep the old output.<br>**Upgrade:** none. The hook ships with the plugin. |
 | 0.30.1 | **Usage band 0.3.1 (PR #213):** the desktop band has no border, shorter captions (`5h 12:50 PM`, `wk Sat 10:00 AM`, `ctx 191k/1M`, the terminal too), and text that steps down from footnote to caption size as the window narrows, wrapping only below that. **Upgrade:** `claude plugin update usiatech-usage-band@usiatech`. |
 | 0.30.0 | **Usage band 0.3.0 (PRs #209, #210):** the band's segments (model, 5h, week, ctx, cost) alternate darker and lighter backgrounds; the close button reads `×` alone, with a "Hide for this session" card on hover; the logo shows a "UsiaTech" tooltip. **Upgrade:** `claude plugin update usiatech-usage-band@usiatech`. |
 | 0.29.1 | **Usage band 0.2.1 (PR #206):** the band's close button is a small `×` in its top-right corner, so the desktop band stays one row high. **Upgrade:** `claude plugin update usiatech-usage-band@usiatech`. |

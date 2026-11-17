@@ -15,6 +15,7 @@ import {
   DEFAULT_ASK_PATHS, DEFAULT_PROTECTED_PATHS, GUARD_EXEMPT_PATHS, PLAN_PATH, parseAllowlist, allowlistWarnings,
   checkWorkflow, isWorkflowPath, checkDependencies, dependencyKind, applyAllowlist, blockingFindings, formatFinding, oneLine, TIER,
   isPathPrefix, CONTROL_CODE_POINTS, GIT_PREFIX, resolveSettings, askPathGroup, GUARD_CONFIG_PATHS, AGENT_CODE_PATHS, COMMAND_SETTINGS,
+  outputSettingProblem,
 } from '../../templates/github/scripts/governance-rules.mjs'
 import { STATE_FOLDER, stateDir, checkedStateDir, SHELL_TOOLS } from './governance-state.mjs'
 import { lookupTargets, runLookups, createLookups } from '../../templates/github/scripts/supply-chain-lookups.mjs'
@@ -365,6 +366,17 @@ export const sanitizeConfig = (raw) => {
     advise(`"decisions.${key}" must be true or false`)
     cfg.decisions = { ...cfg.decisions }
     delete cfg.decisions[key]
+  }
+  // ESP-167: read by the output-level SessionStart hook, not by the guard; checked here so a typo is reported.
+  const outputProblem = outputSettingProblem(cfg.output)
+  if (outputProblem) {
+    advise(outputProblem)
+    if (isPlainObject(cfg.output)) {
+      cfg.output = { ...cfg.output }
+      delete cfg.output.level
+    } else {
+      delete cfg.output
+    }
   }
   checkPlanning(cfg, advise)
 

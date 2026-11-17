@@ -2507,6 +2507,31 @@ describe('evaluate: decisions keys (ESP-32; spec AC6)', () => {
   })
 })
 
+describe('evaluate: output.level (ESP-167 AC3)', () => {
+  const run = (cfg) => evaluate({ tool_name: 'Write', tool_input: { file_path: 'src/a.ts', content: 'x' } }, { root: tempDir(), git: fakeGit(), cfg })
+
+  it('should report no config problem for a missing output, an output with no level, or each valid level', async () => {
+    for (const cfg of [{}, { output: null }, { output: {} }, { output: { level: null } }, { output: { level: 'low' } }, { output: { level: 'medium' } }, { output: { level: 'high' } }]) {
+      assert.equal(await run(cfg), null, JSON.stringify(cfg))
+      assert.deepEqual(sanitizeConfig(cfg).problems, [])
+    }
+  })
+
+  it('should report a non-object output once and drop it', () => {
+    const safe = sanitizeConfig({ output: ['low'] })
+    assert.deepEqual(safe.advisory, ['"output" must be an object'])
+    assert.equal(safe.cfg.output, undefined)
+  })
+
+  it('should report any other output.level once and drop only that value', () => {
+    for (const level of ['LOW', 'verbose', '', 1, true]) {
+      const safe = sanitizeConfig({ output: { level, other: 1 } })
+      assert.deepEqual(safe.advisory, ['"output.level" must be "low", "medium" or "high"'], JSON.stringify(level))
+      assert.deepEqual(safe.cfg.output, { other: 1 })
+    }
+  })
+})
+
 describe('evaluate: planning.preflightReviewers (ESP-67; spec R9, R12, AC8)', () => {
   const run = (cfg, markerFile) => evaluate({ tool_name: 'Write', tool_input: { file_path: 'src/a.ts', content: 'x' } }, { root: tempDir(), git: fakeGit(), cfg, markerFile })
   const reviewers = (list) => ({ planning: { preflightReviewers: list } })
@@ -2622,6 +2647,8 @@ describe('evaluate: advisory and escalating config problems (ESP-47; spec R1–R
     ['a non-object decisions', { decisions: 'x' }, /"decisions" must be an object/],
     ['a non-boolean decisions.batch', { decisions: { batch: 'yes' } }, /"decisions\.batch"/],
     ['a non-boolean decisions.nitsNeedDecision', { decisions: { nitsNeedDecision: 1 } }, /"decisions\.nitsNeedDecision"/],
+    ['a non-object output (ESP-167)', { output: 'low' }, /"output" must be an object/],
+    ['an unknown output.level (ESP-167)', { output: { level: 'loud' } }, /"output\.level" must be "low", "medium" or "high"/],
     ['a non-array trustedWritePaths', { governance: { trustedWritePaths: 'x' } }, /"governance\.trustedWritePaths" must/],
     ['a bad trustedWritePaths entry', { governance: { trustedWritePaths: ['relative/**'] } }, /"governance\.trustedWritePaths\[0\]" must/],
     ['a bad allowlist entry', { governance: { allowlist: [{ rule: 'x' }] } }, /"governance\.allowlist\[0\]" needs/],
