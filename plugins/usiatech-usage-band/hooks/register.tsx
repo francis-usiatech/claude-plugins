@@ -23,10 +23,12 @@ const LOGO_PATHS = `<rect width="24" height="24" rx="5" fill="url(#ug)"/><path d
 // The logo alone keeps the desktop band one text row high, as the stock usage band.
 const LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><defs><linearGradient id="ug" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="${BRAND.light}"/><stop offset="100%" stop-color="${BRAND.usia}"/></linearGradient></defs><title>UsiaTech</title>${LOGO_PATHS}</svg>`
 // The text steps down as the window narrows, so the band keeps to one row; it wraps only below the smallest step.
-type Fit = { size: 'footnote' | 'caption'; iconPx: number }
+// The last step keeps caption size and shortens the captions (compact): a smaller font would be hard to read.
+type Fit = { size: 'footnote' | 'caption'; iconPx: number; compact: boolean }
 const FITS: readonly { fit: Fit; scale: number }[] = [
-  { fit: { size: 'footnote', iconPx: 16 }, scale: 1 },
-  { fit: { size: 'caption', iconPx: 14 }, scale: 0.85 },
+  { fit: { size: 'footnote', iconPx: 16, compact: false }, scale: 1 },
+  { fit: { size: 'caption', iconPx: 14, compact: false }, scale: 0.85 },
+  { fit: { size: 'caption', iconPx: 14, compact: true }, scale: 0.85 },
 ]
 // Cells a segment takes beyond its text: icon, padding and gaps.
 const SEGMENT_CELLS = 5
@@ -34,11 +36,15 @@ const SEGMENT_CELLS = 5
 const CLOSE_CELLS = 4
 
 // Picks the largest step whose estimated row width fits the band's body; no width reported, the largest.
-const fitFor = (columns: number | undefined, texts: readonly string[]): Fit => {
+// textsFor gives the segments' texts as a step draws them, compact or full.
+const fitFor = (columns: number | undefined, textsFor: (compact: boolean) => readonly string[]): Fit => {
   if (!columns) return FITS[0].fit
-  const textCells = texts.reduce((sum, t) => sum + t.length, 0)
-  const needed = (scale: number) => textCells * scale + texts.length * SEGMENT_CELLS + CLOSE_CELLS
-  return (FITS.find((f) => needed(f.scale) <= columns) ?? FITS[FITS.length - 1]).fit
+  const needed = ({ fit, scale }: (typeof FITS)[number]) => {
+    const texts = textsFor(fit.compact)
+    const textCells = texts.reduce((sum, t) => sum + t.length, 0)
+    return textCells * scale + texts.length * SEGMENT_CELLS + CLOSE_CELLS
+  }
+  return (FITS.find((f) => needed(f) <= columns) ?? FITS[FITS.length - 1]).fit
 }
 
 const levelColor = (percent: number | null): string =>
@@ -70,16 +76,23 @@ const modelName = (id: string): string => {
   return `${family[0].toUpperCase()}${family.slice(1)} ${minor ? `${major}.${minor}` : major}`
 }
 
+// Compact clock time: "10:00 PM" reads "10PM", "10:30 PM" reads "10:30PM", "10:00 p. m." reads "10p. m.";
+// a 24-hour time is kept as is. \s also matches the narrow no-break space (U+202F) some locales put before AM/PM.
+export const compactTime = (text: string): string =>
+  text.replace(/:00(?=\s*[ap]\.?\s?m)/i, '').replace(/\s+(?=[ap]\.?\s?m\.?$)/i, '')
+
 // Local clock time for the 5-hour window, weekday and time for the weekly one.
-const resetText = (iso: string | null, withDay: boolean): string => {
+const resetText = (iso: string | null, withDay: boolean, compact: boolean): string => {
   if (!iso) return ''
   const at = new Date(iso)
   if (Number.isNaN(at.getTime())) return ''
+  let text: string
   try {
-    return at.toLocaleString([], withDay ? { weekday: 'short', hour: 'numeric', minute: '2-digit' } : { hour: 'numeric', minute: '2-digit' })
+    text = at.toLocaleString([], withDay ? { weekday: 'short', hour: 'numeric', minute: '2-digit' } : { hour: 'numeric', minute: '2-digit' })
   } catch {
-    return iso.slice(11, 16)
+    text = iso.slice(11, 16)
   }
+  return compact ? compactTime(text) : text
 }
 
 const limitOf = (limits: readonly SessionRateLimit[], kind: string): Limit | null => {
@@ -99,12 +112,17 @@ const toSnapshot = (usage: Omit<SessionMeasureInput, 'changed'>, model: string):
 
 type Gauge = { key: string; percent: number | null; caption: string }
 
-const gaugesOf = (s: Snapshot): Gauge[] => {
-  const reset = (limit: Limit | null, withDay: boolean) => resetText(limit?.resetsAt ?? null, withDay)
-  const tokens = s.contextTokens == null ? '' : ` ${tokensText(s.contextTokens)}/${tokensText(s.contextWindow)}`
+// compact: shorter reset times, and the context caption drops the window ("291k", not "291k/1M").
+const gaugesOf = (s: Snapshot, compact = false): Gauge[] => {
+  // "5h 10PM", or "5h" alone when the limit has no reset time.
+  const withReset = (label: string, limit: Limit | null, withDay: boolean) => {
+    const reset = resetText(limit?.resetsAt ?? null, withDay, compact)
+    return reset ? `${label} ${reset}` : label
+  }
+  const tokens = s.contextTokens == null ? '' : ` ${tokensText(s.contextTokens)}${compact ? '' : `/${tokensText(s.contextWindow)}`}`
   return [
-    { key: '5h', percent: s.fiveHour?.percent ?? null, caption: `5h${reset(s.fiveHour, false) && ` ${reset(s.fiveHour, false)}`}` },
-    { key: 'wk', percent: s.week?.percent ?? null, caption: `wk${reset(s.week, true) && ` ${reset(s.week, true)}`}` },
+    { key: '5h', percent: s.fiveHour?.percent ?? null, caption: withReset('5h', s.fiveHour, false) },
+    { key: 'wk', percent: s.week?.percent ?? null, caption: withReset('wk', s.week, true) },
     { key: 'ctx', percent: s.contextPercent, caption: `ctx${tokens}` },
   ]
 }
@@ -159,7 +177,6 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const s = await read($, snapshot)
     if (hiddenByConfig || e.props.hasSurvey || s === null || (await read($, isHidden))) return next(e)
-    const gauges = gaugesOf(s)
     const cost = s.costUsd == null ? '–' : usdText(s.costUsd)
     const turn = await read($, lastTurnUsd)
     const delta = turn == null ? '' : `+${usdText(turn)}`
@@ -173,7 +190,7 @@ export const register: Register = (on, options) => {
             {' '}<Text color={BRAND.usia} backgroundColor={BRAND.panel} bold>Usia</Text><Text color={BRAND.tech} backgroundColor={BRAND.panel} bold>Tech</Text>{' '}
           </Text>
           <Text dimColor>{s.model}</Text>
-          {gauges.map((g) => (
+          {gaugesOf(s).map((g) => (
             <Text key={g.key}>
               <Text color={levelColor(g.percent)}>{pieGlyph(g.percent)} </Text>
               <Text bold>{percentText(g.percent)}</Text>
@@ -190,19 +207,22 @@ export const register: Register = (on, options) => {
     }
 
     const { Box, Text, Svg, Button } = $.ui.resolve(e)
-    const { size, iconPx } = fitFor(e.props.bodyColumns || e.viewport?.columns, [
+    // Built once each: fitFor measures both, the chosen step draws one.
+    const gaugeSets = { full: gaugesOf(s), compact: gaugesOf(s, true) }
+    const { size, iconPx, compact } = fitFor(e.props.bodyColumns || e.viewport?.columns, (compactStep) => [
       s.model,
-      ...gauges.map((g) => `${percentText(g.percent)} ${g.caption}`),
+      ...gaugeSets[compactStep ? 'compact' : 'full'].map((g) => `${percentText(g.percent)} ${g.caption}`),
       // As drawn: the delta chip pads its text with a space on each side.
       `${cost}${delta && ` ${delta} `}`,
     ])
-    // One row with no border; alternating segment shades set the parts apart. The text size follows
-    // the width (fitFor), the segments wrap only below the smallest step, and the close glyph keeps
-    // the top-right corner. The outer row says nowrap: VS Code wraps a row that sets no flexWrap,
-    // which dropped the close glyph to a row of its own.
+    const gauges = gaugeSets[compact ? 'compact' : 'full']
+    // One row with no border; alternating segment shades set the parts apart. The text size and the
+    // captions follow the width (fitFor), the segments wrap only below the smallest step and sit
+    // centred in the row, and the close glyph keeps the top-right corner. The outer row says nowrap:
+    // VS Code wraps a row that sets no flexWrap, which dropped the close glyph to a row of its own.
     return (
       <Box flexDirection="row" flexWrap="nowrap" alignItems="flex-start" columnGap={1}>
-        <Box flexDirection="row" alignItems="center" flexGrow={1} flexShrink={1} flexWrap="wrap">
+        <Box flexDirection="row" alignItems="center" justifyContent="center" flexGrow={1} flexShrink={1} flexWrap="wrap">
           <Box {...segmentProps(0)}>
             <Svg source={LOGO_SVG} alt="UsiaTech" width={iconPx} height={iconPx} isInteractive />
             <Text size={size} color={BRAND.usia}>{s.model}</Text>
@@ -222,12 +242,16 @@ export const register: Register = (on, options) => {
           </Box>
         </Box>
         {/* The desktop draws the label, not the children: the label is the glyph alone.
-            Button has no tooltip, so a card shown on hover stands in for one. */}
+            Button has no tooltip, so on the desktop a card shown on hover stands in for one. VS Code's
+            webview maps no hover or position props on a Box (it keeps display none), so the card could
+            never show there and is left out. */}
         <Box key="hide-tip" flexShrink={0}>
           <Button key="hide" role="dismiss" label="×" plain dimColor onPress={hide} />
-          <Box position="absolute" top={0} right={2} display="none" hover={{ display: 'flex' }} backgroundColor={BRAND.panel} paddingX={1}>
-            <Text size={size} wrap="truncate">Hide for this session</Text>
-          </Box>
+          {e.surface !== 'vscode' && (
+            <Box position="absolute" top={0} right={2} display="none" hover={{ display: 'flex' }} backgroundColor={BRAND.panel} paddingX={1}>
+              <Text size={size} wrap="truncate">Hide for this session</Text>
+            </Box>
+          )}
         </Box>
       </Box>
     )
