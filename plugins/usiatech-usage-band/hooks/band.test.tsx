@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { compactTime } from './register.tsx'
 
 const BAND = {
   plugin: 'usiatech-usage-band',
@@ -167,6 +168,114 @@ test('the text size follows bodyColumns and leaves room for the close button', a
     })
     const model = await ui.find({ type: 'Text', text: /^Opus 5\.5$/ })
     expect(model?.props.size).toBe(size)
+    await ui.unmount()
+  }
+})
+
+test('below caption size the captions turn compact: shorter reset times, context without the window', async ($, on) => {
+  mock.store(on)
+  on('ui.log', () => ({ value: undefined }))
+  on('command.register', () => ({ value: { command: 'usage-band' } }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  // Resets on the hour (in every whole-hour time zone): a compact time drops ":00" and the space before AM/PM.
+  const onTheHour = [
+    { kind: 'five_hour', percentUsed: 18, resetsAt: '2026-11-16T20:00:00Z' },
+    { kind: 'seven_day', percentUsed: 92, resetsAt: '2026-11-21T18:00:00Z' },
+  ]
+  on('session.usage', () => ({ value: { ...USAGE, rateLimits: onTheHour } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/', surface: 'vscode', isInteractive: true })
+
+  const mount = (bodyColumns: number) =>
+    $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns }, surface: 'vscode', viewport: { columns: 200, rows: 40 } })
+
+  const wide = await mount(200)
+  expect((await wide.find({ type: 'Text', text: /^ctx / }))?.text).toBe('ctx 192k/1M')
+  await wide.unmount()
+
+  const narrow = await mount(40)
+  expect((await narrow.find({ type: 'Text', text: /^Opus 5\.5$/ }))?.props.size).toBe('caption')
+  expect((await narrow.find({ type: 'Text', text: /^ctx / }))?.text).toBe('ctx 192k')
+  for (const caption of [/^5h /, /^wk /]) {
+    const node = await narrow.find({ type: 'Text', text: caption })
+    expect(node).toBeDefined()
+    // A 12-hour locale reads e.g. "5h 1PM", a 24-hour one keeps "5h 13:00": either way no ":00 PM" and no
+    // space before AM/PM (\s also matches U+202F).
+    expect(node?.text).not.toMatch(/:00\s*[ap]\.?m/i)
+    expect(node?.text).not.toMatch(/\s[ap]\.?m/i)
+  }
+  await narrow.unmount()
+})
+
+test('the compact step is chosen only when the full captions do not fit at caption size', async ($, on) => {
+  mock.store(on)
+  on('ui.log', () => ({ value: undefined }))
+  on('command.register', () => ({ value: { command: 'usage-band' } }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  // No rate limits: the captions hold no clock time, so the row's width is fixed.
+  on('session.usage', () => ({ value: { ...USAGE, rateLimits: [] } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/', surface: 'vscode', isInteractive: true })
+
+  // At caption size the full row needs 59.6 cells (36 of text) and the compact row 57.05 (33 of text).
+  const cases = [[60, 'ctx 192k/1M'], [59, 'ctx 192k'], [58, 'ctx 192k']] as const
+  for (const [bodyColumns, ctx] of cases) {
+    const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns }, surface: 'vscode', viewport: { columns: 200, rows: 40 } })
+    expect((await ui.find({ type: 'Text', text: /^Opus 5\.5$/ }))?.props.size).toBe('caption')
+    expect((await ui.find({ type: 'Text', text: /^ctx / }))?.text).toBe(ctx)
+    await ui.unmount()
+  }
+})
+
+test('the segments sit centred in the row on desktop and VS Code, with the close button last', async ($, on) => {
+  mock.store(on)
+  on('ui.log', () => ({ value: undefined }))
+  on('command.register', () => ({ value: { command: 'usage-band' } }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.usage', () => ({ value: USAGE }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  for (const surface of ['desktop', 'vscode'] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface, viewport: { columns: 200, rows: 40 } })
+    const row = await ui.find({ type: 'Box' })
+    expect(row?.props.flexWrap).toBe('nowrap')
+    expect(row?.children?.[0]?.props.justifyContent).toBe('center')
+    expect(row?.children?.[1]?.children?.[0]?.props.label).toBe('×')
+    await ui.unmount()
+  }
+})
+
+test('compactTime drops a :00 minute and the space before AM/PM, and keeps 24-hour times', async () => {
+  const cases = [
+    ['10:00 PM', '10PM'],
+    ['10:30 PM', '10:30PM'],
+    ['Sat 10:00 AM', 'Sat 10AM'],
+    ['Sat 10:00\u202fAM', 'Sat 10AM'],
+    ['10:00 p. m.', '10p. m.'],
+    ['22:00', '22:00'],
+    ['Sat 22:00', 'Sat 22:00'],
+  ] as const
+  for (const [full, compact] of cases) expect(compactTime(full)).toBe(compact)
+})
+
+test('the close button has its hover tip on the desktop and none in VS Code, which draws no hover cards', async ($, on) => {
+  mock.store(on)
+  on('ui.log', () => ({ value: undefined }))
+  on('command.register', () => ({ value: { command: 'usage-band' } }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.usage', () => ({ value: USAGE }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  for (const [surface, hasTip] of [['desktop', true], ['vscode', false]] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface, viewport: { columns: 200, rows: 40 } })
+    expect(Boolean(await ui.find({ type: 'Text', text: /^Hide for this session$/ }))).toBe(hasTip)
+    expect((await ui.find({ type: 'Box' }))?.children?.[1]?.children?.[0]?.props.label).toBe('×')
     await ui.unmount()
   }
 })
